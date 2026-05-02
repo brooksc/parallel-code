@@ -116,6 +116,7 @@ export {
   setEditorCommand,
   setDockerImage,
   setDockerAvailable,
+  setShareDockerAgentAuth,
   setAskCodeProvider,
   setMinimaxApiKey,
   setWindowState,

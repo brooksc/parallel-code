@@ -69,6 +69,7 @@ export async function saveState(): Promise<void> {
     keybindingMigrationDismissed: store.keybindingMigrationDismissed || undefined,
     focusMode: store.focusMode || undefined,
     verboseLogging: store.verboseLogging || undefined,
+    shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -257,6 +258,7 @@ interface LegacyPersistedState {
   keybindingMigrationDismissed?: unknown;
   focusMode?: unknown;
   verboseLogging?: unknown;
+  shareDockerAgentAuth?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -395,6 +397,8 @@ export async function loadState(): Promise<void> {
       s.focusMode = raw.focusMode === true;
 
       s.verboseLogging = typeof raw.verboseLogging === 'boolean' ? raw.verboseLogging : false;
+
+      s.shareDockerAgentAuth = raw.shareDockerAgentAuth === true;
 
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =

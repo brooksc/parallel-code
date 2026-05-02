@@ -153,6 +153,7 @@ export interface PersistedState {
   inactiveColumnOpacity?: number;
   editorCommand?: string;
   dockerImage?: string;
+  shareDockerAgentAuth?: boolean;
   askCodeProvider?: 'claude' | 'minimax';
   customAgents?: AgentDef[];
   keybindingMigrationDismissed?: boolean;
@@ -230,6 +231,7 @@ export interface AppStore {
   editorCommand: string;
   dockerImage: string;
   dockerAvailable: boolean;
+  shareDockerAgentAuth: boolean;
   askCodeProvider: 'claude' | 'minimax';
   newTaskDropUrl: string | null;
   newTaskPrefillPrompt: { prompt: string; projectId: string | null } | null;
