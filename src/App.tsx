@@ -24,6 +24,7 @@ import {
   toggleSidebar,
   toggleArena,
   moveActiveTask,
+  jumpToTask,
   adjustGlobalScale,
   resetGlobalScale,
   startTaskStatusPolling,
@@ -452,6 +453,9 @@ function App() {
       'navigateColumn:right': () => navigateColumn('right'),
       'moveActiveTask:left': () => moveActiveTask('left'),
       'moveActiveTask:right': () => moveActiveTask('right'),
+      ...Object.fromEntries(
+        Array.from({ length: 9 }, (_, i) => [`jumpToTask:${i + 1}`, () => jumpToTask(i)]),
+      ),
       closeShell: () => {
         const taskId = store.activeTaskId;
         if (!taskId) return;

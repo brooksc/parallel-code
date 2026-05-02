@@ -76,6 +76,21 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
   },
 
   // -------------------------------------------------------------------------
+  // App layer — Jump to task by position (Cmd+1 through Cmd+9)
+  // -------------------------------------------------------------------------
+  ...Array.from({ length: 9 }, (_, i) => ({
+    id: `app.nav.jump-to-task-${i + 1}`,
+    layer: 'app' as const,
+    category: 'Navigation',
+    description: `Jump to task ${i + 1}`,
+    platform: 'both' as const,
+    key: `Digit${i + 1}`,
+    modifiers: { cmdOrCtrl: true },
+    action: `jumpToTask:${i + 1}`,
+    global: true,
+  })),
+
+  // -------------------------------------------------------------------------
   // App layer — Task actions
   // -------------------------------------------------------------------------
   {

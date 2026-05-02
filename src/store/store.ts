@@ -61,6 +61,7 @@ export {
   navigateTask,
   navigateAgent,
   moveActiveTask,
+  jumpToTask,
   toggleNewTaskDialog,
 } from './navigation';
 export {

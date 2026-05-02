@@ -2,6 +2,7 @@ import { store, setStore } from './core';
 import { getTaskFocusedPanel, setTaskFocusedPanel } from './focus';
 import { showNotification } from './notification';
 import { pickAndAddProject } from './projects';
+import { computeSidebarTaskOrder } from './sidebar-order';
 import { reorderTask } from './tasks';
 
 export function setActiveTask(id: string): void {
@@ -46,6 +47,12 @@ export function moveActiveTask(direction: 'left' | 'right'): void {
   reorderTask(idx, target);
   // Re-focus the moved task and scroll it into view (DOM node move loses focus)
   setTaskFocusedPanel(activeTaskId, getTaskFocusedPanel(activeTaskId));
+}
+
+export function jumpToTask(index: number): void {
+  const order = computeSidebarTaskOrder();
+  const id = order[index];
+  if (id) setActiveTask(id);
 }
 
 export function toggleNewTaskDialog(show?: boolean): void {
