@@ -358,7 +358,7 @@ describe('spawnAgent docker mode', () => {
       const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
       const expectedHostFile = `${home}/.parallel-code/agent-auth/claude/.claude.json`;
       expect(volumeFlags).toContain(`${expectedHostFile}:${DOCKER_CONTAINER_HOME}/.claude.json`);
-      expect(fs.existsSync(expectedHostFile)).toBe(true);
+      expect(fs.readFileSync(expectedHostFile, 'utf8')).toBe('{}');
     });
 
     it('does not mount agent auth directory when shareDockerAgentAuth is disabled', () => {

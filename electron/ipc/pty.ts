@@ -690,8 +690,8 @@ function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boole
       try {
         const hostDir = path.dirname(hostFile);
         fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
-        if (!fs.existsSync(hostFile)) {
-          fs.writeFileSync(hostFile, '', { mode: 0o600 });
+        if (!fs.existsSync(hostFile) || fs.statSync(hostFile).size === 0) {
+          fs.writeFileSync(hostFile, '{}', { mode: 0o600 });
         }
         mounts.push('-v', `${hostFile}:${DOCKER_CONTAINER_HOME}/${relFile}`);
       } catch {
