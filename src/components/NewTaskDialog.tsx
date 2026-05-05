@@ -902,6 +902,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
                   >
                     The agent will run inside a Docker container. Only the project directory is
                     mounted — files outside the project are protected from accidental deletion.
+                    <Show when={store.shareDockerAgentAuth}>
+                      {' '}
+                      Agent credentials are shared across containers.
+                    </Show>
                   </div>
                   <Show when={projectDockerfile()}>
                     <div

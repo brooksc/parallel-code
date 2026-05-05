@@ -626,6 +626,11 @@ const AGENT_CONFIG_DIRS: Record<string, string[]> = {
   copilot: ['.config/github-copilot'],
 };
 
+// Config files (not directories) each agent CLI uses for auth, relative to HOME.
+const AGENT_CONFIG_FILES: Record<string, string[]> = {
+  claude: ['.claude.json'],
+};
+
 function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boolean): string[] {
   const mounts: string[] = [];
   const home = process.env.HOME;
@@ -678,6 +683,19 @@ function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boole
         mounts.push('-v', `${hostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
       } catch {
         console.warn(`[docker-auth] Could not create host auth dir ${hostDir}, skipping mount`);
+      }
+    }
+    for (const relFile of AGENT_CONFIG_FILES[baseCommand] ?? []) {
+      const hostFile = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relFile);
+      try {
+        const hostDir = path.dirname(hostFile);
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        if (!fs.existsSync(hostFile)) {
+          fs.writeFileSync(hostFile, '', { mode: 0o600 });
+        }
+        mounts.push('-v', `${hostFile}:${DOCKER_CONTAINER_HOME}/${relFile}`);
+      } catch {
+        console.warn(`[docker-auth] Could not create host auth file ${hostFile}, skipping mount`);
       }
     }
   }

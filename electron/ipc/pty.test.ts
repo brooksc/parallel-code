@@ -346,6 +346,21 @@ describe('spawnAgent docker mode', () => {
       expect(fs.existsSync(hostDir)).toBe(true);
     });
 
+    it('bind-mounts .claude.json file for claude so auth persists across containers', () => {
+      const home = makeTempHome([]);
+      vi.stubEnv('HOME', home);
+
+      spawnAgent(
+        createMockWindow(),
+        buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: true }),
+      );
+
+      const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
+      const expectedHostFile = `${home}/.parallel-code/agent-auth/claude/.claude.json`;
+      expect(volumeFlags).toContain(`${expectedHostFile}:${DOCKER_CONTAINER_HOME}/.claude.json`);
+      expect(fs.existsSync(expectedHostFile)).toBe(true);
+    });
+
     it('does not mount agent auth directory when shareDockerAgentAuth is disabled', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
