@@ -670,10 +670,15 @@ function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boole
   // by this process (running as the user), so the containerised agent can
   // write credentials on first login and read them on subsequent runs.
   if (shareAgentAuth) {
-    for (const relDir of AGENT_CONFIG_DIRS[agentCommand] ?? []) {
-      const hostDir = path.join(home, '.parallel-code', 'agent-auth', agentCommand);
-      fs.mkdirSync(hostDir, { recursive: true });
-      mounts.push('-v', `${hostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
+    const baseCommand = path.basename(agentCommand);
+    for (const relDir of AGENT_CONFIG_DIRS[baseCommand] ?? []) {
+      const hostDir = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relDir);
+      try {
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        mounts.push('-v', `${hostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
+      } catch {
+        console.warn(`[docker-auth] Could not create host auth dir ${hostDir}, skipping mount`);
+      }
     }
   }
 

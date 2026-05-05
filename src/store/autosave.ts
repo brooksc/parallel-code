@@ -33,6 +33,7 @@ function persistedSnapshot(): string {
     editorCommand: store.editorCommand,
     customAgents: store.customAgents,
     focusMode: store.focusMode,
+    shareDockerAgentAuth: store.shareDockerAgentAuth,
     tasks: Object.fromEntries(
       [...store.taskOrder, ...store.collapsedTaskOrder]
         .filter((id) => store.tasks[id])

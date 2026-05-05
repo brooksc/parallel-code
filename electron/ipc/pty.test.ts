@@ -328,7 +328,7 @@ describe('spawnAgent docker mode', () => {
         spawnAgent(createMockWindow(), buildSpawnArgs({ command, shareDockerAgentAuth: true }));
 
         const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
-        const expectedHostDir = `${home}/.parallel-code/agent-auth/${command}`;
+        const expectedHostDir = `${home}/.parallel-code/agent-auth/${command}/${relDir}`;
         expect(volumeFlags).toContain(`${expectedHostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
       },
     );
@@ -342,7 +342,7 @@ describe('spawnAgent docker mode', () => {
         buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: true }),
       );
 
-      const hostDir = `${home}/.parallel-code/agent-auth/claude`;
+      const hostDir = `${home}/.parallel-code/agent-auth/claude/.claude`;
       expect(fs.existsSync(hostDir)).toBe(true);
     });
 
