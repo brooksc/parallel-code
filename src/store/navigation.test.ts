@@ -33,10 +33,6 @@ vi.mock('./notification', () => ({ showNotification: vi.fn() }));
 vi.mock('./projects', () => ({ pickAndAddProject: vi.fn() }));
 vi.mock('./tasks', () => ({ reorderTask: vi.fn() }));
 
-vi.mock('./sidebar-order', () => ({
-  computeSidebarTaskOrder: vi.fn(() => mockStore.taskOrder),
-}));
-
 import { jumpToTask } from './navigation';
 
 beforeEach(() => {
@@ -84,5 +80,14 @@ describe('jumpToTask', () => {
   it('sets activeAgentId to first agent of the target task', () => {
     jumpToTask(1);
     expect(mockStore.activeAgentId).toBe('agent-b');
+  });
+
+  it('indexes taskOrder, not collapsed tasks', () => {
+    // Collapsed tasks live in collapsedTaskOrder and must not be reachable
+    // by index — the user can't see them, so jumping there would surprise.
+    mockStore.taskOrder = ['task-1', 'task-2'];
+    mockStore.collapsedTaskOrder = ['task-3'];
+    jumpToTask(2);
+    expect(mockStore.activeTaskId).toBe(null);
   });
 });

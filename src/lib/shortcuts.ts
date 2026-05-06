@@ -97,6 +97,28 @@ export function registerZoomShortcuts(handlers: ZoomShortcutHandlers): () => voi
   return () => cleanups.forEach((cleanup) => cleanup());
 }
 
+/**
+ * Register Shift variants of Cmd+1..9 jump-to-task shortcuts.
+ *
+ * The canonical bindings (Cmd+1..9 without Shift) live in the keybindings
+ * registry so they appear in the Keyboard Shortcuts UI and are user-overridable.
+ * The Shift variants exist only so layouts where the digit row requires Shift
+ * (e.g. AZERTY) still work — keeping them out of the registry avoids 9 duplicate
+ * rows in the UI, mirroring how the Cmd+0 reset-zoom shift variant is handled.
+ */
+export function registerJumpToTaskShortcuts(handler: (index: number) => void): () => void {
+  const cleanups = Array.from({ length: 9 }, (_, i) =>
+    registerShortcut({
+      key: `${i + 1}`,
+      cmdOrCtrl: true,
+      shift: true,
+      global: true,
+      handler: () => handler(i),
+    }),
+  );
+  return () => cleanups.forEach((cleanup) => cleanup());
+}
+
 /** Whether a dialog overlay is currently mounted in the DOM. */
 function isDialogOpen(): boolean {
   return document.querySelector('.dialog-overlay') !== null;

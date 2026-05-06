@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BINDINGS } from './keybindings/defaults';
-import { initShortcuts, registerFromRegistry, registerZoomShortcuts } from './shortcuts';
+import {
+  initShortcuts,
+  registerFromRegistry,
+  registerJumpToTaskShortcuts,
+  registerZoomShortcuts,
+} from './shortcuts';
 
 type KeyboardEventStub = Pick<
   KeyboardEvent,
@@ -67,6 +72,41 @@ describe('registerFromRegistry — jump-to-task bindings', () => {
 
     cleanupShortcuts();
     cleanupRegistry();
+  });
+
+  it('fires jumpToTask handler on Cmd+Shift+1 via registerJumpToTaskShortcuts (AZERTY)', () => {
+    const handler = vi.fn();
+    const cleanupJump = registerJumpToTaskShortcuts(handler);
+    const cleanupShortcuts = initShortcuts();
+
+    const event: Pick<
+      KeyboardEvent,
+      | 'key'
+      | 'ctrlKey'
+      | 'metaKey'
+      | 'altKey'
+      | 'shiftKey'
+      | 'target'
+      | 'preventDefault'
+      | 'stopPropagation'
+    > = {
+      key: '1',
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: true,
+      target: null,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+
+    keydownHandler?.(event as KeyboardEvent);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(0);
+
+    cleanupShortcuts();
+    cleanupJump();
   });
 
   it('does NOT fire when key is "Digit1" (old broken binding format)', () => {

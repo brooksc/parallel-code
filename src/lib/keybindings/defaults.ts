@@ -78,6 +78,10 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
   // -------------------------------------------------------------------------
   // App layer — Jump to task by position (Cmd+1 through Cmd+9)
   // -------------------------------------------------------------------------
+  // Shift variants for keyboard layouts where the digit row requires Shift
+  // (e.g. AZERTY) live in shortcuts.ts (registerJumpToTaskShortcuts), mirroring
+  // the Cmd+0 reset-zoom pattern — keeping them out of the registry avoids
+  // duplicating these rows in the keybindings UI.
   ...Array.from({ length: 9 }, (_, i) => ({
     id: `app.nav.jump-to-task-${i + 1}`,
     layer: 'app' as const,
@@ -86,19 +90,6 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     platform: 'both' as const,
     key: `${i + 1}`,
     modifiers: { cmdOrCtrl: true },
-    action: `jumpToTask:${i + 1}`,
-    global: true,
-  })),
-  // Shift variants for keyboard layouts where the digit row requires Shift (e.g. AZERTY).
-  // Mirrors the same pattern used for the Cmd+0 reset-zoom shortcut.
-  ...Array.from({ length: 9 }, (_, i) => ({
-    id: `app.nav.jump-to-task-${i + 1}-shift`,
-    layer: 'app' as const,
-    category: 'Navigation',
-    description: `Jump to task ${i + 1}`,
-    platform: 'both' as const,
-    key: `${i + 1}`,
-    modifiers: { cmdOrCtrl: true, shift: true },
     action: `jumpToTask:${i + 1}`,
     global: true,
   })),
