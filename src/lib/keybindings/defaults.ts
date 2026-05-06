@@ -84,8 +84,21 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     category: 'Navigation',
     description: `Jump to task ${i + 1}`,
     platform: 'both' as const,
-    key: `Digit${i + 1}`,
+    key: `${i + 1}`,
     modifiers: { cmdOrCtrl: true },
+    action: `jumpToTask:${i + 1}`,
+    global: true,
+  })),
+  // Shift variants for keyboard layouts where the digit row requires Shift (e.g. AZERTY).
+  // Mirrors the same pattern used for the Cmd+0 reset-zoom shortcut.
+  ...Array.from({ length: 9 }, (_, i) => ({
+    id: `app.nav.jump-to-task-${i + 1}-shift`,
+    layer: 'app' as const,
+    category: 'Navigation',
+    description: `Jump to task ${i + 1}`,
+    platform: 'both' as const,
+    key: `${i + 1}`,
+    modifiers: { cmdOrCtrl: true, shift: true },
     action: `jumpToTask:${i + 1}`,
     global: true,
   })),

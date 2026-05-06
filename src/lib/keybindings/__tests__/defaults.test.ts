@@ -24,6 +24,8 @@ const APP_LAYER_IDS = [
   'app.toggle-settings',
   'app.close-dialogs',
   'app.reset-zoom',
+  ...Array.from({ length: 9 }, (_, i) => `app.nav.jump-to-task-${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `app.nav.jump-to-task-${i + 1}-shift`),
 ];
 
 const TERMINAL_LAYER_IDS = [
