@@ -236,6 +236,8 @@ export function startRemoteServer(opts: {
                 return jsonReply(400, { error: 'skipPermissions must be a boolean' });
               if (body.baseBranch !== undefined && typeof body.baseBranch !== 'string')
                 return jsonReply(400, { error: 'baseBranch must be a string' });
+              if (body.gitIsolation !== undefined && typeof body.gitIsolation !== 'string')
+                return jsonReply(400, { error: 'gitIsolation must be a string' });
               mcpLog(
                 'info',
                 `create_task name=${body.name} skipPermissions=${!!body.skipPermissions} baseBranch=${body.baseBranch ?? 'default'}`,
@@ -244,10 +246,11 @@ export function startRemoteServer(opts: {
                 name: body.name,
                 prompt: body.prompt as string | undefined,
                 coordinatorTaskId:
-                  typeof body.coordinatorTaskId === 'string' ? body.coordinatorTaskId : 'api',
+                  typeof body.coordinatorTaskId === 'string' ? body.coordinatorTaskId : undefined,
                 projectId: body.projectId as string | undefined,
                 skipPermissions: body.skipPermissions as boolean | undefined,
                 baseBranch: body.baseBranch as string | undefined,
+                gitIsolation: body.gitIsolation as string | undefined,
               });
               mcpLog('info', `create_task OK id=${result.id}`);
               jsonReply(201, orch.getTaskStatus(result.id));

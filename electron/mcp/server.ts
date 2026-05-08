@@ -247,16 +247,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = await client.getTaskDiff(
           (params as Record<string, unknown>).taskId as string,
         );
-        // Return files summary + truncated diff
         const summary = result.files
           .map((f) => `${f.status} ${f.path} (+${f.lines_added} -${f.lines_removed})`)
           .join('\n');
-        const diffText =
-          result.diff.length > 50_000
-            ? result.diff.slice(0, 50_000) + '\n... (diff truncated)'
-            : result.diff;
+        const truncNote = result.truncated
+          ? `\n(diff truncated — original size: ${result.originalSizeBytes} bytes)`
+          : '';
         return {
-          content: [{ type: 'text', text: `Changed files:\n${summary}\n\n${diffText}` }],
+          content: [
+            { type: 'text', text: `Changed files:\n${summary}\n\n${result.diff}${truncNote}` },
+          ],
         };
       }
 
