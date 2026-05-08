@@ -101,6 +101,14 @@ export function TaskTitleBar(props: TaskTitleBarProps) {
         <Show when={props.task.externalWorktree}>
           <span style={badgeStyle(theme.accent)}>Imported</span>
         </Show>
+        <Show when={props.task.needsReview}>
+          <span
+            style={badgeStyle(theme.warning)}
+            title="Coordinator closed — review this branch manually"
+          >
+            Review
+          </span>
+        </Show>
         <EditableText
           value={titleLabel()}
           onCommit={(v) => updateTaskName(props.task.id, v)}

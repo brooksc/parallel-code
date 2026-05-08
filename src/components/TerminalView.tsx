@@ -19,15 +19,6 @@ import { dataTransferToShellArgs, escapePath } from '../lib/terminalDrop';
 import { cleanCopiedTerminalText } from '../lib/copy-text';
 import type { PtyOutput } from '../ipc/types';
 
-let windowUnloading = false;
-if (typeof window !== 'undefined') {
-  const markWindowUnloading = () => {
-    windowUnloading = true;
-  };
-  window.addEventListener('beforeunload', markWindowUnloading);
-  window.addEventListener('pagehide', markWindowUnloading);
-}
-
 type ClipboardPaste =
   | { kind: 'file'; path: string }
   | { kind: 'image'; path: string }
@@ -69,9 +60,6 @@ interface TerminalViewProps {
   stepsEnabled?: boolean;
   dockerMode?: boolean;
   dockerImage?: string;
-  spawnDelayMs?: number;
-  attachExisting?: boolean;
-  preserveOnWindowUnload?: boolean;
   onExit?: (exitInfo: {
     exit_code: number | null;
     signal: string | null;
@@ -95,6 +83,10 @@ interface TerminalViewProps {
   isFocused?: boolean;
 }
 
+// Status parsing only needs recent output. Capping forwarded bytes avoids
+// expensive full-chunk decoding during large terminal bursts.
+const STATUS_ANALYSIS_MAX_BYTES = 8 * 1024;
+
 /** Terminal-layer bindings — filtered from resolved bindings.
  *  Called in the key handler (hot path); resolveBindings walks the full
  *  defaults list on each call, which is fine at human typing speed. */
@@ -113,17 +105,6 @@ export function TerminalView(props: TerminalViewProps) {
     const taskId = props.taskId;
     const agentId = props.agentId;
     const initialFontSize = props.fontSize ?? 13;
-    const command = props.command;
-    const args = props.args;
-    const cwd = props.cwd;
-    const env = props.env ?? {};
-    const isShell = props.isShell;
-    const stepsEnabled = props.stepsEnabled;
-    const dockerMode = props.dockerMode;
-    const dockerImage = props.dockerImage;
-    const attachExisting = props.attachExisting;
-    const preserveOnWindowUnload = props.preserveOnWindowUnload === true;
-    const onExit = props.onExit;
 
     term = new Terminal({
       cursorBlink: true,
@@ -194,7 +175,7 @@ export function TerminalView(props: TerminalViewProps) {
               // Strip line:col suffix for opening
               const filePath = link.text.replace(/:\d+(:\d+)?$/, '');
               // Resolve relative paths against the task's working directory
-              const resolved = filePath.startsWith('/') ? filePath : `${cwd}/${filePath}`;
+              const resolved = filePath.startsWith('/') ? filePath : `${props.cwd}/${filePath}`;
               // .md files open in viewer; Shift held = open externally instead
               if (/\.md$/i.test(resolved) && props.onFileLink && !event.shiftKey) {
                 props.onFileLink(resolved);
@@ -412,7 +393,7 @@ export function TerminalView(props: TerminalViewProps) {
     }) {
       if (!term) return;
       term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
-      onExit?.(payload);
+      props.onExit?.(payload);
     }
 
     function flushOutputQueue() {
@@ -435,7 +416,13 @@ export function TerminalView(props: TerminalViewProps) {
         }
       }
 
+      const statusPayload =
+        payload.length > STATUS_ANALYSIS_MAX_BYTES
+          ? payload.subarray(payload.length - STATUS_ANALYSIS_MAX_BYTES)
+          : payload;
+
       outputWriteInFlight = true;
+      // eslint-disable-next-line solid/reactivity -- write callback is not a reactive context
       term.write(payload, () => {
         outputWriteInFlight = false;
         watermark = Math.max(watermark - payload.length, 0);
@@ -449,6 +436,7 @@ export function TerminalView(props: TerminalViewProps) {
           });
         }
 
+        props.onData?.(statusPayload);
         if (outputQueue.length > 0) {
           scheduleOutputFlush();
           return;
@@ -470,9 +458,6 @@ export function TerminalView(props: TerminalViewProps) {
     }
 
     function enqueueOutput(chunk: Uint8Array) {
-      // Status analysis runs before xterm rendering/backpressure and receives
-      // full chunks so UTF-8 decoder state stays valid across PTY boundaries.
-      props.onData?.(chunk);
       outputQueue.push(chunk);
       outputQueuedBytes += chunk.length;
       watermark += chunk.length;
@@ -518,17 +503,9 @@ export function TerminalView(props: TerminalViewProps) {
     let inputBuffer = '';
     let pendingInput = '';
     let inputFlushTimer: number | undefined;
-    let ptyReady = false;
 
     function flushPendingInput() {
       if (!pendingInput) return;
-      if (!ptyReady) {
-        if (inputFlushTimer !== undefined) {
-          clearTimeout(inputFlushTimer);
-          inputFlushTimer = undefined;
-        }
-        return;
-      }
       const data = pendingInput;
       pendingInput = '';
       if (inputFlushTimer !== undefined) {
@@ -536,8 +513,8 @@ export function TerminalView(props: TerminalViewProps) {
         inputFlushTimer = undefined;
       }
       fireAndForget(IPC.WriteToAgent, { agentId, data });
-      if (!isShell && (data.includes('\r') || data.includes('\n'))) {
-        setTaskLastInputAt(taskId);
+      if (!props.isShell && (data.includes('\r') || data.includes('\n'))) {
+        setTaskLastInputAt(props.taskId);
       }
     }
 
@@ -548,6 +525,7 @@ export function TerminalView(props: TerminalViewProps) {
         return;
       }
       if (inputFlushTimer !== undefined) return;
+      // eslint-disable-next-line solid/reactivity
       inputFlushTimer = window.setTimeout(() => {
         inputFlushTimer = undefined;
         flushPendingInput();
@@ -584,7 +562,6 @@ export function TerminalView(props: TerminalViewProps) {
 
     function flushPendingResize() {
       if (!pendingResize) return;
-      if (!ptyReady) return;
       const { cols, rows } = pendingResize;
       pendingResize = null;
       if (cols === lastSentCols && rows === lastSentRows) return;
@@ -622,61 +599,37 @@ export function TerminalView(props: TerminalViewProps) {
       // WebGL2 not supported — DOM renderer used automatically
     }
 
-    let spawnTimer: number | undefined;
-    let spawnStarted = false;
-
-    function startSpawn() {
-      if (!term || spawnStarted) return;
-      spawnStarted = true;
-      invoke(IPC.SpawnAgent, {
-        taskId,
-        agentId,
-        command,
-        args,
-        cwd,
-        env,
-        cols: term.cols,
-        rows: term.rows,
-        isShell,
-        stepsEnabled,
-        dockerMode,
-        dockerImage,
-        shareDockerAgentAuth: store.shareDockerAgentAuth,
-        attachExisting,
-        onOutput,
-      })
-        .then(() => {
-          ptyReady = true;
-          flushPendingResize();
-          flushPendingInput();
-        })
-        .catch((err) => {
-          // Strip control/escape characters to prevent terminal escape injection
-          // eslint-disable-next-line no-control-regex -- intentionally stripping control/escape chars to prevent terminal injection
-          const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, '');
-          term?.write(`\x1b[31mFailed to spawn: ${safeErr}\x1b[0m\r\n`);
-          onExit?.({
-            exit_code: null,
-            signal: 'spawn_failed',
-            last_output: [`Failed to spawn: ${safeErr}`],
-          });
-        });
-    }
-
-    const spawnDelayMs = props.spawnDelayMs ?? 0;
-    if (spawnDelayMs > 0) {
-      spawnTimer = window.setTimeout(startSpawn, spawnDelayMs);
-    } else {
-      startSpawn();
-    }
+    invoke(IPC.SpawnAgent, {
+      taskId,
+      agentId,
+      command: props.command,
+      args: props.args,
+      cwd: props.cwd,
+      env: props.env ?? {},
+      cols: term.cols,
+      rows: term.rows,
+      isShell: props.isShell,
+      stepsEnabled: props.stepsEnabled,
+      dockerMode: props.dockerMode,
+      dockerImage: props.dockerImage,
+      shareDockerAgentAuth: store.shareDockerAgentAuth,
+      onOutput,
+      // eslint-disable-next-line solid/reactivity -- promise catch handler reads current prop values intentionally
+    }).catch((err) => {
+      // Strip control/escape characters to prevent terminal escape injection
+      // eslint-disable-next-line no-control-regex -- intentionally stripping control/escape chars to prevent terminal injection
+      const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, '');
+      term?.write(`\x1b[31mFailed to spawn: ${safeErr}\x1b[0m\r\n`);
+      props.onExit?.({
+        exit_code: null,
+        signal: 'spawn_failed',
+        last_output: [`Failed to spawn: ${safeErr}`],
+      });
+    });
 
     onCleanup(() => {
-      const preserveSession = windowUnloading && preserveOnWindowUnload;
-      if (!windowUnloading || preserveSession) {
-        flushPendingInput();
-        flushPendingResize();
-      }
-      if (spawnTimer !== undefined) clearTimeout(spawnTimer);
+      flushPendingInput();
+      flushPendingResize();
       if (inputFlushTimer !== undefined) clearTimeout(inputFlushTimer);
       if (resizeFlushTimer !== undefined) clearTimeout(resizeFlushTimer);
       if (outputRaf !== undefined) cancelAnimationFrame(outputRaf);
@@ -684,14 +637,8 @@ export function TerminalView(props: TerminalViewProps) {
       webglAddon?.dispose();
       webglAddon = undefined;
       unregisterTerminal(agentId);
-      if (preserveSession && ptyPaused) {
-        fireAndForget(IPC.ResumeAgent, { agentId });
-        ptyPaused = false;
-      }
-      if (!preserveSession && spawnStarted) {
-        // kill_agent already clears paused flag before killing
-        fireAndForget(IPC.KillAgent, { agentId });
-      }
+      // kill_agent already clears paused flag before killing
+      fireAndForget(IPC.KillAgent, { agentId });
       term?.dispose();
     });
   });

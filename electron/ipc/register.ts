@@ -1,6 +1,7 @@
 import { ipcMain, dialog, shell, app, clipboard, BrowserWindow, Notification } from 'electron';
 import crypto from 'crypto';
 import fs from 'fs';
+import net from 'net';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
@@ -29,7 +30,7 @@ import {
 import { startStepsWatcher, stopStepsWatcher, readStepsForWorktree } from './steps.js';
 import { initPrChecks, startPrChecksWatcher, stopPrChecksWatcher, isPrUrl } from './pr-checks.js';
 import { readCoverageSummary } from './coverage.js';
-import { startRemoteServer } from '../remote/server.js';
+import { startRemoteServer, getMCPLogs } from '../remote/server.js';
 import {
   getGitIgnoredDirs,
   getMainBranch,
@@ -78,6 +79,28 @@ import {
   assertOptionalBoolean,
 } from './validate.js';
 import { warn as logWarn } from '../log.js';
+
+function findFreePort(start: number, end: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let port = start;
+    const tryNext = () => {
+      if (port > end) {
+        reject(new Error(`No free port found in range ${start}–${end}`));
+        return;
+      }
+      const s = net.createServer();
+      s.listen(port, '127.0.0.1', () => {
+        const found = port;
+        s.close(() => resolve(found));
+      });
+      s.on('error', () => {
+        port++;
+        tryNext();
+      });
+    };
+    tryNext();
+  });
+}
 
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -227,6 +250,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
   // --- Remote access state ---
   let remoteServer: ReturnType<typeof startRemoteServer> | null = null;
   const taskNames = new Map<string, string>();
+
+  // --- MCP coordinator (lazy — only loaded when coordinator mode is enabled) ---
+  type CoordinatorType = import('../mcp/coordinator.js').Coordinator;
+  let coordinator: CoordinatorType | null = null;
+  let coordinatorHandlersRegistered = false;
 
   // --- PTY commands ---
   ipcMain.handle(IPC.SpawnAgent, (_e, args) => {
@@ -533,11 +561,18 @@ export function registerAllHandlers(win: BrowserWindow): void {
   // show them (taskNames is only populated on CreateTask otherwise).
   function syncTaskNamesFromJson(json: string): void {
     try {
-      const state = JSON.parse(json) as { tasks?: Record<string, { id: string; name: string }> };
+      const state = JSON.parse(json) as {
+        tasks?: Record<string, { id: string; name: string }>;
+        coordinatorNotificationDelayMs?: unknown;
+      };
       if (state.tasks) {
         for (const t of Object.values(state.tasks)) {
           if (t.id && t.name) taskNames.set(t.id, t.name);
         }
+      }
+      const delay = state.coordinatorNotificationDelayMs;
+      if (typeof delay === 'number' && Number.isFinite(delay)) {
+        coordinator?.setNotificationDelayMs(delay);
       }
     } catch (e) {
       console.warn('Ignoring malformed saved state:', e);
@@ -934,6 +969,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           lastLine: '',
         };
       },
+      coordinator: coordinator ?? undefined,
     });
     return {
       url: remoteServer.url,
@@ -963,6 +999,247 @@ export function registerAllHandlers(win: BrowserWindow): void {
       port: remoteServer.port,
     };
   });
+
+  // --- MCP server management ---
+
+  // Registers coordinator-specific IPC handlers. Called lazily when coordinator
+  // mode is enabled (either at startup from persisted state, or on first toggle).
+  function registerCoordinatorHandlers(): void {
+    if (coordinatorHandlersRegistered) return;
+    coordinatorHandlersRegistered = true;
+
+    ipcMain.handle(
+      IPC.StartMCPServer,
+      async (
+        _e,
+        args: {
+          coordinatorTaskId: string;
+          projectId: string;
+          projectRoot: string;
+          worktreePath?: string;
+          skipPermissions?: boolean;
+          propagateSkipPermissions?: boolean;
+          agentCommand?: string;
+          agentArgs?: string[];
+        },
+      ) => {
+        if (!coordinator) return;
+
+        // Set coordinator's default project + coordinator task ID
+        coordinator.setDefaultProject(args.projectId, args.projectRoot, args.coordinatorTaskId);
+
+        // Start remote server if not running
+        if (!remoteServer) {
+          const thisDir = path.dirname(fileURLToPath(import.meta.url));
+          const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
+          const port = await findFreePort(7777, 7800);
+          remoteServer = startRemoteServer({
+            port,
+            staticDir: distRemote,
+            getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
+            getAgentStatus: (agentId: string) => {
+              const meta = getAgentMeta(agentId);
+              return {
+                status: meta ? ('running' as const) : ('exited' as const),
+                exitCode: null,
+                lastLine: '',
+              };
+            },
+            coordinator,
+          });
+        }
+
+        // Write temp MCP config file — use the bundled single-file MCP server
+        // (built by esbuild, no external deps needed at runtime)
+        const thisDir = path.dirname(fileURLToPath(import.meta.url));
+        let mcpServerPath = path.join(thisDir, '..', 'mcp-server.cjs');
+
+        // In packaged builds, asar-unpacked files live in app.asar.unpacked/
+        if (mcpServerPath.includes('/app.asar/')) {
+          mcpServerPath = mcpServerPath.replace('/app.asar/', '/app.asar.unpacked/');
+        }
+        const serverUrl = `http://127.0.0.1:${remoteServer.port}`;
+        coordinator.setMCPServerInfo(serverUrl, remoteServer.token, mcpServerPath);
+        coordinator.setCoordinatorSpawnDefaults(
+          args.agentCommand ?? 'claude',
+          args.agentArgs ?? [],
+        );
+
+        const mcpConfig = {
+          mcpServers: {
+            'parallel-code': {
+              type: 'stdio' as const,
+              command: 'node',
+              args: [
+                mcpServerPath,
+                '--url',
+                serverUrl,
+                '--token',
+                remoteServer.token,
+                '--coordinator-id',
+                args.coordinatorTaskId,
+                ...(args.skipPermissions && args.propagateSkipPermissions
+                  ? ['--skip-permissions']
+                  : []),
+              ],
+            },
+          },
+        };
+
+        const configJson = JSON.stringify(mcpConfig, null, 2);
+
+        // Write temp config for --mcp-config flag
+        const configPath = path.join(
+          app.getPath('temp'),
+          `parallel-code-mcp-${args.coordinatorTaskId}.json`,
+        );
+        fs.writeFileSync(configPath, configJson, { mode: 0o600 });
+
+        // Also write .mcp.json into the worktree so Claude Code auto-discovers it.
+        // Immediately git-exclude it so the token never gets committed.
+        if (args.worktreePath) {
+          const worktreeMcpPath = path.join(args.worktreePath, '.mcp.json');
+          fs.writeFileSync(worktreeMcpPath, configJson, { mode: 0o600 });
+
+          // Append to .git/info/exclude (local-only gitignore, not committed)
+          try {
+            const gitDir = path.join(args.worktreePath, '.git');
+            // Worktrees use a .git file pointing to the real gitdir
+            let infoDir: string;
+            if (fs.statSync(gitDir).isFile()) {
+              const gitFileContent = fs.readFileSync(gitDir, 'utf-8').trim();
+              const realGitDir = gitFileContent.replace(/^gitdir:\s*/, '');
+              infoDir = path.join(
+                path.isAbsolute(realGitDir)
+                  ? realGitDir
+                  : path.resolve(args.worktreePath, realGitDir),
+                'info',
+              );
+            } else {
+              infoDir = path.join(gitDir, 'info');
+            }
+            fs.mkdirSync(infoDir, { recursive: true });
+            const excludePath = path.join(infoDir, 'exclude');
+            const existing = fs.existsSync(excludePath)
+              ? fs.readFileSync(excludePath, 'utf-8')
+              : '';
+            if (!existing.includes('.mcp.json')) {
+              fs.appendFileSync(
+                excludePath,
+                '\n# Parallel Code MCP config (contains ephemeral token)\n.mcp.json\n',
+              );
+            }
+          } catch (err) {
+            console.warn('[MCP] Could not git-exclude .mcp.json:', err);
+          }
+
+          console.warn('[MCP] Worktree .mcp.json written to:', worktreeMcpPath);
+        }
+
+        console.warn('[MCP] Config written to:', configPath);
+        console.warn('[MCP] Server path:', mcpServerPath);
+        console.warn('[MCP] Remote URL:', serverUrl);
+
+        return {
+          configPath,
+          serverUrl,
+          token: remoteServer.token,
+          port: remoteServer.port,
+        };
+      },
+    );
+
+    ipcMain.handle(
+      IPC.MCP_ControlChanged,
+      (_e, args: { taskId: string; controlledBy: 'coordinator' | 'human' }) => {
+        coordinator?.setTaskControl(args.taskId, args.controlledBy);
+      },
+    );
+
+    ipcMain.handle(
+      IPC.MCP_CoordinatorRegistered,
+      (_e, args: { coordinatorTaskId: string; projectId: string }) => {
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        assertString(args.projectId, 'projectId');
+        coordinator?.registerCoordinator(args.coordinatorTaskId, args.projectId);
+      },
+    );
+
+    ipcMain.handle(IPC.MCP_CoordinatorDeregistered, (_e, args: { coordinatorTaskId: string }) => {
+      assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+      coordinator?.deregisterCoordinator(args.coordinatorTaskId);
+    });
+
+    ipcMain.handle(IPC.MCP_CoordinatedTaskPromptDelivered, (_e, args: { taskId: string }) => {
+      assertString(args.taskId, 'taskId');
+      coordinator?.markPromptDelivered(args.taskId);
+    });
+
+    ipcMain.handle(
+      IPC.MCP_CoordinatorNotificationAck,
+      (_e, args: { coordinatorTaskId: string; batchId: string }) => {
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        assertString(args.batchId, 'batchId');
+        coordinator?.ackNotification(args.coordinatorTaskId, args.batchId);
+      },
+    );
+
+    ipcMain.handle(
+      IPC.MCP_CoordinatorRestageAfterUserSend,
+      (_e, args: { coordinatorTaskId: string }) => {
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        coordinator?.rescheduleRestageTimer(args.coordinatorTaskId);
+      },
+    );
+  }
+
+  // Enable coordinator mode: lazily import the Coordinator module and register handlers.
+  // Safe to call multiple times — only initializes once.
+  async function enableCoordinatorMode(): Promise<void> {
+    if (coordinator) return;
+    const { Coordinator } = await import('../mcp/coordinator.js');
+    coordinator = new Coordinator();
+    coordinator.setWindow(win);
+    registerCoordinatorHandlers();
+  }
+
+  // Renderer calls this at startup (if coordinator mode was previously enabled)
+  // and when the user toggles the setting on.
+  ipcMain.handle(IPC.SetCoordinatorModeEnabled, async (_e, args: { enabled: boolean }) => {
+    if (args.enabled) await enableCoordinatorMode();
+  });
+
+  // Eagerly initialize if coordinator mode was enabled in the last saved state,
+  // so the handlers are ready before the renderer finishes loading.
+  (() => {
+    const json = loadAppState();
+    if (!json) return;
+    try {
+      const state = JSON.parse(json) as { coordinatorModeEnabled?: boolean };
+      if (state.coordinatorModeEnabled === true) {
+        void enableCoordinatorMode();
+      }
+    } catch {
+      // ignore malformed state
+    }
+  })();
+
+  ipcMain.handle(IPC.StopMCPServer, async () => {
+    // The MCP server process is spawned by Claude Code (via --mcp-config),
+    // not by us. This handler is a no-op but kept for API completeness.
+  });
+
+  ipcMain.handle(IPC.GetMCPStatus, () => {
+    // The MCP server process is spawned by Claude Code (via --mcp-config),
+    // not by us. We report whether the remote HTTP server that the MCP
+    // server connects to is running — if it's up, MCP tools should work.
+    return {
+      mcpRunning: remoteServer !== null,
+      remoteRunning: remoteServer !== null,
+    };
+  });
+
+  ipcMain.handle(IPC.GetMCPLogs, () => getMCPLogs());
 
   // --- Forward window events to renderer ---
   win.on('focus', () => {

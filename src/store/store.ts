@@ -55,6 +55,9 @@ export {
   setStepsContent,
   setTaskStepsEnabled,
   setTaskLastInputAt,
+  initMCPListeners,
+  getCoordinatorCloseWarning,
+  setTaskControl,
 } from './tasks';
 export {
   setActiveTask,
@@ -114,6 +117,7 @@ export {
   setFontSmoothing,
   setDesktopNotificationsEnabled,
   setVerboseLogging,
+  setCoordinatorNotificationDelayMs,
   setInactiveColumnOpacity,
   setEditorCommand,
   setDockerImage,
@@ -122,6 +126,7 @@ export {
   setAskCodeProvider,
   setMinimaxApiKey,
   setWindowState,
+  setCoordinatorModeEnabled,
 } from './ui';
 export {
   getTaskDotStatus,
@@ -166,3 +171,9 @@ export {
   checkConflict,
   dismissMigrationBanner,
 } from './keybindings';
+export {
+  hasAnyCoordinatorTask,
+  refreshMCPStatus,
+  startMCPStatusPolling,
+  stopMCPStatusPolling,
+} from './mcpStatus';

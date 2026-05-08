@@ -1,4 +1,4 @@
-import { Show, For, createSignal, createEffect, onMount, onCleanup, untrack } from 'solid-js';
+import { Show, For, createSignal, createEffect, onMount, onCleanup } from 'solid-js';
 
 import {
   store,
@@ -11,10 +11,6 @@ import {
   unregisterFocusFn,
   setTaskFocusedPanel,
   isPanelFocused,
-  setActiveAgent,
-  setActiveTask,
-  addAgentToTask,
-  closeAgentInTask,
 } from '../store/store';
 import { InfoBar } from './InfoBar';
 import { TerminalView } from './TerminalView';
@@ -26,19 +22,12 @@ import { getTaskDockerOverlayLabel } from '../lib/docker';
 import { IPC } from '../../electron/ipc/channels';
 import { createHighlightedMarkdown } from '../lib/marked-shiki';
 import type { Task } from '../store/types';
-import type { AgentDef } from '../ipc/types';
-
-function aiTerminalPanelId(agentId: string): string {
-  return `ai-terminal:${agentId}`;
-}
-
-type StepNavApi = { mark: (i: number) => void; jump: (i: number) => boolean };
+import type { PromptInputHandle } from './PromptInput';
 
 interface TaskAITerminalProps {
   task: Task;
   isActive: boolean;
-  selectedAgentId: string;
-  onSelectAgent?: (agentId: string) => void;
+  promptHandle: PromptInputHandle | undefined;
   /** Receives a function that scrolls the AI terminal to the moment a given step
    *  index was recorded, along with the first step index that is jumpable — steps
    *  below that index were written before the current terminal mount and have no
@@ -52,38 +41,15 @@ interface TaskAITerminalProps {
 export function TaskAITerminal(props: TaskAITerminalProps) {
   onCleanup(() => unregisterFocusFn(`${props.task.id}:ai-terminal`));
 
+  const dockerOverlayLabel = () => getTaskDockerOverlayLabel(props.task.dockerSource);
+
   // Step bookmarks — TerminalView hands us a mark/jump API once the xterm
   // instance is ready. We only mark steps that arrive while the terminal is live;
   // historical steps written before this mount aren't jumpable (anchoring them
   // all at line 0 was the source of the original "jump to" bug).
-  let stepNav: StepNavApi | undefined;
-  let activeStepNavAgentId: string | null = null;
+  let stepNav: { mark: (i: number) => void; jump: (i: number) => boolean } | undefined;
   let lastMarkedLen = 0;
-  const stepNavByAgent = new Map<string, StepNavApi>();
   onCleanup(() => props.onStepJumpReady?.(undefined, 0));
-
-  function syncStepNavSource(agentIds = props.task.agentIds) {
-    const agentId = agentIds.length === 1 ? agentIds[0] : null;
-    const api = agentId ? stepNavByAgent.get(agentId) : undefined;
-    if (agentId === activeStepNavAgentId && api === stepNav) return;
-
-    activeStepNavAgentId = agentId;
-    stepNav = api;
-    if (!api) {
-      lastMarkedLen = 0;
-      props.onStepJumpReady?.(undefined, 0);
-      return;
-    }
-
-    // Skip historical steps — we can't know which terminal line each one was
-    // originally written at, and anchoring them all at the current line would
-    // silently mis-route every jump.
-    const firstJumpable = untrack(() => props.task.stepsContent?.length ?? 0);
-    lastMarkedLen = firstJumpable;
-    props.onStepJumpReady?.(api.jump, firstJumpable);
-  }
-
-  createEffect(() => syncStepNavSource(props.task.agentIds));
 
   createEffect(() => {
     const len = props.task.stepsContent?.length ?? 0;
@@ -102,14 +68,15 @@ export function TaskAITerminal(props: TaskAITerminalProps) {
   const [mdViewerFilePath, setMdViewerFilePath] = createSignal('');
   const [mdViewerOpen, setMdViewerOpen] = createSignal(false);
 
-  const firstAgentId = () => props.task.agentIds[0] ?? '';
-  const selectedAgent = () =>
-    store.agents[props.selectedAgentId] ?? store.agents[firstAgentId()] ?? undefined;
+  const firstAgent = () => {
+    const ids = props.task.agentIds;
+    return ids.length > 0 ? store.agents[ids[0]] : undefined;
+  };
 
   const fileNameFromPath = (filePath: string) => filePath.split('/').pop() ?? filePath;
 
   const infoBarStatus = () => {
-    if (selectedAgent()?.status === 'exited' && props.task.initialPrompt) {
+    if (firstAgent()?.status === 'exited' && props.task.initialPrompt) {
       return {
         title: 'Agent exited before prompt was sent',
         text: 'Agent exited before prompt was sent',
@@ -128,35 +95,6 @@ export function TaskAITerminal(props: TaskAITerminalProps) {
       : { title: 'No prompts sent yet', text: 'No prompts sent' };
   };
 
-  function selectAgent(agentId: string) {
-    setActiveTask(props.task.id);
-    props.onSelectAgent?.(agentId);
-    setActiveAgent(agentId);
-    setTaskFocusedPanel(props.task.id, aiTerminalPanelId(agentId));
-  }
-
-  async function closeAgent(agentId: string) {
-    const ids = props.task.agentIds;
-    const idx = ids.indexOf(agentId);
-    const nextAgentId = ids[idx + 1] ?? ids[idx - 1];
-    const wasSelected = props.selectedAgentId === agentId;
-    await closeAgentInTask(props.task.id, agentId);
-    if (wasSelected && nextAgentId) {
-      setActiveTask(props.task.id);
-      props.onSelectAgent?.(nextAgentId);
-      setActiveAgent(nextAgentId);
-      setTaskFocusedPanel(props.task.id, aiTerminalPanelId(nextAgentId));
-    }
-  }
-
-  function registerAgentFocus(agentId: string, focusFn: () => void) {
-    registerFocusFn(`${props.task.id}:${aiTerminalPanelId(agentId)}`, focusFn);
-  }
-
-  function unregisterAgentFocus(agentId: string) {
-    unregisterFocusFn(`${props.task.id}:${aiTerminalPanelId(agentId)}`);
-  }
-
   function handleFileLink(filePath: string) {
     invoke<string>(IPC.ReadFileText, { filePath })
       .then((content) => {
@@ -173,175 +111,152 @@ export function TaskAITerminal(props: TaskAITerminalProps) {
       });
   }
 
-  function handleStepNavReady(agentId: string, api: StepNavApi | undefined) {
-    if (!api) {
-      stepNavByAgent.delete(agentId);
-      syncStepNavSource();
-      return;
-    }
-
-    stepNavByAgent.set(agentId, api);
-    syncStepNavSource();
-  }
-
   return (
     <>
       <div
-        class="shell-terminal-container"
+        class="focusable-panel shell-terminal-container"
+        data-panel-focused={isPanelFocused(props.task.id, 'ai-terminal') ? 'true' : 'false'}
         style={{
           height: '100%',
           position: 'relative',
-          background: 'transparent',
+          background: theme.taskPanelBg,
           display: 'flex',
           'flex-direction': 'column',
         }}
-        onClick={() => setTaskFocusedPanel(props.task.id, aiTerminalPanelId(props.selectedAgentId))}
+        onClick={() => setTaskFocusedPanel(props.task.id, 'ai-terminal')}
       >
         <InfoBar
-          compact
-          allowOverflow
           title={props.task.lastPrompt || infoBarStatus().title}
           onDblClick={() => {
-            if (props.task.lastPrompt) {
-              void navigator.clipboard.writeText(props.task.lastPrompt);
-            }
+            if (props.task.lastPrompt && props.promptHandle && !props.promptHandle.getText())
+              props.promptHandle.setText(props.task.lastPrompt);
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              'align-items': 'center',
-              gap: '8px',
-              width: '100%',
-              'min-width': '0',
-            }}
-          >
-            <span
-              style={{
-                opacity: props.task.lastPrompt ? 1 : 0.4,
-                flex: '1',
-                'min-width': '0',
-                overflow: 'hidden',
-                'text-overflow': 'ellipsis',
-              }}
-            >
-              {props.task.lastPrompt ? `> ${props.task.lastPrompt}` : infoBarStatus().text}
-            </span>
+          <span style={{ opacity: props.task.lastPrompt ? 1 : 0.4 }}>
+            {props.task.lastPrompt ? `> ${props.task.lastPrompt}` : infoBarStatus().text}
+          </span>
+        </InfoBar>
+        <div style={{ flex: '1', position: 'relative', overflow: 'hidden' }}>
+          <Show when={props.task.dockerMode}>
             <div
+              title={props.task.dockerImage}
               style={{
-                display: 'flex',
-                'align-items': 'center',
-                gap: '4px',
-                'flex-shrink': '0',
+                position: 'absolute',
+                top: '8px',
+                left: '12px',
+                'z-index': '10',
+                'font-size': sf(11),
+                color: theme.fgMuted,
+                background: 'color-mix(in srgb, var(--island-bg) 80%, transparent)',
+                padding: '2px 8px',
+                'border-radius': '6px',
+                border: `1px solid ${theme.border}`,
+                'pointer-events': 'none',
               }}
             >
-              <For each={props.task.agentIds}>
-                {(agentId, i) => {
-                  const agent = () => store.agents[agentId];
-                  const selected = () => props.selectedAgentId === agentId;
-                  return (
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        'align-items': 'center',
-                        height: '20px',
-                      }}
-                    >
+              {dockerOverlayLabel()}
+            </div>
+          </Show>
+          <Show when={firstAgent()}>
+            {(a) => (
+              <>
+                <Show when={a().status === 'exited'}>
+                  <div
+                    class="exit-badge"
+                    title={a().lastOutput.length ? a().lastOutput.join('\n') : undefined}
+                    style={{
+                      position: 'absolute',
+                      top: '8px',
+                      right: '12px',
+                      'z-index': '10',
+                      'font-size': sf(12),
+                      color: a().exitCode === 0 ? theme.success : theme.error,
+                      background: 'color-mix(in srgb, var(--island-bg) 80%, transparent)',
+                      padding: '4px 12px',
+                      'border-radius': '8px',
+                      border: `1px solid ${theme.border}`,
+                      display: 'flex',
+                      'align-items': 'center',
+                      gap: '8px',
+                    }}
+                  >
+                    <span>
+                      {a().signal === 'spawn_failed'
+                        ? 'Failed to start'
+                        : `Process exited (${a().exitCode ?? '?'})`}
+                    </span>
+                    <AgentRestartMenu agentId={a().id} agentDefId={a().def.id} />
+                    <Show when={a().def.resume_args?.length}>
                       <button
-                        type="button"
-                        title={agent()?.def.description ?? agent()?.def.name}
                         onClick={(e) => {
                           e.stopPropagation();
-                          selectAgent(agentId);
+                          restartAgent(a().id, true);
                         }}
                         style={{
-                          display: 'inline-flex',
-                          'align-items': 'center',
-                          gap: '4px',
-                          height: '20px',
-                          padding: '0 7px',
-                          background: selected() ? theme.bgSelected : theme.bgInput,
-                          border: selected()
-                            ? `1px solid ${theme.accent}`
-                            : `1px solid ${theme.border}`,
-                          'border-right':
-                            props.task.agentIds.length > 1
-                              ? 'none'
-                              : selected()
-                                ? `1px solid ${theme.accent}`
-                                : `1px solid ${theme.border}`,
-                          color: selected() ? theme.fg : theme.fgMuted,
-                          'border-radius': props.task.agentIds.length > 1 ? '5px 0 0 5px' : '5px',
+                          background: theme.bgElevated,
+                          border: `1px solid ${theme.border}`,
+                          color: theme.fg,
+                          padding: '2px 8px',
+                          'border-radius': '4px',
                           cursor: 'pointer',
                           'font-size': sf(11),
-                          'font-family': "'JetBrains Mono', monospace",
                         }}
                       >
-                        <span>{agent()?.def.name ?? `Agent ${i() + 1}`}</span>
-                        <Show when={props.task.agentIds.length > 1}>
-                          <span style={{ opacity: 0.55 }}>#{i() + 1}</span>
-                        </Show>
+                        Resume
                       </button>
-                      <Show when={props.task.agentIds.length > 1}>
-                        <button
-                          type="button"
-                          title="Close AI agent"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void closeAgent(agentId);
-                          }}
-                          style={{
-                            display: 'inline-flex',
-                            'align-items': 'center',
-                            'justify-content': 'center',
-                            width: '20px',
-                            height: '20px',
-                            background: selected() ? theme.bgSelected : theme.bgInput,
-                            border: selected()
-                              ? `1px solid ${theme.accent}`
-                              : `1px solid ${theme.border}`,
-                            color: theme.fgMuted,
-                            'border-radius': '0 5px 5px 0',
-                            cursor: 'pointer',
-                            padding: '0',
-                          }}
-                        >
-                          <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z" />
-                          </svg>
-                        </button>
-                      </Show>
-                    </span>
-                  );
-                }}
-              </For>
-              <AddAgentMenu taskId={props.task.id} />
-            </div>
-          </div>
-        </InfoBar>
-        <div
-          style={{
-            flex: '1',
-            display: 'flex',
-            gap: props.task.agentIds.length > 1 ? '6px' : '0',
-            overflow: 'hidden',
-            background: props.task.agentIds.length > 1 ? theme.taskContainerBg : 'transparent',
-          }}
-        >
-          <For each={props.task.agentIds}>
-            {(agentId) => (
-              <AgentTerminalPane
-                task={props.task}
-                agentId={agentId}
-                canClose={props.task.agentIds.length > 1}
-                onSelect={() => selectAgent(agentId)}
-                onFileLink={handleFileLink}
-                onReady={registerAgentFocus}
-                onUnmount={unregisterAgentFocus}
-                onStepNavReady={(api) => handleStepNavReady(agentId, api)}
-              />
+                    </Show>
+                  </div>
+                </Show>
+                <Show when={`${a().id}:${a().generation}`} keyed>
+                  <TerminalView
+                    taskId={props.task.id}
+                    agentId={a().id}
+                    isFocused={isPanelFocused(props.task.id, 'ai-terminal')}
+                    command={a().def.command}
+                    args={[
+                      ...(a().resumed && a().def.resume_args?.length
+                        ? (a().def.resume_args ?? [])
+                        : a().def.args),
+                      ...(props.task.skipPermissions && a().def.skip_permissions_args?.length
+                        ? (a().def.skip_permissions_args ?? [])
+                        : []),
+                      ...(props.task.mcpConfigPath
+                        ? ['--mcp-config', props.task.mcpConfigPath]
+                        : []),
+                    ]}
+                    cwd={props.task.worktreePath}
+                    stepsEnabled={props.task.stepsEnabled}
+                    dockerMode={props.task.dockerMode}
+                    dockerImage={props.task.dockerImage}
+                    onExit={(code) => markAgentExited(a().id, code)}
+                    onData={(data) => markAgentOutput(a().id, data, props.task.id)}
+                    onFileLink={handleFileLink}
+                    onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
+                    onReady={(focusFn) => registerFocusFn(`${props.task.id}:ai-terminal`, focusFn)}
+                    onStepNavReady={(api) => {
+                      if (!api) {
+                        // TerminalView unmounting (agent restart). Drop the stale API
+                        // and reset the watermark so the next mount starts fresh.
+                        stepNav = undefined;
+                        lastMarkedLen = 0;
+                        props.onStepJumpReady?.(undefined, 0);
+                        return;
+                      }
+                      stepNav = api;
+                      // Skip historical steps — we can't know which terminal line each
+                      // one was originally written at, and anchoring them all at the
+                      // current line would silently mis-route every jump. Steps below
+                      // `firstJumpable` therefore don't get a ↗ button in the UI.
+                      const firstJumpable = props.task.stepsContent?.length ?? 0;
+                      lastMarkedLen = firstJumpable;
+                      props.onStepJumpReady?.(api.jump, firstJumpable);
+                    }}
+                    fontSize={13}
+                  />
+                </Show>
+              </>
             )}
-          </For>
+          </Show>
         </div>
       </div>
       <MarkdownViewerDialog
@@ -352,267 +267,6 @@ export function TaskAITerminal(props: TaskAITerminalProps) {
         filePath={mdViewerFilePath()}
       />
     </>
-  );
-}
-
-function AddAgentMenu(props: { taskId: string }) {
-  const [open, setOpen] = createSignal(false);
-  const [addingAgentId, setAddingAgentId] = createSignal<string | null>(null);
-  let menuRef: HTMLSpanElement | undefined;
-
-  const availableAgents = () => store.availableAgents.filter((agent) => agent.available !== false);
-
-  const handleClickOutside = (e: MouseEvent) => {
-    if (menuRef && !menuRef.contains(e.target as Node)) setOpen(false);
-  };
-
-  onMount(() => document.addEventListener('mousedown', handleClickOutside));
-  onCleanup(() => document.removeEventListener('mousedown', handleClickOutside));
-
-  async function addAgent(agentDef: AgentDef) {
-    if (addingAgentId()) return;
-    setAddingAgentId(agentDef.id);
-    try {
-      const agentId = await addAgentToTask(props.taskId, agentDef);
-      if (agentId) {
-        setActiveTask(props.taskId);
-        setActiveAgent(agentId);
-        setTaskFocusedPanel(props.taskId, aiTerminalPanelId(agentId));
-      }
-      setOpen(false);
-    } catch (err) {
-      console.error('Failed to add agent:', err);
-    } finally {
-      setAddingAgentId(null);
-    }
-  }
-
-  return (
-    <span style={{ position: 'relative', display: 'inline-flex' }} ref={(el) => (menuRef = el)}>
-      <button
-        type="button"
-        title="Add AI agent"
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen(!open());
-        }}
-        style={{
-          display: 'inline-flex',
-          'align-items': 'center',
-          'justify-content': 'center',
-          width: '22px',
-          height: '20px',
-          background: theme.bgInput,
-          border: `1px solid ${theme.border}`,
-          color: theme.fgMuted,
-          'border-radius': '5px',
-          cursor: 'pointer',
-          padding: '0',
-        }}
-      >
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M8 2.75a.75.75 0 0 1 .75.75v3.75h3.75a.75.75 0 0 1 0 1.5H8.75v3.75a.75.75 0 0 1-1.5 0V8.75H3.5a.75.75 0 0 1 0-1.5h3.75V3.5A.75.75 0 0 1 8 2.75Z" />
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            right: '0',
-            'margin-top': '4px',
-            background: theme.bgElevated,
-            border: `1px solid ${theme.border}`,
-            'border-radius': '6px',
-            padding: '4px 0',
-            'z-index': '30',
-            'min-width': '180px',
-            'box-shadow': '0 4px 12px rgba(0,0,0,0.3)',
-          }}
-        >
-          <div style={{ padding: '4px 10px', 'font-size': sf(10), color: theme.fgMuted }}>
-            Add agent
-          </div>
-          <For each={availableAgents()}>
-            {(agentDef) => (
-              <button
-                type="button"
-                title={agentDef.description}
-                disabled={addingAgentId() !== null}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void addAgent(agentDef);
-                }}
-                style={{
-                  display: 'block',
-                  width: '100%',
-                  background: addingAgentId() === agentDef.id ? theme.bgSelected : 'transparent',
-                  border: 'none',
-                  color: theme.fg,
-                  padding: '5px 10px',
-                  cursor: addingAgentId() === null ? 'pointer' : 'default',
-                  'font-size': sf(11),
-                  'text-align': 'left',
-                }}
-                onMouseEnter={(e) => {
-                  if (addingAgentId() === null) e.currentTarget.style.background = theme.bgHover;
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background =
-                    addingAgentId() === agentDef.id ? theme.bgSelected : 'transparent';
-                }}
-              >
-                {agentDef.name}
-              </button>
-            )}
-          </For>
-        </div>
-      </Show>
-    </span>
-  );
-}
-
-function AgentTerminalPane(props: {
-  task: Task;
-  agentId: string;
-  canClose: boolean;
-  onSelect: () => void;
-  onFileLink: (filePath: string) => void;
-  onReady: (agentId: string, focusFn: () => void) => void;
-  onUnmount: (agentId: string) => void;
-  onStepNavReady?: (
-    api: { mark: (i: number) => void; jump: (i: number) => boolean } | undefined,
-  ) => void;
-}) {
-  onCleanup(() => props.onUnmount(props.agentId));
-
-  const dockerOverlayLabel = () => getTaskDockerOverlayLabel(props.task.dockerSource);
-  const agent = () => store.agents[props.agentId];
-
-  return (
-    <div
-      class="focusable-panel shell-terminal-container agent-terminal-pane"
-      data-panel-focused={
-        isPanelFocused(props.task.id, aiTerminalPanelId(props.agentId)) ? 'true' : 'false'
-      }
-      style={{
-        flex: '1',
-        'min-width': props.canClose ? '260px' : '0',
-        overflow: 'hidden',
-        position: 'relative',
-        background: theme.taskPanelBg,
-        border: '1px solid transparent',
-      }}
-      onClick={(e) => {
-        e.stopPropagation();
-        props.onSelect();
-      }}
-    >
-      <Show when={props.task.dockerMode}>
-        <div
-          style={{
-            position: 'absolute',
-            top: '8px',
-            left: '12px',
-            'z-index': '10',
-            display: 'flex',
-            'align-items': 'center',
-            gap: '6px',
-            'font-size': sf(11),
-            color: theme.fgMuted,
-            background: 'color-mix(in srgb, var(--island-bg) 80%, transparent)',
-            padding: '2px 8px',
-            'border-radius': '6px',
-            border: `1px solid ${theme.border}`,
-          }}
-        >
-          <span title={props.task.dockerImage}>{dockerOverlayLabel()}</span>
-        </div>
-      </Show>
-      <Show when={agent()}>
-        {(a) => (
-          <>
-            <Show when={a().status === 'exited'}>
-              <div
-                class="exit-badge"
-                title={a().lastOutput.length ? a().lastOutput.join('\n') : undefined}
-                style={{
-                  position: 'absolute',
-                  top: '8px',
-                  right: '12px',
-                  'z-index': '10',
-                  'font-size': sf(12),
-                  color: a().exitCode === 0 ? theme.success : theme.error,
-                  background: 'color-mix(in srgb, var(--island-bg) 80%, transparent)',
-                  padding: '4px 12px',
-                  'border-radius': '8px',
-                  border: `1px solid ${theme.border}`,
-                  display: 'flex',
-                  'align-items': 'center',
-                  gap: '8px',
-                }}
-              >
-                <span>
-                  {a().signal === 'spawn_failed'
-                    ? 'Failed to start'
-                    : `Process exited (${a().exitCode ?? '?'})`}
-                </span>
-                <AgentRestartMenu agentId={a().id} agentDefId={a().def.id} />
-                <Show when={a().def.resume_args?.length}>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      restartAgent(a().id, true);
-                    }}
-                    style={{
-                      background: theme.bgElevated,
-                      border: `1px solid ${theme.border}`,
-                      color: theme.fg,
-                      padding: '2px 8px',
-                      'border-radius': '4px',
-                      cursor: 'pointer',
-                      'font-size': sf(11),
-                    }}
-                  >
-                    Resume
-                  </button>
-                </Show>
-              </div>
-            </Show>
-            <Show when={`${a().id}:${a().generation}`} keyed>
-              <TerminalView
-                taskId={props.task.id}
-                agentId={a().id}
-                isFocused={isPanelFocused(props.task.id, aiTerminalPanelId(props.agentId))}
-                command={a().def.command}
-                args={[
-                  ...(a().resumed && a().def.resume_args?.length
-                    ? (a().def.resume_args ?? [])
-                    : a().def.args),
-                  ...(props.task.skipPermissions && a().def.skip_permissions_args?.length
-                    ? (a().def.skip_permissions_args ?? [])
-                    : []),
-                ]}
-                cwd={props.task.worktreePath}
-                stepsEnabled={props.task.stepsEnabled}
-                dockerMode={props.task.dockerMode}
-                dockerImage={props.task.dockerImage}
-                spawnDelayMs={a().spawnDelayMs}
-                attachExisting={a().attachExisting}
-                preserveOnWindowUnload
-                onExit={(code) => markAgentExited(a().id, code)}
-                onData={(data) => markAgentOutput(a().id, data, props.task.id)}
-                onFileLink={props.onFileLink}
-                onPromptDetected={(text) => setLastPrompt(props.task.id, text)}
-                onReady={(focusFn) => props.onReady(a().id, focusFn)}
-                onStepNavReady={props.onStepNavReady}
-                fontSize={13}
-              />
-            </Show>
-          </>
-        )}
-      </Show>
-    </div>
   );
 }
 

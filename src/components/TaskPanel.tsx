@@ -3,7 +3,6 @@ import {
   store,
   retryCloseTask,
   setActiveTask,
-  setActiveAgent,
   clearInitialPrompt,
   clearPrefillPrompt,
   getProject,
@@ -12,11 +11,12 @@ import {
   clearPendingAction,
   showNotification,
   setTaskSplitMode,
+  setTaskControl,
 } from '../store/store';
 import { useFocusRegistration } from '../lib/focus-registration';
 import { ResizablePanel, type PanelChild } from './ResizablePanel';
 import type { EditableTextHandle } from './EditableText';
-import { PromptInput } from './PromptInput';
+import { PromptInput, type PromptInputHandle } from './PromptInput';
 import { CloseTaskDialog } from './CloseTaskDialog';
 import { MergeDialog } from './MergeDialog';
 import { PushDialog } from './PushDialog';
@@ -34,6 +34,7 @@ import { TaskAITerminal } from './TaskAITerminal';
 import { TaskClosingOverlay } from './TaskClosingOverlay';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { SubTaskStrip } from './SubTaskStrip';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';
 import type { CommitInfo } from '../ipc/types';
@@ -69,6 +70,7 @@ export function TaskPanel(props: TaskPanelProps) {
   let panelRef!: HTMLDivElement;
   let promptRef: HTMLTextAreaElement | undefined;
   let titleEditHandle: EditableTextHandle | undefined;
+  let promptHandle: PromptInputHandle | undefined;
 
   // Two-column focus-mode layout kicks in once the task panel is wide enough.
   // Hysteresis: enter at >=1200, leave at <1150. A single threshold flickers
@@ -205,15 +207,7 @@ export function TaskPanel(props: TaskPanelProps) {
     });
   });
 
-  const selectedAgentId = () => {
-    const active = store.activeAgentId;
-    if (props.isActive && active && props.task.agentIds.includes(active)) return active;
-    if (props.task.selectedAgentId && props.task.agentIds.includes(props.task.selectedAgentId)) {
-      return props.task.selectedAgentId;
-    }
-    return props.task.agentIds[0] ?? '';
-  };
-  const initialPromptAgentId = () => props.task.agentIds[0] ?? '';
+  const firstAgentId = () => props.task.agentIds[0] ?? '';
 
   // Heavy components are created once and reused in both stack and split
   // layouts. Solid owns their reactive scope under TaskPanel (not under the
@@ -221,21 +215,34 @@ export function TaskPanel(props: TaskPanelProps) {
   // reparented instead of destroyed+recreated. That avoids the expensive
   // xterm.js teardown/reinit and scrollback replay on every layout flip.
   const aiTerminalEl = (
-    <TaskAITerminal
-      task={props.task}
-      isActive={props.isActive}
-      selectedAgentId={selectedAgentId()}
-      onSelectAgent={setActiveAgent}
-      onStepJumpReady={(fn, fromIdx) => {
-        setStepNav(fn ? { jump: fn, firstIndex: fromIdx } : undefined);
-      }}
-    />
+    <div style={{ position: 'relative', height: '100%' }}>
+      <TaskAITerminal
+        task={props.task}
+        isActive={props.isActive}
+        promptHandle={promptHandle}
+        onStepJumpReady={(fn, fromIdx) => {
+          setStepNav(fn ? { jump: fn, firstIndex: fromIdx } : undefined);
+        }}
+      />
+      <Show when={!!props.task.coordinatedBy && props.task.controlledBy !== 'human'}>
+        <div
+          style={{
+            position: 'absolute',
+            inset: '0',
+            'pointer-events': 'all',
+            cursor: 'not-allowed',
+            opacity: '0.3',
+            background: theme.taskPanelBg,
+          }}
+        />
+      </Show>
+    </div>
   );
   const shellSectionEl = <TaskShellSection task={props.task} isActive={props.isActive} />;
   const notesBodyEl = (
     <TaskNotesBody
       task={props.task}
-      agentId={selectedAgentId()}
+      agentId={firstAgentId()}
       onPlanFullscreen={() => setPlanFullscreen(true)}
     />
   );
@@ -275,17 +282,18 @@ export function TaskPanel(props: TaskPanelProps) {
     >
       <PromptInput
         taskId={props.task.id}
-        agentId={selectedAgentId()}
+        agentId={firstAgentId()}
+        coordinatedBy={props.task.coordinatedBy}
+        controlledBy={props.task.controlledBy}
+        stagedNotification={props.task.stagedNotification}
         initialPrompt={props.task.initialPrompt}
-        initialPromptAgentId={initialPromptAgentId()}
         prefillPrompt={props.task.prefillPrompt}
-        onSend={(_text, agentId) => {
-          if (props.task.initialPrompt && agentId === initialPromptAgentId()) {
-            clearInitialPrompt(props.task.id);
-          }
+        onSend={() => {
+          if (props.task.initialPrompt) clearInitialPrompt(props.task.id);
         }}
         onPrefillConsumed={() => clearPrefillPrompt(props.task.id)}
         ref={(el) => (promptRef = el)}
+        handle={(h) => (promptHandle = h)}
       />
     </div>
   );
@@ -384,6 +392,68 @@ export function TaskPanel(props: TaskPanelProps) {
         closingError={props.task.closingError}
         onRetry={() => retryCloseTask(props.task.id)}
       />
+      <Show when={!!props.task.coordinatedBy}>
+        <Show
+          when={props.task.controlledBy === 'human'}
+          fallback={
+            <div
+              style={{
+                background: theme.bgElevated,
+                'border-bottom': `1px solid ${theme.border}`,
+                padding: '6px 12px',
+                'font-size': '12px',
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'space-between',
+                color: theme.fgMuted,
+              }}
+            >
+              <span>Coordinator driving</span>
+              <button
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  'font-size': '12px',
+                  color: theme.accent,
+                }}
+                onClick={() => setTaskControl(props.task.id, 'human')}
+              >
+                Pause coordinator
+              </button>
+            </div>
+          }
+        >
+          <div
+            style={{
+              background: theme.warning,
+              padding: '6px 12px',
+              'font-size': '12px',
+              display: 'flex',
+              'align-items': 'center',
+              'justify-content': 'space-between',
+              color: 'rgba(0,0,0,0.85)',
+            }}
+          >
+            <span>You have control — coordinator is paused</span>
+            <button
+              style={{
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                'font-size': '12px',
+                color: 'rgba(0,0,0,0.75)',
+              }}
+              onClick={() => setTaskControl(props.task.id, 'coordinator')}
+            >
+              Resume coordinator
+            </button>
+          </div>
+        </Show>
+      </Show>
+      <Show when={props.task.coordinatorMode}>
+        <SubTaskStrip coordinatorTaskId={props.task.id} />
+      </Show>
       <div
         class="task-header-stack"
         style={{
@@ -521,7 +591,7 @@ export function TaskPanel(props: TaskPanelProps) {
           baseBranch={props.task.baseBranch}
           onClose={() => setDiffScrollTarget(null)}
           taskId={props.task.id}
-          agentId={selectedAgentId()}
+          agentId={props.task.agentIds[0]}
           commitList={commitList()}
           selectedCommit={selectedCommit()}
           onCommitNavigate={setSelectedCommit}
@@ -535,7 +605,7 @@ export function TaskPanel(props: TaskPanelProps) {
         planContent={props.task.planContent ?? ''}
         planFileName={props.task.planFileName ?? 'plan.md'}
         taskId={props.task.id}
-        agentId={selectedAgentId()}
+        agentId={props.task.agentIds[0]}
         worktreePath={props.task.worktreePath}
       />
     </div>

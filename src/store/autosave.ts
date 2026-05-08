@@ -33,6 +33,7 @@ function persistedSnapshot(): string {
     editorCommand: store.editorCommand,
     customAgents: store.customAgents,
     focusMode: store.focusMode,
+    coordinatorNotificationDelayMs: store.coordinatorNotificationDelayMs,
     shareDockerAgentAuth: store.shareDockerAgentAuth,
     tasks: Object.fromEntries(
       [...store.taskOrder, ...store.collapsedTaskOrder]
@@ -44,12 +45,7 @@ function persistedSnapshot(): string {
             {
               notes: t.notes,
               lastPrompt: t.lastPrompt,
-              promptedAgentIds: t.promptedAgentIds,
-              initialPrompt: t.initialPrompt,
               name: t.name,
-              agentIds: t.agentIds,
-              selectedAgentId: t.selectedAgentId,
-              agentDefs: t.agentIds.map((agentId) => store.agents[agentId]?.def?.id ?? null),
               gitIsolation: t.gitIsolation,
               baseBranch: t.baseBranch,
               branchName: t.branchName,

@@ -218,6 +218,23 @@ export function isPanelFocusedPrefix(taskId: string, prefix: string): boolean {
   return store.focusedPanel[taskId]?.startsWith(prefix) ?? false;
 }
 
+/**
+ * Whether a panel within a task should render its focus border. Returns false
+ * when focus has moved to the sidebar/placeholder, even though the previously
+ * focused panel is still recorded in `focusedPanel[taskId]`.
+ */
+export function isPanelFocused(taskId: string, panel: string): boolean {
+  if (store.sidebarFocused || store.placeholderFocused) return false;
+  if (store.activeTaskId !== taskId) return false;
+  return store.focusedPanel[taskId] === panel;
+}
+
+export function isPanelFocusedPrefix(taskId: string, prefix: string): boolean {
+  if (store.sidebarFocused || store.placeholderFocused) return false;
+  if (store.activeTaskId !== taskId) return false;
+  return store.focusedPanel[taskId]?.startsWith(prefix) ?? false;
+}
+
 export function setTaskFocusedPanel(taskId: string, panel: string): void {
   const normalizedPanel = normalizeTaskPanel(taskId, panel);
   setStore('focusedPanel', taskId, normalizedPanel);
