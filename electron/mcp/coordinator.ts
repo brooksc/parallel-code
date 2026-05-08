@@ -33,6 +33,7 @@ import { IPC } from '../ipc/channels.js';
 
 const DEFAULT_WAIT_TIMEOUT_MS = 300_000; // 5 minutes
 const PROMPT_WRITE_DELAY_MS = 50;
+const REST_SENTINEL = 'api'; // coordinatorTaskId used when a task is created via REST without a coordinator
 
 export class Coordinator {
   private tasks = new Map<string, CoordinatedTask>();
@@ -98,6 +99,10 @@ export class Coordinator {
   }
 
   setTaskControl(taskId: string, who: 'coordinator' | 'human'): void {
+    if (!this.tasks.has(taskId)) {
+      console.warn(`[coordinator] setTaskControl: unknown taskId ${taskId}`);
+      return;
+    }
     this.controlMap.set(taskId, who);
     if (who === 'coordinator') {
       // Fire any idle resolvers that were queued while human had control
@@ -264,13 +269,14 @@ export class Coordinator {
   async createTask(opts: {
     name: string;
     prompt?: string;
-    coordinatorTaskId: string;
+    coordinatorTaskId?: string;
     projectId?: string;
     projectRoot?: string;
     agentCommand?: string;
     agentArgs?: string[];
     skipPermissions?: boolean;
     baseBranch?: string;
+    gitIsolation?: string;
   }): Promise<CoordinatedTask> {
     const root = opts.projectRoot ?? this.projectRoot;
     const projId = opts.projectId ?? this.projectId;
@@ -286,9 +292,9 @@ export class Coordinator {
     );
 
     const coordinatorId =
-      opts.coordinatorTaskId !== 'api'
+      opts.coordinatorTaskId !== undefined
         ? opts.coordinatorTaskId
-        : (this.defaultCoordinatorTaskId ?? opts.coordinatorTaskId);
+        : (this.defaultCoordinatorTaskId ?? REST_SENTINEL);
 
     const agentId = randomUUID();
     const task: CoordinatedTask = {
@@ -558,6 +564,15 @@ export class Coordinator {
       getAllFileDiffs(task.worktreePath),
     ]);
 
+    const MAX_DIFF_BYTES = 50_000;
+    if (diff.length > MAX_DIFF_BYTES) {
+      return {
+        files,
+        diff: diff.slice(0, MAX_DIFF_BYTES) + '\n... (diff truncated)',
+        truncated: true,
+        originalSizeBytes: diff.length,
+      };
+    }
     return { files, diff };
   }
 

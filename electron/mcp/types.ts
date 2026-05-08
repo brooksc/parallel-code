@@ -114,6 +114,8 @@ export interface ApiDiffResult {
     committed: boolean;
   }>;
   diff: string;
+  truncated?: boolean;
+  originalSizeBytes?: number;
 }
 
 export interface ApiMergeResult {
