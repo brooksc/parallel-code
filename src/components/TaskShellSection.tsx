@@ -9,7 +9,10 @@ import {
   markAgentOutput,
   registerFocusFn,
   unregisterFocusFn,
+  setActiveTask,
   setTaskFocusedPanel,
+  isPanelFocused,
+  isPanelFocusedPrefix,
 } from '../store/store';
 import { TerminalView } from './TerminalView';
 import { theme } from '../lib/theme';
@@ -109,10 +112,7 @@ export function TaskShellSection(props: TaskShellSectionProps) {
         }}
         class="focusable-panel shell-toolbar-panel"
         data-panel-focused={
-          store.activeTaskId === props.task.id &&
-          store.focusedPanel[props.task.id]?.startsWith('shell-toolbar:')
-            ? 'true'
-            : 'false'
+          isPanelFocusedPrefix(props.task.id, 'shell-toolbar:') ? 'true' : 'false'
         }
         tabIndex={0}
         onClick={() => setTaskFocusedPanel(props.task.id, `shell-toolbar:${shellToolbarIdx()}`)}
@@ -157,6 +157,8 @@ export function TaskShellSection(props: TaskShellSectionProps) {
           class="icon-btn"
           onClick={(e) => {
             e.stopPropagation();
+            setActiveTask(props.task.id);
+            setTaskFocusedPanel(props.task.id, 'shell-toolbar:0');
             spawnShellForTask(props.task.id);
           }}
           tabIndex={-1}
@@ -172,6 +174,8 @@ export function TaskShellSection(props: TaskShellSectionProps) {
               class="icon-btn"
               onClick={(e) => {
                 e.stopPropagation();
+                setActiveTask(props.task.id);
+                setTaskFocusedPanel(props.task.id, `shell-toolbar:${i() + 1}`);
                 runBookmarkInTask(props.task.id, bookmark.command);
               }}
               tabIndex={-1}
@@ -211,13 +215,12 @@ export function TaskShellSection(props: TaskShellSectionProps) {
                 if (registeredKey) unregisterFocusFn(registeredKey);
               });
 
-              const isShellFocused = () => store.focusedPanel[props.task.id] === `shell:${i()}`;
+              const isShellPanelFocused = () => isPanelFocused(props.task.id, `shell:${i()}`);
 
               return (
                 <div
                   class="focusable-panel shell-terminal-container"
-                  data-panel-focused={props.isActive && isShellFocused() ? 'true' : 'false'}
-                  data-shell-focused={isShellFocused() ? 'true' : 'false'}
+                  data-panel-focused={isShellPanelFocused() ? 'true' : 'false'}
                   style={{
                     flex: '1',
                     overflow: 'hidden',
@@ -271,9 +274,7 @@ export function TaskShellSection(props: TaskShellSectionProps) {
                     taskId={props.task.id}
                     agentId={shellId}
                     isShell
-                    isFocused={
-                      props.isActive && store.focusedPanel[props.task.id] === `shell:${i()}`
-                    }
+                    isFocused={isShellPanelFocused()}
                     command={''}
                     args={['-l']}
                     cwd={props.task.worktreePath}

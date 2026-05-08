@@ -51,6 +51,7 @@ export const [store, setStore] = createStore<AppStore>({
   editorCommand: '',
   dockerImage: 'parallel-code-agent:latest',
   dockerAvailable: false,
+  shareDockerAgentAuth: false,
   askCodeProvider: 'claude',
   newTaskDropUrl: null,
   newTaskPrefillPrompt: null,
@@ -64,6 +65,10 @@ export const [store, setStore] = createStore<AppStore>({
     tailscaleUrl: null,
     connectedClients: 0,
   },
+  mcpStatus: {
+    mcpRunning: false,
+    remoteRunning: false,
+  },
   showArena: false,
   keybindingPreset: 'default',
   keybindingOverridesByPreset: {},
@@ -71,6 +76,8 @@ export const [store, setStore] = createStore<AppStore>({
   focusMode: false,
   taskSplitMode: {},
   verboseLogging: false,
+  coordinatorModeEnabled: false,
+  coordinatorNotificationDelayMs: 60_000,
 });
 
 type CleanupPanelStore = Pick<

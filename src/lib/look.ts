@@ -7,7 +7,9 @@ export type LookPreset =
   | 'glacier'
   | 'minimal'
   | 'zenburnesque'
+  | 'catppuccin-mocha'
   | 'islands-dark'
+  | 'islands-light'
   | 'workbench';
 
 export interface LookPresetOption {
@@ -21,6 +23,11 @@ export const LOOK_PRESETS: LookPresetOption[] = [
     id: 'islands-dark',
     label: 'Islands Dark',
     description: 'JetBrains-inspired dark panels on a tinted frame',
+  },
+  {
+    id: 'islands-light',
+    label: 'Islands Light',
+    description: 'JetBrains-inspired light panels on a soft tinted frame',
   },
   {
     id: 'minimal',
@@ -61,6 +68,11 @@ export const LOOK_PRESETS: LookPresetOption[] = [
     id: 'zenburnesque',
     label: 'Zenburnesque',
     description: 'Warm sage and muted earth tones',
+  },
+  {
+    id: 'catppuccin-mocha',
+    label: 'Catppuccin Mocha',
+    description: 'Pastel mauve accents on the cozy Catppuccin Mocha palette',
   },
   {
     id: 'workbench',

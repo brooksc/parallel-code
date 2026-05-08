@@ -40,12 +40,24 @@ interface CacheEntry {
   expiresAt: number;
 }
 
+interface PickedMergeBase {
+  sha: string;
+  ref: string;
+}
+
+interface DiffBaseCacheEntry {
+  value: PickedMergeBase;
+  expiresAt: number;
+}
+
 const mainBranchCache = new Map<string, CacheEntry>();
-const mergeBaseCache = new Map<string, CacheEntry>();
+const diffBaseCache = new Map<string, DiffBaseCacheEntry>();
 const MAIN_BRANCH_TTL = 60_000; // 60s
-const MERGE_BASE_TTL = 30_000; // 30s
+const DIFF_BASE_TTL = 30_000; // 30s
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const STDERR_CAP = 4096; // cap for stderr buffers in spawned git processes
+/** Git's well-known empty tree SHA — used to diff the initial commit against nothing. */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf899d69f82cf7202';
 
 // Sweep expired cache entries periodically so stale entries from repos that
 // are no longer queried don't accumulate (lazy deletion alone isn't enough).
@@ -55,8 +67,8 @@ setInterval(() => {
   for (const [k, v] of mainBranchCache) {
     if (v.expiresAt <= now) mainBranchCache.delete(k);
   }
-  for (const [k, v] of mergeBaseCache) {
-    if (v.expiresAt <= now) mergeBaseCache.delete(k);
+  for (const [k, v] of diffBaseCache) {
+    if (v.expiresAt <= now) diffBaseCache.delete(k);
   }
 }, CACHE_SWEEP_INTERVAL).unref();
 
@@ -77,8 +89,8 @@ async function isBinaryFile(filePath: string): Promise<boolean> {
   }
 }
 
-function invalidateMergeBaseCache(): void {
-  mergeBaseCache.clear();
+function invalidateDiffBaseCache(): void {
+  diffBaseCache.clear();
 }
 
 function cacheKey(p: string): string {
@@ -272,7 +284,7 @@ async function pickMergeBase(
   repoRoot: string,
   branch: string,
   head: string,
-): Promise<string | null> {
+): Promise<PickedMergeBase | null> {
   const [hasLocal, hasOrigin] = await Promise.all([
     localBranchExists(repoRoot, branch),
     remoteTrackingRefExists(repoRoot, branch),
@@ -295,9 +307,10 @@ async function pickMergeBase(
   ]);
 
   if (!localMb && !originMb) return null;
-  if (!localMb) return originMb;
-  if (!originMb) return localMb;
-  if (localMb === originMb) return localMb;
+  if (!localMb && originMb) return { sha: originMb, ref: `origin/${branch}` };
+  if (!originMb && localMb) return { sha: localMb, ref: branch };
+  if (!localMb || !originMb) return null;
+  if (localMb === originMb) return { sha: localMb, ref: branch };
 
   const isAncestor = async (anc: string, desc: string): Promise<boolean> => {
     try {
@@ -308,38 +321,181 @@ async function pickMergeBase(
     }
   };
 
-  if (await isAncestor(originMb, localMb)) return localMb;
-  if (await isAncestor(localMb, originMb)) return originMb;
-  return localMb;
+  if (await isAncestor(originMb, localMb)) return { sha: localMb, ref: branch };
+  if (await isAncestor(localMb, originMb)) return { sha: originMb, ref: `origin/${branch}` };
+  return { sha: localMb, ref: branch };
+}
+
+/**
+ * Refine a picked merge-base by dropping commits that are patch-equivalent
+ * to ones already on `base.ref` (rebased duplicates from a prior `git merge`
+ * of the upstream that was later rebased onto a new base).
+ *
+ * Uses git's built-in patch-id detection via `--cherry-pick --right-only`.
+ * The first call's `%H %P` format embeds the oldest unique commit's parent
+ * SHA so we don't need a separate `rev-parse` step.
+ *
+ * Three outcomes:
+ *  - **No unique commits** (branch is fully merged upstream): collapse the
+ *    diff range to `head...head` (empty) so the user sees zero changes
+ *    instead of the noisy patch-equivalent set.
+ *  - **Unique commits contiguous at the tip** (the common case for
+ *    agent-driven branches): refine the base to the oldest unique commit's
+ *    parent so the diff range only contains real branch work.
+ *  - **Interleaved** (a patch-equivalent commit sits between unique ones):
+ *    keep the picked base — accepting the noise is cheaper than stitching
+ *    per-commit patches. Logged for diagnostics.
+ *
+ * Any git invocation failure falls back to the picked base unchanged.
+ *
+ * Dual-side counterpart: `checkMergeStatus` applies `--cherry-pick
+ * --right-only` to `HEAD...<main>` to count *main's* unique commits not in
+ * HEAD (i.e. how stale HEAD is relative to main), so the merge dialog's
+ * "Rebase first" prompt agrees with this filter.
+ */
+async function refineDiffBaseWithCherryPick(
+  repoRoot: string,
+  base: PickedMergeBase,
+  head: string,
+): Promise<PickedMergeBase> {
+  let unique: string[];
+  let oldestParent: string | null = null;
+  try {
+    const { stdout } = await exec(
+      'git',
+      [
+        'log',
+        '--cherry-pick',
+        '--right-only',
+        '--no-merges',
+        '--reverse',
+        '--pretty=%H %P',
+        `${base.ref}...${head}`,
+      ],
+      { cwd: repoRoot, maxBuffer: MAX_BUFFER },
+    );
+    const lines = stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    unique = lines.map((line) => line.split(' ', 1)[0]);
+    if (lines.length > 0) {
+      // First line is the oldest unique commit (--reverse). With --no-merges
+      // every commit has exactly one parent, so the first SHA after the
+      // commit hash is that parent.
+      const parts = lines[0].split(' ');
+      oldestParent = parts[1] ?? null;
+    }
+  } catch {
+    return base;
+  }
+
+  if (unique.length === 0) {
+    // Fully merged upstream — every branch commit is patch-equivalent to
+    // one already on the base. Collapse the diff range to empty so the
+    // user sees no changes (instead of the noisy duplicated patch set
+    // that `base.ref...HEAD` would produce).
+    return { sha: head, ref: head };
+  }
+
+  if (!oldestParent) return base;
+
+  let rangeCount: number;
+  try {
+    const { stdout } = await exec(
+      'git',
+      ['rev-list', '--count', '--no-merges', `${oldestParent}..${head}`],
+      { cwd: repoRoot },
+    );
+    rangeCount = parseInt(stdout.trim(), 10);
+    if (isNaN(rangeCount)) return base;
+  } catch {
+    return base;
+  }
+
+  if (rangeCount === unique.length) {
+    return { sha: oldestParent, ref: oldestParent };
+  }
+
+  logDebug(
+    'git',
+    `cherry-pick refine: interleaved (unique=${unique.length}, range=${rangeCount}) — keeping ${base.ref}`,
+  );
+  return base;
+}
+
+/**
+ * Resolve both sides needed for one-way diffs.
+ *
+ * Git's three-dot diff is directional: `git diff base...head` means
+ * `git diff $(git merge-base base head) head`, while `git diff head...base`
+ * shows base-only commits. Keep the picked base ref around so committed-only
+ * diffs can use the correctly ordered three-dot range.
+ *
+ * Working-tree diffs are different: `git diff base...` still compares against
+ * HEAD, not the dirty working tree. For those callers, use `base.sha` as the
+ * single diff start point (`git diff <merge-base-sha>`) so tracked local edits
+ * remain visible.
+ *
+ * Result is post-refinement: rebased patch-equivalent commits are dropped from
+ * the diff range when possible. See `refineDiffBaseWithCherryPick`.
+ */
+async function detectDiffBase(
+  repoRoot: string,
+  head?: string,
+  baseBranch?: string,
+): Promise<PickedMergeBase> {
+  const branch = baseBranch ?? (await detectMainBranch(repoRoot));
+  // Resolve the literal 'HEAD' to its commit SHA so the cache key tracks
+  // HEAD movement. Otherwise a cached `{sha:'HEAD', ref:'HEAD'}` (returned
+  // by refineDiffBaseWithCherryPick when the branch was fully patch-
+  // equivalent to base) survives a new commit on the branch — callers then
+  // run `git log HEAD..HEAD` against the literal and see no commits, even
+  // though HEAD just moved forward.
+  const requestedHead = head ?? 'HEAD';
+  const headRef = requestedHead === 'HEAD' ? await pinHead(repoRoot) : requestedHead;
+  const key = `${cacheKey(repoRoot)}:${branch}:${headRef}`;
+  const cached = diffBaseCache.get(key);
+  if (cached) {
+    if (cached.expiresAt > Date.now()) return cached.value;
+    diffBaseCache.delete(key);
+  }
+
+  const picked = await pickMergeBase(repoRoot, branch, headRef);
+  if (!picked) return { sha: headRef, ref: headRef };
+
+  const refined = await refineDiffBaseWithCherryPick(repoRoot, picked, headRef);
+  diffBaseCache.set(key, { value: refined, expiresAt: Date.now() + DIFF_BASE_TTL });
+  return refined;
 }
 
 /**
  * Resolve the diff base SHA for `head` against `baseBranch` (or the detected
- * main branch). Delegates ref-picking to `pickMergeBase`; falls back to
- * `headRef` when no candidate ref resolves so callers diff against themselves
- * (empty diff) rather than against the branch tip.
+ * main branch). Falls back to `headRef` when no candidate ref resolves so
+ * callers diff against themselves (empty diff) rather than against the branch
+ * tip.
  */
 async function detectMergeBase(
   repoRoot: string,
   head?: string,
   baseBranch?: string,
 ): Promise<string> {
-  const branch = baseBranch ?? (await detectMainBranch(repoRoot));
   const headRef = head ?? 'HEAD';
-  const key = `${cacheKey(repoRoot)}:${branch}:${headRef}`;
-  const cached = mergeBaseCache.get(key);
-  if (cached) {
-    if (cached.expiresAt > Date.now()) return cached.value;
-    mergeBaseCache.delete(key);
-  }
+  const result = await detectDiffBase(repoRoot, headRef, baseBranch);
+  return result.sha;
+}
 
-  const picked = await pickMergeBase(repoRoot, branch, headRef);
-  if (picked) {
-    mergeBaseCache.set(key, { value: picked, expiresAt: Date.now() + MERGE_BASE_TTL });
-    return picked;
-  }
+function oneWayDiffRange(base: PickedMergeBase, head: string): string {
+  return `${base.ref}...${head}`;
+}
 
-  return headRef;
+async function detectOneWayDiffRange(
+  repoRoot: string,
+  head?: string,
+  baseBranch?: string,
+): Promise<string> {
+  const headRef = head ?? 'HEAD';
+  return oneWayDiffRange(await detectDiffBase(repoRoot, headRef, baseBranch), headRef);
 }
 
 async function pinHead(worktreePath: string): Promise<string> {
@@ -491,8 +647,8 @@ async function computeBranchDiffStats(
   mainBranch: string,
   branchName: string,
 ): Promise<{ linesAdded: number; linesRemoved: number }> {
-  const base = await detectMergeBase(projectRoot, branchName, mainBranch);
-  const { stdout } = await exec('git', ['diff', '--numstat', base, branchName], {
+  const diffRange = await detectOneWayDiffRange(projectRoot, branchName, mainBranch);
+  const { stdout } = await exec('git', ['diff', '--numstat', diffRange], {
     cwd: projectRoot,
     maxBuffer: MAX_BUFFER,
   });
@@ -823,12 +979,18 @@ export async function getChangedFiles(
 ): Promise<ChangedFile[]> {
   const headHash = await pinHead(worktreePath);
 
-  // Diff merge-base → HEAD: one-way diff showing only what the feature branch changed.
-  const base = await detectMergeBase(worktreePath, headHash, baseBranch).catch(() => headHash);
+  // One-way diff from the base branch's merge-base to HEAD. The three-dot
+  // range is intentionally ordered as base...head so base-only commits do not
+  // show up as changed files on stale task branches.
+  const diffBase = await detectDiffBase(worktreePath, headHash, baseBranch).catch(() => ({
+    sha: headHash,
+    ref: headHash,
+  }));
+  const diffRange = oneWayDiffRange(diffBase, headHash);
 
   let diffStr = '';
   try {
-    const { stdout } = await exec('git', ['diff', '--raw', '--numstat', base, headHash], {
+    const { stdout } = await exec('git', ['diff', '--raw', '--numstat', diffRange], {
       cwd: worktreePath,
       maxBuffer: MAX_BUFFER,
     });
@@ -868,7 +1030,7 @@ export async function getChangedFiles(
   const files: ChangedFile[] = [];
   const seen = new Set<string>();
 
-  // Committed files from diff base..HEAD
+  // Committed files from the one-way base...HEAD diff
   for (const [p, [added, removed]] of committedNumstatMap) {
     const status = committedStatusMap.get(p) ?? 'M';
     // If also in uncommitted diff, mark as uncommitted (has local changes on top)
@@ -928,16 +1090,65 @@ export async function getChangedFiles(
   return files;
 }
 
+async function buildUntrackedPseudoDiffs(worktreePath: string): Promise<string[]> {
+  const parts: string[] = [];
+  let stdout = '';
+  try {
+    const result = await exec('git', ['ls-files', '--others', '--exclude-standard'], {
+      cwd: worktreePath,
+      maxBuffer: MAX_BUFFER,
+    });
+    stdout = result.stdout;
+  } catch {
+    return parts;
+  }
+
+  for (const line of stdout.split('\n')) {
+    const filePath = normalizeStatusPath(line);
+    if (!filePath) continue;
+    const fullPath = path.join(worktreePath, filePath);
+    try {
+      const stat = await fs.promises.stat(fullPath);
+      if (!stat.isFile() || stat.size >= MAX_BUFFER) continue;
+      if (await isBinaryFile(fullPath)) {
+        parts.push(
+          `diff --git a/${filePath} b/${filePath}\nnew file mode 100644\nBinary files /dev/null and b/${filePath} differ\n`,
+        );
+        continue;
+      }
+      const content = await fs.promises.readFile(fullPath, 'utf8');
+      const lines = content.split('\n');
+      const lineCount = content.endsWith('\n') ? lines.length - 1 : lines.length;
+      const pseudoLines: string[] = [];
+      pseudoLines.push(`diff --git a/${filePath} b/${filePath}`);
+      pseudoLines.push('new file mode 100644');
+      pseudoLines.push('--- /dev/null');
+      pseudoLines.push(`+++ b/${filePath}`);
+      pseudoLines.push(`@@ -0,0 +1,${lineCount} @@`);
+      for (let i = 0; i < lineCount; i++) {
+        pseudoLines.push(`+${lines[i]}`);
+      }
+      parts.push(pseudoLines.join('\n') + '\n');
+    } catch {
+      /* skip unreadable files */
+    }
+  }
+  return parts;
+}
+
 export async function getAllFileDiffs(worktreePath: string, baseBranch?: string): Promise<string> {
   const headHash = await pinHead(worktreePath);
 
-  // Diff merge-base → working tree: one-way diff showing only feature branch changes
-  // (including uncommitted edits).
-  const base = await detectMergeBase(worktreePath, headHash, baseBranch).catch(() => headHash);
+  // For working-tree output, use the merge-base SHA as a single diff start
+  // point. `git diff base...` would stop at HEAD and hide tracked local edits.
+  const diffBase = await detectDiffBase(worktreePath, headHash, baseBranch).catch(() => ({
+    sha: headHash,
+    ref: headHash,
+  }));
 
   let combinedDiff = '';
   try {
-    const { stdout } = await exec('git', ['diff', '-U3', base], {
+    const { stdout } = await exec('git', ['diff', '-U3', diffBase.sha], {
       cwd: worktreePath,
       maxBuffer: MAX_BUFFER,
     });
@@ -946,47 +1157,29 @@ export async function getAllFileDiffs(worktreePath: string, baseBranch?: string)
     /* empty */
   }
 
-  // Untracked files: build pseudo-diffs
-  const untrackedParts: string[] = [];
+  const untrackedParts = await buildUntrackedPseudoDiffs(worktreePath);
+  const parts = [combinedDiff, untrackedParts.join('')].filter((p) => p.length > 0);
+  return parts.join('\n');
+}
+
+export async function getUncommittedFileDiffs(worktreePath: string): Promise<string> {
+  const headHash = await pinHead(worktreePath);
+
+  // Diff against HEAD captures only tracked uncommitted changes (working tree
+  // vs HEAD), excluding committed work. Uses the HEAD SHA directly so it does
+  // not need the index lock and works while an agent holds it.
+  let combinedDiff = '';
   try {
-    const { stdout } = await exec('git', ['ls-files', '--others', '--exclude-standard'], {
+    const { stdout } = await exec('git', ['diff', '-U3', headHash], {
       cwd: worktreePath,
       maxBuffer: MAX_BUFFER,
     });
-    for (const line of stdout.split('\n')) {
-      const filePath = normalizeStatusPath(line);
-      if (!filePath) continue;
-      const fullPath = path.join(worktreePath, filePath);
-      try {
-        const stat = await fs.promises.stat(fullPath);
-        if (!stat.isFile() || stat.size >= MAX_BUFFER) continue;
-        if (await isBinaryFile(fullPath)) {
-          untrackedParts.push(
-            `diff --git a/${filePath} b/${filePath}\nnew file mode 100644\nBinary files /dev/null and b/${filePath} differ\n`,
-          );
-          continue;
-        }
-        const content = await fs.promises.readFile(fullPath, 'utf8');
-        const lines = content.split('\n');
-        const lineCount = content.endsWith('\n') ? lines.length - 1 : lines.length;
-        const pseudoLines: string[] = [];
-        pseudoLines.push(`diff --git a/${filePath} b/${filePath}`);
-        pseudoLines.push('new file mode 100644');
-        pseudoLines.push('--- /dev/null');
-        pseudoLines.push(`+++ b/${filePath}`);
-        pseudoLines.push(`@@ -0,0 +1,${lineCount} @@`);
-        for (let i = 0; i < lineCount; i++) {
-          pseudoLines.push(`+${lines[i]}`);
-        }
-        untrackedParts.push(pseudoLines.join('\n') + '\n');
-      } catch {
-        /* skip unreadable files */
-      }
-    }
+    combinedDiff = stdout;
   } catch {
     /* empty */
   }
 
+  const untrackedParts = await buildUntrackedPseudoDiffs(worktreePath);
   const parts = [combinedDiff, untrackedParts.join('')].filter((p) => p.length > 0);
   return parts.join('\n');
 }
@@ -996,10 +1189,9 @@ export async function getAllFileDiffsFromBranch(
   branchName: string,
   baseBranch?: string,
 ): Promise<string> {
-  const mainBranch = baseBranch ?? (await detectMainBranch(projectRoot));
-  const base = await detectMergeBase(projectRoot, branchName, mainBranch);
+  const diffRange = await detectOneWayDiffRange(projectRoot, branchName, baseBranch);
   try {
-    const { stdout } = await exec('git', ['diff', '-U3', base, branchName], {
+    const { stdout } = await exec('git', ['diff', '-U3', diffRange], {
       cwd: projectRoot,
       maxBuffer: MAX_BUFFER,
     });
@@ -1021,7 +1213,11 @@ export async function getFileDiff(
   baseBranch?: string,
 ): Promise<FileDiffResult> {
   const headHash = await pinHead(worktreePath);
-  const base = await detectMergeBase(worktreePath, headHash, baseBranch).catch(() => headHash);
+  const diffBase = await detectDiffBase(worktreePath, headHash, baseBranch).catch(() => ({
+    sha: headHash,
+    ref: headHash,
+  }));
+  const base = diffBase.sha;
 
   // Old content from merge-base (what existed when the branch was created)
   let oldContent = '';
@@ -1091,7 +1287,8 @@ export async function getFileDiff(
   // Generate diff between merge-base and HEAD for committed files
   let diff = '';
   try {
-    const { stdout } = await exec('git', ['diff', base, headHash, '--', filePath], {
+    const diffRange = oneWayDiffRange(diffBase, headHash);
+    const { stdout } = await exec('git', ['diff', diffRange, '--', filePath], {
       cwd: worktreePath,
       maxBuffer: MAX_BUFFER,
     });
@@ -1238,11 +1435,22 @@ export async function checkMergeStatus(
 ): Promise<{ main_ahead_count: number; conflicting_files: string[]; base_branch: string }> {
   const mainBranch = baseBranch ?? (await detectMainBranch(worktreePath));
 
+  // Count main commits not in HEAD, excluding patch-equivalents already
+  // applied via rebase/cherry-pick. Mirrors the `--cherry-pick --right-only`
+  // filter `refineDiffBaseWithCherryPick` uses on the diff side, so the
+  // dialog doesn't demand a needless rebase when HEAD's history already
+  // carries main's recent commits with different SHAs. Unlike the diff-side
+  // helper we *don't* pass `--no-merges`: it's load-bearing there for `%H %P`
+  // single-parent parsing, but here it would silently drop merge commits
+  // that brought genuinely-new content into main (so-called "evil merges"),
+  // turning a real "rebase first" warning into a quiet zero.
   let mainAheadCount = 0;
   try {
-    const { stdout } = await exec('git', ['rev-list', '--count', `HEAD..${mainBranch}`], {
-      cwd: worktreePath,
-    });
+    const { stdout } = await exec(
+      'git',
+      ['rev-list', '--count', '--cherry-pick', '--right-only', `HEAD...${mainBranch}`],
+      { cwd: worktreePath },
+    );
     mainAheadCount = parseInt(stdout.trim(), 10) || 0;
   } catch {
     /* ignore */
@@ -1370,7 +1578,7 @@ export async function mergeTask(
       }
     }
 
-    invalidateMergeBaseCache();
+    invalidateDiffBaseCache();
 
     if (cleanup) {
       await removeWorktree(projectRoot, branchName, true);
@@ -1400,12 +1608,11 @@ export async function getChangedFilesFromBranch(
   branchName: string,
   baseBranch?: string,
 ): Promise<ChangedFile[]> {
-  const mainBranch = baseBranch ?? (await detectMainBranch(projectRoot));
-  const base = await detectMergeBase(projectRoot, branchName, mainBranch);
+  const diffRange = await detectOneWayDiffRange(projectRoot, branchName, baseBranch);
 
   let diffStr = '';
   try {
-    const { stdout } = await exec('git', ['diff', '--raw', '--numstat', base, branchName], {
+    const { stdout } = await exec('git', ['diff', '--raw', '--numstat', diffRange], {
       cwd: projectRoot,
       maxBuffer: MAX_BUFFER,
     });
@@ -1439,12 +1646,13 @@ export async function getFileDiffFromBranch(
   filePath: string,
   baseBranch?: string,
 ): Promise<FileDiffResult> {
-  const mainBranch = baseBranch ?? (await detectMainBranch(projectRoot));
-  const base = await detectMergeBase(projectRoot, branchName, mainBranch);
+  const diffBase = await detectDiffBase(projectRoot, branchName, baseBranch);
+  const base = diffBase.sha;
+  const diffRange = oneWayDiffRange(diffBase, branchName);
 
   let diff = '';
   try {
-    const { stdout } = await exec('git', ['diff', base, branchName, '--', filePath], {
+    const { stdout } = await exec('git', ['diff', diffRange, '--', filePath], {
       cwd: projectRoot,
       maxBuffer: MAX_BUFFER,
     });
@@ -1548,7 +1756,7 @@ export async function rebaseTask(worktreePath: string, baseBranch?: string): Pro
       );
       throw new Error(`Rebase failed: ${e}`);
     }
-    invalidateMergeBaseCache();
+    invalidateDiffBaseCache();
   });
 }
 
@@ -1574,12 +1782,45 @@ export interface CommitInfo {
 export async function getBranchCommits(
   worktreePath: string,
   baseBranch?: string,
+  recentFallback?: number,
 ): Promise<CommitInfo[]> {
   const mergeBase = await detectMergeBase(worktreePath, 'HEAD', baseBranch);
   try {
     const { stdout } = await exec(
       'git',
       ['log', `${mergeBase}..HEAD`, '--pretty=format:%H%x00%s', '--reverse'],
+      { cwd: worktreePath, maxBuffer: MAX_BUFFER },
+    );
+    if (!stdout.trim()) {
+      // No branch-specific commits (e.g. direct mode on main). If a recent
+      // fallback count was requested, list the last N commits from HEAD so
+      // the user can still navigate commit history.
+      if (recentFallback && recentFallback > 0) {
+        return getRecentCommits(worktreePath, recentFallback);
+      }
+      return [];
+    }
+    return stdout
+      .trim()
+      .split('\n')
+      .map((line) => {
+        const sep = line.indexOf('\0');
+        return {
+          hash: sep >= 0 ? line.slice(0, sep) : line,
+          message: sep >= 0 ? line.slice(sep + 1) : '',
+        };
+      });
+  } catch (err) {
+    logDebug('git', `getBranchCommits failed for ${worktreePath}: ${err}`);
+    return [];
+  }
+}
+
+async function getRecentCommits(worktreePath: string, count: number): Promise<CommitInfo[]> {
+  try {
+    const { stdout } = await exec(
+      'git',
+      ['log', `--max-count=${count}`, '--pretty=format:%H%x00%s', '--reverse'],
       { cwd: worktreePath, maxBuffer: MAX_BUFFER },
     );
     if (!stdout.trim()) return [];
@@ -1593,7 +1834,8 @@ export async function getBranchCommits(
           message: sep >= 0 ? line.slice(sep + 1) : '',
         };
       });
-  } catch {
+  } catch (err) {
+    logDebug('git', `getRecentCommits failed for ${worktreePath}: ${err}`);
     return [];
   }
 }
@@ -1611,7 +1853,18 @@ export async function getCommitChangedFiles(
     );
     diffStr = stdout;
   } catch {
-    return [];
+    // Likely the initial commit (no parent). Diff against the empty tree.
+    try {
+      const { stdout } = await exec(
+        'git',
+        ['diff', '--raw', '--numstat', `${EMPTY_TREE}..${commitHash}`],
+        { cwd: worktreePath, maxBuffer: MAX_BUFFER },
+      );
+      diffStr = stdout;
+    } catch (err) {
+      logDebug('git', `getCommitChangedFiles failed for ${commitHash} in ${worktreePath}: ${err}`);
+      return [];
+    }
   }
 
   const { statusMap, numstatMap } = parseDiffRawNumstat(diffStr);
@@ -1638,6 +1891,16 @@ export async function getCommitDiffs(worktreePath: string, commitHash: string): 
     });
     return stdout;
   } catch {
-    return '';
+    // Likely the initial commit (no parent). Diff against the empty tree.
+    try {
+      const { stdout } = await exec('git', ['diff', '-U3', `${EMPTY_TREE}..${commitHash}`], {
+        cwd: worktreePath,
+        maxBuffer: MAX_BUFFER,
+      });
+      return stdout;
+    } catch (err) {
+      logDebug('git', `getCommitDiffs failed for ${commitHash} in ${worktreePath}: ${err}`);
+      return '';
+    }
   }
 }

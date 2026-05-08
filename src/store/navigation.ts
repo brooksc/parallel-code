@@ -2,7 +2,6 @@ import { store, setStore } from './core';
 import { getTaskFocusedPanel, setTaskFocusedPanel } from './focus';
 import { showNotification } from './notification';
 import { pickAndAddProject } from './projects';
-import { computeSidebarTaskOrder } from './sidebar-order';
 import { reorderTask } from './tasks';
 
 export function setActiveTask(id: string): void {
@@ -50,8 +49,9 @@ export function moveActiveTask(direction: 'left' | 'right'): void {
 }
 
 export function jumpToTask(index: number): void {
-  const order = computeSidebarTaskOrder();
-  const id = order[index];
+  // Index against taskOrder so Cmd+N matches the left-to-right tile order
+  // shown in the main area (and the order Cmd+Left/Right cycles through).
+  const id = store.taskOrder[index];
   if (id) setActiveTask(id);
 }
 

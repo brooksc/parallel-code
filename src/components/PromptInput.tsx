@@ -1,5 +1,5 @@
-import { createSignal, createEffect, onMount, onCleanup, untrack } from 'solid-js';
-import { fireAndForget } from '../lib/ipc';
+import { createSignal, createEffect, Show, onMount, onCleanup, untrack } from 'solid-js';
+import { fireAndForget, invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import {
   store,
@@ -20,7 +20,10 @@ import {
   getTaskFocusedPanel,
   setTaskFocusedPanel,
   setTaskLastInputAt,
+  isPanelFocused,
 } from '../store/store';
+import { clearStagedNotification, setStagedNotificationUserEdited } from '../store/tasks';
+import type { StagedNotification } from '../store/types';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 
@@ -32,6 +35,9 @@ export interface PromptInputHandle {
 interface PromptInputProps {
   taskId: string;
   agentId: string;
+  coordinatedBy?: string;
+  controlledBy?: 'human' | 'coordinator';
+  stagedNotification?: StagedNotification;
   initialPrompt?: string;
   prefillPrompt?: string;
   onPrefillConsumed?: () => void;
@@ -298,6 +304,72 @@ export function PromptInput(props: PromptInputProps) {
     untrack(() => props.onPrefillConsumed?.());
   });
 
+  // --- Staged coordinator notification auto-fire ---
+  let autoFireInterval: number | undefined;
+
+  createEffect(() => {
+    const notification = props.stagedNotification;
+
+    if (autoFireInterval !== undefined) {
+      clearInterval(autoFireInterval);
+      autoFireInterval = undefined;
+    }
+
+    if (!notification || notification.userEdited) return;
+
+    // If the user already has content in the textarea, don't overwrite — treat
+    // the notification as user-edited so auto-fire doesn't clobber their text.
+    const currentText = untrack(() => text());
+    if (currentText.trim()) {
+      setStagedNotificationUserEdited(props.taskId);
+      return;
+    }
+
+    setText(notification.text);
+
+    // eslint-disable-next-line solid/reactivity -- intentional untracked reads in interval
+    autoFireInterval = window.setInterval(() => {
+      // Use untrack — we intentionally read current values on each tick
+      // without subscribing to changes (the outer createEffect handles re-runs).
+      const staged = untrack(() => props.stagedNotification);
+      if (!staged || staged.userEdited) {
+        clearInterval(autoFireInterval);
+        autoFireInterval = undefined;
+        return;
+      }
+      if (Date.now() < staged.autoFireAt) return;
+
+      const tail = stripAnsi(untrack(() => getAgentOutputTail(props.agentId)));
+      const hasPrompt = /[❯›]/.test(tail.slice(-PROMPT_MARKER_SCAN_CHARS));
+      if (!hasPrompt) return;
+
+      clearInterval(autoFireInterval);
+      autoFireInterval = undefined;
+      const taskId = props.taskId;
+      const agentId = props.agentId;
+      void (async () => {
+        try {
+          await sendPrompt(taskId, agentId, staged.text);
+          await invoke(IPC.MCP_CoordinatorNotificationAck, {
+            coordinatorTaskId: taskId,
+            batchId: staged.batchId,
+          });
+          clearStagedNotification(taskId);
+          setText('');
+        } catch (e) {
+          console.error('[coordinator] Auto-fire failed:', e);
+        }
+      })();
+    }, 1_000);
+  });
+
+  onCleanup(() => {
+    if (autoFireInterval !== undefined) {
+      clearInterval(autoFireInterval);
+      autoFireInterval = undefined;
+    }
+  });
+
   // When the agent shows a question/dialog, focus the terminal so the user
   // can interact with the TUI directly.
   const questionActive = () => isAgentAskingQuestion(props.agentId);
@@ -404,6 +476,27 @@ export function PromptInput(props: PromptInputProps) {
 
       if (props.initialPrompt?.trim()) {
         setAutoSentInitialPrompt(props.initialPrompt.trim());
+        if (props.coordinatedBy) {
+          invoke(IPC.MCP_CoordinatedTaskPromptDelivered, { taskId: props.taskId }).catch(() => {});
+        }
+      }
+      // If the user manually sent the staged notification text exactly, ack it
+      const staged = props.stagedNotification;
+      if (staged && !staged.userEdited && val === staged.text) {
+        const ackTaskId = props.taskId;
+        invoke(IPC.MCP_CoordinatorNotificationAck, {
+          coordinatorTaskId: ackTaskId,
+          batchId: staged.batchId,
+        })
+          .then(() => clearStagedNotification(ackTaskId))
+          .catch(() => {});
+      } else if (staged?.userEdited && staged.notificationIds.length > 0) {
+        // User sent their own message while a coordinator notification was pending.
+        // Reschedule the re-stage timer so the pending notifications reappear after
+        // COORDINATOR_RESTAMP_DELAY_MS, independently of new sub-task completions.
+        invoke(IPC.MCP_CoordinatorRestageAfterUserSend, {
+          coordinatorTaskId: props.taskId,
+        }).catch(() => {});
       }
       props.onSend?.(val);
       setText('');
@@ -417,11 +510,7 @@ export function PromptInput(props: PromptInputProps) {
   return (
     <div
       class="focusable-panel prompt-input-panel"
-      data-panel-focused={
-        store.activeTaskId === props.taskId && store.focusedPanel[props.taskId] === 'prompt'
-          ? 'true'
-          : 'false'
-      }
+      data-panel-focused={isPanelFocused(props.taskId, 'prompt') ? 'true' : 'false'}
       style={{ display: 'flex', height: '100%', padding: '4px 6px', 'border-radius': '12px' }}
     >
       <div style={{ position: 'relative', flex: '1', display: 'flex' }}>
@@ -433,8 +522,15 @@ export function PromptInput(props: PromptInputProps) {
           }}
           rows={3}
           value={text()}
-          disabled={questionActive()}
-          onInput={(e) => setText(e.currentTarget.value)}
+          disabled={questionActive() || props.controlledBy === 'coordinator'}
+          onInput={(e) => {
+            const val = e.currentTarget.value;
+            setText(val);
+            const staged = props.stagedNotification;
+            if (staged && !staged.userEdited) {
+              setStagedNotificationUserEdited(props.taskId);
+            }
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -442,9 +538,11 @@ export function PromptInput(props: PromptInputProps) {
             }
           }}
           placeholder={
-            questionActive()
-              ? 'Agent is waiting for input in terminal…'
-              : 'Send a prompt... (Enter to send, Shift+Enter for newline)'
+            props.controlledBy === 'coordinator'
+              ? 'Coordinator is driving — click "Pause coordinator" to type'
+              : questionActive()
+                ? 'Agent is waiting for input in terminal…'
+                : 'Send a prompt... (Enter to send, Shift+Enter for newline)'
           }
           style={{
             flex: '1',
@@ -457,13 +555,13 @@ export function PromptInput(props: PromptInputProps) {
             'font-family': "'JetBrains Mono', monospace",
             resize: 'none',
             outline: 'none',
-            opacity: questionActive() ? '0.5' : '1',
+            opacity: questionActive() || props.controlledBy === 'coordinator' ? '0.5' : '1',
           }}
         />
         <button
           class="prompt-send-btn"
           type="button"
-          disabled={!text().trim() || questionActive()}
+          disabled={!text().trim() || questionActive() || props.controlledBy === 'coordinator'}
           onClick={() => handleSend()}
           style={{
             position: 'absolute',
@@ -494,6 +592,27 @@ export function PromptInput(props: PromptInputProps) {
             />
           </svg>
         </button>
+        <Show
+          when={
+            !!props.stagedNotification?.userEdited &&
+            (props.stagedNotification?.hiddenCompletionCount ?? 0) > 0
+          }
+        >
+          <div
+            style={{
+              position: 'absolute',
+              bottom: '40px',
+              right: '6px',
+              'font-size': '11px',
+              color: theme.fgSubtle,
+              background: theme.bgHover,
+              padding: '2px 6px',
+              'border-radius': '4px',
+            }}
+          >
+            + {props.stagedNotification?.hiddenCompletionCount} more task(s) completed
+          </div>
+        </Show>
       </div>
     </div>
   );

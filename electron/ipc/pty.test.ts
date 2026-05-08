@@ -4,63 +4,66 @@ import path from 'path';
 import type { BrowserWindow } from 'electron';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockExecFileSync, mockExecFile, mockChildProcessSpawn, mockPtySpawn } = vi.hoisted(() => {
-  const mockExecFileSync = vi.fn((command: string, args?: string[]) => {
-    if (command === 'which' && args?.[0] === 'nonexistent-binary-xyz') {
-      throw new Error('not found');
-    }
-    return '';
-  });
+const { mockExecFileSync, mockExecFile, mockChildProcessSpawn, mockPtySpawn, mockLogDebug } =
+  vi.hoisted(() => {
+    const mockExecFileSync = vi.fn((command: string, args?: string[]) => {
+      if (command === 'which' && args?.[0] === 'nonexistent-binary-xyz') {
+        throw new Error('not found');
+      }
+      return '';
+    });
 
-  const mockExecFile = vi.fn();
-  const mockChildProcessSpawn = vi.fn(() => ({
-    stdout: { on: vi.fn() },
-    stderr: { on: vi.fn() },
-    on: vi.fn(),
-  }));
+    const mockExecFile = vi.fn();
+    const mockChildProcessSpawn = vi.fn(() => ({
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+    }));
 
-  const mockPtySpawn = vi.fn(
-    (_command: string, _args: string[], options: { cols: number; rows: number }) => {
-      let onDataHandler: ((data: string) => void) | undefined;
-      let onExitHandler:
-        | ((event: { exitCode: number; signal: number | undefined }) => void)
-        | undefined;
+    const mockPtySpawn = vi.fn(
+      (_command: string, _args: string[], options: { cols: number; rows: number }) => {
+        let onDataHandler: ((data: string) => void) | undefined;
+        let onExitHandler:
+          | ((event: { exitCode: number; signal: number | undefined }) => void)
+          | undefined;
 
-      const proc = {
-        cols: options.cols,
-        rows: options.rows,
-        write: vi.fn(),
-        resize: vi.fn((cols: number, rows: number) => {
-          proc.cols = cols;
-          proc.rows = rows;
-        }),
-        pause: vi.fn(),
-        resume: vi.fn(),
-        kill: vi.fn(() => {
-          onExitHandler?.({ exitCode: 0, signal: 15 });
-        }),
-        onData: vi.fn((handler: (data: string) => void) => {
-          onDataHandler = handler;
-        }),
-        onExit: vi.fn(
-          (handler: (event: { exitCode: number; signal: number | undefined }) => void) => {
-            onExitHandler = handler;
+        const proc = {
+          cols: options.cols,
+          rows: options.rows,
+          write: vi.fn(),
+          resize: vi.fn((cols: number, rows: number) => {
+            proc.cols = cols;
+            proc.rows = rows;
+          }),
+          pause: vi.fn(),
+          resume: vi.fn(),
+          kill: vi.fn(() => {
+            onExitHandler?.({ exitCode: 0, signal: 15 });
+          }),
+          onData: vi.fn((handler: (data: string) => void) => {
+            onDataHandler = handler;
+          }),
+          onExit: vi.fn(
+            (handler: (event: { exitCode: number; signal: number | undefined }) => void) => {
+              onExitHandler = handler;
+            },
+          ),
+          emitData(data: string) {
+            onDataHandler?.(data);
           },
-        ),
-        emitData(data: string) {
-          onDataHandler?.(data);
-        },
-        emitExit(event: { exitCode: number; signal: number | undefined }) {
-          onExitHandler?.(event);
-        },
-      };
+          emitExit(event: { exitCode: number; signal: number | undefined }) {
+            onExitHandler?.(event);
+          },
+        };
 
-      return proc;
-    },
-  );
+        return proc;
+      },
+    );
 
-  return { mockExecFileSync, mockExecFile, mockChildProcessSpawn, mockPtySpawn };
-});
+    const mockLogDebug = vi.fn();
+
+    return { mockExecFileSync, mockExecFile, mockChildProcessSpawn, mockPtySpawn, mockLogDebug };
+  });
 
 vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
@@ -74,6 +77,10 @@ vi.mock('child_process', async () => {
 
 vi.mock('node-pty', () => ({
   spawn: mockPtySpawn,
+}));
+
+vi.mock('../log.js', () => ({
+  debug: mockLogDebug,
 }));
 
 import {
@@ -119,6 +126,7 @@ function buildSpawnArgs(
     rows: 40,
     dockerMode: true,
     dockerImage: 'parallel-code-agent:test',
+    shareDockerAgentAuth: false,
     onOutput: { __CHANNEL_ID__: 'channel-1' },
     ...overrides,
   };
@@ -153,6 +161,14 @@ function getFlagValues(args: string[], flag: string): string[] {
     }
   }
   return values;
+}
+
+function getSpawnCommandLogCtx(): { args: string[]; command: string } {
+  const call = mockLogDebug.mock.calls.find(
+    ([category, msg]) => category === 'pty' && String(msg).startsWith('spawn command '),
+  );
+  expect(call).toBeTruthy();
+  return call?.[2] as { args: string[]; command: string };
 }
 
 function makeTempHome(entries: string[]): string {
@@ -229,6 +245,61 @@ describe('spawnAgent docker mode', () => {
     expect(envFlags).not.toContain(`HOME=${rendererHome}`);
   });
 
+  it('redacts docker env values in spawn debug logs', () => {
+    spawnAgent(
+      createMockWindow(),
+      buildSpawnArgs({
+        env: {
+          API_KEY: 'secret-api-key',
+          NO_VALUE: '',
+        },
+      }),
+    );
+
+    const ctx = getSpawnCommandLogCtx();
+    const logged = ctx.args.join(' ');
+
+    expect(ctx.command).toBe('docker');
+    expect(getFlagValues(ctx.args, '-e')).toContain('API_KEY=<redacted>');
+    expect(getFlagValues(ctx.args, '-e')).toContain('NO_VALUE=<redacted>');
+    expect(getFlagValues(ctx.args, '-e')).toContain(`HOME=<redacted>`);
+    expect(logged).not.toContain('secret-api-key');
+    expect(logged).not.toContain(`HOME=${DOCKER_CONTAINER_HOME}`);
+    expect(logged).toContain('parallel-code-agent:test');
+  });
+
+  it('redacts inline docker env values in spawn debug logs', () => {
+    spawnAgent(
+      createMockWindow(),
+      buildSpawnArgs({
+        args: ['--env=INLINE_TOKEN=inline-secret', '--env', 'SPLIT_TOKEN=split-secret'],
+      }),
+    );
+
+    const logged = getSpawnCommandLogCtx().args.join(' ');
+
+    expect(logged).toContain('--env=INLINE_TOKEN=<redacted>');
+    expect(logged).toContain('SPLIT_TOKEN=<redacted>');
+    expect(logged).not.toContain('inline-secret');
+    expect(logged).not.toContain('split-secret');
+  });
+
+  it('redacts shell command strings in spawn debug logs', () => {
+    spawnAgent(
+      createMockWindow(),
+      buildSpawnArgs({
+        command: '/bin/sh',
+        args: ['-c', 'codex exec "prompt containing private context"'],
+        dockerMode: false,
+      }),
+    );
+
+    const ctx = getSpawnCommandLogCtx();
+
+    expect(ctx.command).toBe('/bin/sh');
+    expect(ctx.args).toEqual(['-c', '<redacted>']);
+  });
+
   it('redirects credential mounts under /tmp inside the container', () => {
     const home = makeTempHome(['.ssh/', '.gitconfig', '.config/gh/']);
     vi.stubEnv('HOME', home);
@@ -239,6 +310,82 @@ describe('spawnAgent docker mode', () => {
     expect(volumeFlags).toContain(`${home}/.ssh:${DOCKER_CONTAINER_HOME}/.ssh:ro`);
     expect(volumeFlags).toContain(`${home}/.gitconfig:${DOCKER_CONTAINER_HOME}/.gitconfig:ro`);
     expect(volumeFlags).toContain(`${home}/.config/gh:${DOCKER_CONTAINER_HOME}/.config/gh:ro`);
+  });
+
+  describe('agent config dir mounts (shareDockerAgentAuth)', () => {
+    it.each([
+      ['claude', '.claude'],
+      ['codex', '.codex'],
+      ['gemini', '.gemini'],
+      ['opencode', '.config/opencode'],
+      ['copilot', '.config/github-copilot'],
+    ])(
+      '%s bind-mounts a user-owned host directory when shareDockerAgentAuth is enabled',
+      (command, relDir) => {
+        const home = makeTempHome([]);
+        vi.stubEnv('HOME', home);
+
+        spawnAgent(createMockWindow(), buildSpawnArgs({ command, shareDockerAgentAuth: true }));
+
+        const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
+        const expectedHostDir = `${home}/.parallel-code/agent-auth/${command}/${relDir}`;
+        expect(volumeFlags).toContain(`${expectedHostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
+      },
+    );
+
+    it('creates the host auth directory so it is user-owned before mounting', () => {
+      const home = makeTempHome([]);
+      vi.stubEnv('HOME', home);
+
+      spawnAgent(
+        createMockWindow(),
+        buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: true }),
+      );
+
+      const hostDir = `${home}/.parallel-code/agent-auth/claude/.claude`;
+      expect(fs.existsSync(hostDir)).toBe(true);
+    });
+
+    it('bind-mounts .claude.json file for claude so auth persists across containers', () => {
+      const home = makeTempHome([]);
+      vi.stubEnv('HOME', home);
+
+      spawnAgent(
+        createMockWindow(),
+        buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: true }),
+      );
+
+      const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
+      const expectedHostFile = `${home}/.parallel-code/agent-auth/claude/.claude.json`;
+      expect(volumeFlags).toContain(`${expectedHostFile}:${DOCKER_CONTAINER_HOME}/.claude.json`);
+      expect(fs.readFileSync(expectedHostFile, 'utf8')).toBe('{}');
+    });
+
+    it('does not mount agent auth directory when shareDockerAgentAuth is disabled', () => {
+      const home = makeTempHome([]);
+      vi.stubEnv('HOME', home);
+
+      spawnAgent(
+        createMockWindow(),
+        buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: false }),
+      );
+
+      const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
+      expect(volumeFlags.some((v) => v.includes('.parallel-code/agent-auth'))).toBe(false);
+    });
+
+    it('does not mount agent auth directory for an unknown agent command', () => {
+      const home = makeTempHome([]);
+      vi.stubEnv('HOME', home);
+
+      spawnAgent(
+        createMockWindow(),
+        buildSpawnArgs({ command: 'unknown-agent', shareDockerAgentAuth: true }),
+      );
+
+      const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
+      expect(volumeFlags.some((v) => v.includes('.parallel-code/agent-auth'))).toBe(false);
+    });
   });
 });
 

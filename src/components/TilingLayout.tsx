@@ -249,12 +249,11 @@ export function TilingLayout() {
                 }
                 style={{
                   height: '100%',
-                  padding:
-                    store.themePreset === 'islands-dark'
-                      ? store.focusMode
-                        ? '6px 0'
-                        : '6px 1px'
-                      : '6px 3px',
+                  padding: store.themePreset.startsWith('islands-')
+                    ? store.focusMode
+                      ? '6px 0'
+                      : '6px 1px'
+                    : '6px 3px',
                   'box-sizing': 'border-box',
                 }}
                 onAnimationEnd={(e) => {
@@ -569,7 +568,7 @@ export function TilingLayout() {
                     const isActive = child.id === store.activeTaskId;
                     return {
                       position: 'absolute',
-                      inset: store.themePreset === 'islands-dark' ? '0 4px 0 0' : '0',
+                      inset: store.themePreset.startsWith('islands-') ? '0 4px 0 0' : '0',
                       width: '100%',
                       height: '100%',
                       visibility: isActive ? 'visible' : 'hidden',

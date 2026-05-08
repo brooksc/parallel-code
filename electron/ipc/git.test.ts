@@ -55,6 +55,7 @@ import {
   getChangedFiles,
   getAllFileDiffs,
   getFileDiff,
+  checkMergeStatus,
 } from './git.js';
 
 type ExecFileCallback = (err: Error | null, stdout: string, stderr: string) => void;
@@ -168,7 +169,7 @@ describe('from-branch diff helpers (pickMergeBase wiring)', () => {
       expect(mergeBaseCall).toContain('main');
     });
 
-    it('feeds the picked merge-base SHA into the diff command', async () => {
+    it('feeds the picked base ref into the one-way diff command', async () => {
       const calls: string[][] = [];
       setupMock(
         calls,
@@ -184,8 +185,7 @@ describe('from-branch diff helpers (pickMergeBase wiring)', () => {
 
       const diffCall = calls.find((a) => a[0] === 'diff');
       expect(diffCall).toBeDefined();
-      expect(diffCall).toContain(SHA_LOCAL);
-      expect(diffCall).toContain('feature');
+      expect(diffCall).toContain('develop...feature');
     });
   });
 
@@ -209,7 +209,7 @@ describe('from-branch diff helpers (pickMergeBase wiring)', () => {
       expect(mergeBaseCall).toContain('main');
     });
 
-    it('feeds the picked merge-base SHA into the diff command', async () => {
+    it('feeds the picked base ref into the one-way diff command', async () => {
       const calls: string[][] = [];
       setupMock(
         calls,
@@ -225,13 +225,12 @@ describe('from-branch diff helpers (pickMergeBase wiring)', () => {
 
       const diffCall = calls.find((a) => a[0] === 'diff');
       expect(diffCall).toBeDefined();
-      expect(diffCall).toContain(SHA_LOCAL);
-      expect(diffCall).toContain('feature');
+      expect(diffCall).toContain('develop...feature');
     });
   });
 
   describe('getFileDiffFromBranch', () => {
-    it('feeds the picked merge-base SHA into the diff and the show command', async () => {
+    it('feeds the picked base ref into the diff and the merge-base SHA into the show command', async () => {
       const calls: string[][] = [];
       setupMock(
         calls,
@@ -247,8 +246,7 @@ describe('from-branch diff helpers (pickMergeBase wiring)', () => {
 
       const diffCall = calls.find((a) => a[0] === 'diff');
       expect(diffCall).toBeDefined();
-      expect(diffCall).toContain(SHA_LOCAL);
-      expect(diffCall).toContain('feature');
+      expect(diffCall).toContain('develop...feature');
 
       // The redundant inline `git merge-base baseRef branchName` is gone — the
       // only merge-base calls should be the picker's two probes plus optional
@@ -284,8 +282,8 @@ describe('pickMergeBase (via getChangedFilesFromBranch)', () => {
     await getChangedFilesFromBranch(uniqueRepoPath(), 'feature', 'main');
 
     const diffCall = calls.find((a) => a[0] === 'diff');
-    expect(diffCall).toContain(SHA_LOCAL);
-    expect(diffCall).not.toContain(SHA_ORIGIN);
+    expect(diffCall).toContain('main...feature');
+    expect(diffCall).not.toContain('origin/main...feature');
   });
 
   it('picks origin merge-base when local merge-base is its ancestor', async () => {
@@ -306,8 +304,8 @@ describe('pickMergeBase (via getChangedFilesFromBranch)', () => {
     await getChangedFilesFromBranch(uniqueRepoPath(), 'feature', 'main');
 
     const diffCall = calls.find((a) => a[0] === 'diff');
-    expect(diffCall).toContain(SHA_ORIGIN);
-    expect(diffCall).not.toContain(SHA_LOCAL);
+    expect(diffCall).toContain('origin/main...feature');
+    expect(diffCall).not.toContain('main...feature');
   });
 
   it('prefers local on divergence (neither merge-base is an ancestor of the other)', async () => {
@@ -328,8 +326,8 @@ describe('pickMergeBase (via getChangedFilesFromBranch)', () => {
     await getChangedFilesFromBranch(uniqueRepoPath(), 'feature', 'main');
 
     const diffCall = calls.find((a) => a[0] === 'diff');
-    expect(diffCall).toContain(SHA_LOCAL);
-    expect(diffCall).not.toContain(SHA_ORIGIN);
+    expect(diffCall).toContain('main...feature');
+    expect(diffCall).not.toContain('origin/main...feature');
   });
 
   it('uses local merge-base when only the local ref exists', async () => {
@@ -347,7 +345,7 @@ describe('pickMergeBase (via getChangedFilesFromBranch)', () => {
     await getChangedFilesFromBranch(uniqueRepoPath(), 'feature', 'main');
 
     const diffCall = calls.find((a) => a[0] === 'diff');
-    expect(diffCall).toContain(SHA_LOCAL);
+    expect(diffCall).toContain('main...feature');
 
     const ancestorCalls = calls.filter((a) => a[0] === 'merge-base' && a[1] === '--is-ancestor');
     expect(ancestorCalls.length).toBe(0);
@@ -368,7 +366,7 @@ describe('pickMergeBase (via getChangedFilesFromBranch)', () => {
     await getChangedFilesFromBranch(uniqueRepoPath(), 'feature', 'main');
 
     const diffCall = calls.find((a) => a[0] === 'diff');
-    expect(diffCall).toContain(SHA_ORIGIN);
+    expect(diffCall).toContain('origin/main...feature');
   });
 
   it('returns no committed diff when neither ref resolves', async () => {
@@ -384,8 +382,7 @@ describe('pickMergeBase (via getChangedFilesFromBranch)', () => {
 
     const result = await getChangedFilesFromBranch(uniqueRepoPath(), 'feature', 'gone');
 
-    // detectMergeBase falls back to headRef ('feature'), so the diff range
-    // becomes feature..feature → empty.
+    // detectOneWayDiffRange falls back to feature...feature → empty.
     expect(result).toEqual([]);
 
     const ancestorCalls = calls.filter((a) => a[0] === 'merge-base' && a[1] === '--is-ancestor');
@@ -408,7 +405,7 @@ describe('pickMergeBase (via getChangedFilesFromBranch)', () => {
     await getChangedFilesFromBranch(uniqueRepoPath(), 'feature', 'main');
 
     const diffCall = calls.find((a) => a[0] === 'diff');
-    expect(diffCall).toContain(SHA_LOCAL);
+    expect(diffCall).toContain('main...feature');
 
     // Identical SHAs short-circuit before any --is-ancestor probe.
     const ancestorCalls = calls.filter((a) => a[0] === 'merge-base' && a[1] === '--is-ancestor');
@@ -434,8 +431,9 @@ function uniqueWorktreePath(): string {
 /**
  * Build a mock handler for worktree-based functions.
  *
- * No-remote scenario: detectMergeBase returns MERGE_BASE.  All diff commands
- * use the merge-base ref for one-way diffs (feature branch changes only).
+ * No-remote scenario: detectMergeBase returns MERGE_BASE. Committed snapshot
+ * diffs use the ordered local base ref range (`base...head`); dirty worktree
+ * diffs use the merge-base SHA directly so tracked local edits are included.
  */
 function buildWorktreeMockHandler(opts: {
   mergeBase?: string;
@@ -445,6 +443,15 @@ function buildWorktreeMockHandler(opts: {
   showOutputs?: Record<string, string>;
   diffOutput?: string;
   statusPorcelain?: string;
+  /**
+   * Output of `git log --cherry-pick --right-only --reverse --pretty='%H %P'` —
+   * newline-separated `<sha> <parent_sha>` pairs (one per unique commit, in
+   * chronological order; the first line's parent SHA is what refinement
+   * uses as the new base).
+   */
+  cherryPickUnique?: string;
+  /** Output of `git rev-list --count` for the refined range. */
+  refinedRangeCount?: string;
 }): MockHandler {
   const mergeBase = opts.mergeBase ?? MERGE_BASE;
 
@@ -481,13 +488,33 @@ function buildWorktreeMockHandler(opts: {
       return;
     }
 
-    // diff --raw --numstat <mergeBase> <head> — committed changes (one-way)
+    // log --cherry-pick --right-only — refinement's unique-commit list.
+    // Default produces an interleaved-fallback so existing tests (which
+    // assert behavior against the picked merge-base) keep passing without
+    // having to opt in to refinement defaults. New tests opt in by setting
+    // `cherryPickUnique` (and matching `refinedRangeCount` for contiguity).
+    if (cmd === 'log' && args.includes('--cherry-pick')) {
+      const out =
+        opts.cherryPickUnique !== undefined
+          ? opts.cherryPickUnique
+          : '__test_unique__ __test_parent__';
+      cb(null, out, '');
+      return;
+    }
+
+    // rev-list --count <parent>..<head> — refinement's contiguity check.
+    // Default returns 999 (non-matching) → triggers interleaved fallback.
+    if (cmd === 'rev-list' && args.includes('--count')) {
+      cb(null, (opts.refinedRangeCount ?? '999') + '\n', '');
+      return;
+    }
+
+    // diff --raw --numstat <base>...<head> — committed changes (one-way)
     if (
       cmd === 'diff' &&
       args.includes('--raw') &&
       args.includes('--numstat') &&
-      args.includes(mergeBase) &&
-      args.includes(HEAD_HASH)
+      args.some((arg) => arg.endsWith(`...${HEAD_HASH}`))
     ) {
       cb(null, opts.committedRawNumstat ?? '', '');
       return;
@@ -505,17 +532,16 @@ function buildWorktreeMockHandler(opts: {
       return;
     }
 
-    // diff -U3 <mergeBase> — getAllFileDiffs unified diff (one-way)
+    // diff -U3 <mergeBase> — getAllFileDiffs unified diff including tracked local edits
     if (cmd === 'diff' && args.includes('-U3') && args.includes(mergeBase)) {
       cb(null, opts.diffOutput ?? '', '');
       return;
     }
 
-    // diff <mergeBase> <head> -- <path> — getFileDiff committed diff (one-way)
+    // diff <base>...<head> -- <path> — getFileDiff committed diff (one-way)
     if (
       cmd === 'diff' &&
-      args.includes(mergeBase) &&
-      args.includes(HEAD_HASH) &&
+      args.some((arg) => arg.endsWith(`...${HEAD_HASH}`)) &&
       args.includes('--')
     ) {
       cb(null, opts.diffOutput ?? '', '');
@@ -680,7 +706,7 @@ describe('getChangedFiles (worktree-based, merge-base diff)', () => {
       expect(files).toEqual([]);
     });
 
-    it('should diff against merge-base, not branch tip', async () => {
+    it('should use a base-to-head one-way range, not branch-tip-to-base', async () => {
       const calls: string[][] = [];
       setupMock(
         calls,
@@ -691,16 +717,17 @@ describe('getChangedFiles (worktree-based, merge-base diff)', () => {
 
       await getChangedFiles(uniqueWorktreePath(), 'main');
 
-      // The committed diff should use MERGE_BASE, not MAIN_TIP
+      // The committed diff must be ordered base...head, not head...base.
       const diffCall = calls.find(
         (a) =>
           a[0] === 'diff' &&
           a.includes('--raw') &&
           a.includes('--numstat') &&
-          a.includes(HEAD_HASH),
+          a.some((arg) => arg.endsWith(`...${HEAD_HASH}`)),
       );
       expect(diffCall).toBeDefined();
-      expect(diffCall).toContain(MERGE_BASE);
+      expect(diffCall).toContain(`main...${HEAD_HASH}`);
+      expect(diffCall).not.toContain(`${HEAD_HASH}...main`);
     });
 
     it('probes both local and origin refs when both exist', async () => {
@@ -797,7 +824,7 @@ describe('getAllFileDiffs (worktree-based, merge-base diff)', () => {
     vi.clearAllMocks();
   });
 
-  it('should diff against merge-base without file filtering', async () => {
+  it('should diff the working tree from the merge-base without file filtering', async () => {
     const calls: string[][] = [];
     setupMock(
       calls,
@@ -812,6 +839,7 @@ describe('getAllFileDiffs (worktree-based, merge-base diff)', () => {
     const u3Call = calls.find((a) => a[0] === 'diff' && a.includes('-U3'));
     expect(u3Call).toBeDefined();
     expect(u3Call).toContain(MERGE_BASE);
+    expect(u3Call).not.toContain('main...');
     // No file filter (no -- separator)
     expect(u3Call).not.toContain('--');
   });
@@ -922,7 +950,7 @@ describe('getFileDiff (worktree-based, merge-base diff)', () => {
     expect(result.oldContent).toBe('');
   });
 
-  it('should issue diff command against merge-base ref', async () => {
+  it('should issue diff command as a one-way base-to-head range', async () => {
     const calls: string[][] = [];
     setupMock(
       calls,
@@ -939,7 +967,7 @@ describe('getFileDiff (worktree-based, merge-base diff)', () => {
 
     const diffCall = calls.find((a) => a[0] === 'diff' && a.includes('--'));
     expect(diffCall).toBeDefined();
-    expect(diffCall).toContain(MERGE_BASE);
+    expect(diffCall).toContain(`main...${HEAD_HASH}`);
   });
 
   it('should include HEAD hash in the diff command', async () => {
@@ -958,7 +986,7 @@ describe('getFileDiff (worktree-based, merge-base diff)', () => {
     await getFileDiff(uniqueWorktreePath(), 'file.ts', 'main');
 
     const diffCall = calls.find((a) => a[0] === 'diff' && a.includes('--'));
-    expect(diffCall).toContain(HEAD_HASH);
+    expect(diffCall?.some((arg) => arg.includes(HEAD_HASH))).toBe(true);
   });
 
   it('should return the diff output from the merge-base-to-HEAD diff', async () => {
@@ -1001,5 +1029,275 @@ describe('getFileDiff (worktree-based, merge-base diff)', () => {
     const result = await getFileDiff(uniqueWorktreePath(), 'file.ts', 'main');
 
     expect(result.newContent).toBe('disk content with local edits');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cherry-pick refinement: drops rebased patch-equivalent commits from the
+// diff range when the unique commits are contiguous at the tip.
+// ---------------------------------------------------------------------------
+
+describe('refineDiffBaseWithCherryPick (via getChangedFiles)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const UNIQUE_COMMIT = 'unique000abc';
+  const UNIQUE_PARENT = 'parent00xyz';
+
+  it('refines diff base to oldest unique commit parent when commits are contiguous at tip', async () => {
+    const calls: string[][] = [];
+    setupMock(
+      calls,
+      buildWorktreeMockHandler({
+        committedRawNumstat: rawNumstatEntry('feat.ts', 5, 1),
+        cherryPickUnique: `${UNIQUE_COMMIT} ${UNIQUE_PARENT}`,
+        refinedRangeCount: '1',
+      }),
+    );
+
+    await getChangedFiles(uniqueWorktreePath(), 'main');
+
+    // The committed-diff range should now use the refined parent SHA, not main.
+    const committedDiffCall = calls.find(
+      (a) =>
+        a[0] === 'diff' &&
+        a.includes('--raw') &&
+        a.includes('--numstat') &&
+        a.some((arg) => arg.endsWith(`...${HEAD_HASH}`)),
+    );
+    expect(committedDiffCall).toBeDefined();
+    expect(committedDiffCall).toContain(`${UNIQUE_PARENT}...${HEAD_HASH}`);
+  });
+
+  it('refines correctly with multiple contiguous unique commits', async () => {
+    const calls: string[][] = [];
+    const sha2 = 'unique000def';
+    const sha3 = 'unique000ghi';
+    setupMock(
+      calls,
+      buildWorktreeMockHandler({
+        committedRawNumstat: rawNumstatEntry('feat.ts', 5, 1),
+        // --reverse order: oldest first. Refinement keys off line[0]'s parent.
+        cherryPickUnique: [
+          `${UNIQUE_COMMIT} ${UNIQUE_PARENT}`,
+          `${sha2} ${UNIQUE_COMMIT}`,
+          `${sha3} ${sha2}`,
+        ].join('\n'),
+        refinedRangeCount: '3', // 3 commits in (parent..HEAD], 3 unique → contiguous
+      }),
+    );
+
+    await getChangedFiles(uniqueWorktreePath(), 'main');
+
+    const committedDiffCall = calls.find(
+      (a) =>
+        a[0] === 'diff' &&
+        a.includes('--raw') &&
+        a.includes('--numstat') &&
+        a.some((arg) => arg.endsWith(`...${HEAD_HASH}`)),
+    );
+    expect(committedDiffCall).toBeDefined();
+    expect(committedDiffCall).toContain(`${UNIQUE_PARENT}...${HEAD_HASH}`);
+  });
+
+  it('falls back to picked base when unique commits are interleaved with patch-equivalent ones', async () => {
+    const calls: string[][] = [];
+    setupMock(
+      calls,
+      buildWorktreeMockHandler({
+        committedRawNumstat: rawNumstatEntry('feat.ts', 5, 1),
+        cherryPickUnique: `${UNIQUE_COMMIT} ${UNIQUE_PARENT}`, // 1 unique
+        refinedRangeCount: '5', // 5 commits in the range → 4 are patch-equivalent
+      }),
+    );
+
+    await getChangedFiles(uniqueWorktreePath(), 'main');
+
+    const committedDiffCall = calls.find(
+      (a) =>
+        a[0] === 'diff' &&
+        a.includes('--raw') &&
+        a.includes('--numstat') &&
+        a.some((arg) => arg.endsWith(`...${HEAD_HASH}`)),
+    );
+    expect(committedDiffCall).toBeDefined();
+    // Falls back to the original picked ref (main), not the refined SHA.
+    expect(committedDiffCall).toContain(`main...${HEAD_HASH}`);
+  });
+
+  it('collapses diff range to head...head when branch is fully merged upstream', async () => {
+    const calls: string[][] = [];
+    setupMock(
+      calls,
+      buildWorktreeMockHandler({
+        committedRawNumstat: '',
+        cherryPickUnique: '', // fully merged — no unique commits
+      }),
+    );
+
+    await getChangedFiles(uniqueWorktreePath(), 'main');
+
+    const committedDiffCall = calls.find(
+      (a) =>
+        a[0] === 'diff' &&
+        a.includes('--raw') &&
+        a.includes('--numstat') &&
+        a.some((arg) => arg.endsWith(`...${HEAD_HASH}`)),
+    );
+    expect(committedDiffCall).toBeDefined();
+    // Diff range collapses to head...head — no patch-equivalent noise.
+    expect(committedDiffCall).toContain(`${HEAD_HASH}...${HEAD_HASH}`);
+    expect(committedDiffCall).not.toContain(`main...${HEAD_HASH}`);
+
+    // Refinement short-circuits: no rev-list count needed.
+    const revListCounts = calls.filter((a) => a[0] === 'rev-list' && a.includes('--count'));
+    expect(revListCounts).toHaveLength(0);
+  });
+
+  it('uses refined SHA for the working-tree single-point diff (getAllFileDiffs)', async () => {
+    const calls: string[][] = [];
+    setupMock(
+      calls,
+      buildWorktreeMockHandler({
+        diffOutput: 'diff --git a/file.ts b/file.ts\n',
+        cherryPickUnique: `${UNIQUE_COMMIT} ${UNIQUE_PARENT}`,
+        refinedRangeCount: '1',
+      }),
+    );
+
+    await getAllFileDiffs(uniqueWorktreePath(), 'main');
+
+    const u3Call = calls.find((a) => a[0] === 'diff' && a.includes('-U3'));
+    expect(u3Call).toBeDefined();
+    // After refinement, single-point diff anchors on the refined parent SHA,
+    // not the original merge-base.
+    expect(u3Call).toContain(UNIQUE_PARENT);
+    expect(u3Call).not.toContain(MERGE_BASE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Refinement applies on the from-branch path too (getChangedFilesFromBranch),
+// not just the worktree-based path.
+// ---------------------------------------------------------------------------
+
+describe('refineDiffBaseWithCherryPick (via getChangedFilesFromBranch)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('refines diff range when called with a branch name (not HEAD)', async () => {
+    const calls: string[][] = [];
+    const SHA = 'br000sha';
+    const PARENT = 'br000par';
+
+    setupMock(calls, (args, cb) => {
+      const [cmd] = args;
+      if (cmd === 'rev-parse' && args[1] === '--verify') {
+        const ref = args[2];
+        if (ref === 'refs/heads/main') return cb(null, 'exists\n', '');
+        return cb(new Error('no remote'), '', '');
+      }
+      if (cmd === 'symbolic-ref') return cb(new Error('no remote'), '', '');
+      if (cmd === 'merge-base') return cb(null, MERGE_BASE + '\n', '');
+      if (cmd === 'log' && args.includes('--cherry-pick')) {
+        return cb(null, `${SHA} ${PARENT}\n`, '');
+      }
+      if (cmd === 'rev-list' && args.includes('--count')) {
+        return cb(null, '1\n', '');
+      }
+      if (cmd === 'diff') return cb(null, '', '');
+      return cb(null, '', '');
+    });
+
+    await getChangedFilesFromBranch(uniqueRepoPath(), 'feature', 'main');
+
+    const diffCall = calls.find((a) => a[0] === 'diff');
+    expect(diffCall).toBeDefined();
+    // Range uses the refined parent SHA against the branch ref (not HEAD).
+    expect(diffCall).toContain(`${PARENT}...feature`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkMergeStatus — main-ahead count uses cherry-pick filtering so rebased
+// patch-equivalent commits in main don't trigger a needless rebase prompt.
+// ---------------------------------------------------------------------------
+
+describe('checkMergeStatus (cherry-pick filtered ahead count)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('asks rev-list to count with --cherry-pick --right-only against HEAD...mainBranch', async () => {
+    const calls: string[][] = [];
+    setupMock(calls, (args, cb) => {
+      const [cmd] = args;
+      if (cmd === 'rev-list' && args.includes('--count')) {
+        return cb(null, '0\n', '');
+      }
+      return cb(null, '', '');
+    });
+
+    await checkMergeStatus(uniqueWorktreePath(), 'main');
+
+    const revListCall = calls.find((a) => a[0] === 'rev-list' && a.includes('--count'));
+    expect(revListCall).toBeDefined();
+    expect(revListCall).toContain('--cherry-pick');
+    expect(revListCall).toContain('--right-only');
+    expect(revListCall).toContain('HEAD...main');
+    // --no-merges would silently drop merge commits with unique content
+    // (evil merges) and undercount truly-ahead main, so it must not be set.
+    expect(revListCall).not.toContain('--no-merges');
+  });
+
+  it('reports zero ahead when every main commit is patch-equivalent to one in HEAD', async () => {
+    const calls: string[][] = [];
+    setupMock(calls, (args, cb) => {
+      const [cmd] = args;
+      if (cmd === 'rev-list' && args.includes('--count')) {
+        // --cherry-pick filters patch-equivalents → none unique on the right.
+        return cb(null, '0\n', '');
+      }
+      return cb(null, '', '');
+    });
+
+    const result = await checkMergeStatus(uniqueWorktreePath(), 'main');
+
+    expect(result.main_ahead_count).toBe(0);
+    expect(result.conflicting_files).toEqual([]);
+    // Conflict probe must be skipped when ahead count is zero.
+    const mergeTreeCall = calls.find((a) => a[0] === 'merge-tree');
+    expect(mergeTreeCall).toBeUndefined();
+  });
+
+  it('runs the conflict probe and surfaces conflicting files when main is genuinely ahead', async () => {
+    const calls: string[][] = [];
+    setupMock(calls, (args, cb) => {
+      const [cmd] = args;
+      if (cmd === 'rev-list' && args.includes('--count')) {
+        // 2 commits in main are unique after cherry-pick filtering.
+        return cb(null, '2\n', '');
+      }
+      if (cmd === 'merge-tree') {
+        // git merge-tree exits non-zero and emits conflict info on stderr/stdout
+        // when the trial merge fails — checkMergeStatus parses the rejection.
+        const err = new Error(
+          'CONFLICT (content): Merge conflict in src/foo.ts\nCONFLICT (content): Merge conflict in src/bar.ts',
+        );
+        return cb(err, '', '');
+      }
+      return cb(null, '', '');
+    });
+
+    const result = await checkMergeStatus(uniqueWorktreePath(), 'main');
+
+    expect(result.main_ahead_count).toBe(2);
+    const mergeTreeCall = calls.find((a) => a[0] === 'merge-tree');
+    expect(mergeTreeCall).toBeDefined();
+    expect(mergeTreeCall).toContain('HEAD');
+    expect(mergeTreeCall).toContain('main');
+    expect(result.conflicting_files).toEqual(['src/foo.ts', 'src/bar.ts']);
   });
 });

@@ -8,7 +8,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     id: 'app.nav.row-up',
     layer: 'app',
     category: 'Navigation',
-    description: 'Navigate row up',
+    description: 'Focus pane above',
     platform: 'both',
     key: 'ArrowUp',
     modifiers: { alt: true },
@@ -19,7 +19,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     id: 'app.nav.row-down',
     layer: 'app',
     category: 'Navigation',
-    description: 'Navigate row down',
+    description: 'Focus pane below',
     platform: 'both',
     key: 'ArrowDown',
     modifiers: { alt: true },
@@ -30,7 +30,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     id: 'app.nav.column-left',
     layer: 'app',
     category: 'Navigation',
-    description: 'Navigate column left',
+    description: 'Focus task left',
     platform: 'both',
     key: 'ArrowLeft',
     modifiers: { alt: true },
@@ -41,7 +41,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     id: 'app.nav.column-right',
     layer: 'app',
     category: 'Navigation',
-    description: 'Navigate column right',
+    description: 'Focus task right',
     platform: 'both',
     key: 'ArrowRight',
     modifiers: { alt: true },
@@ -56,7 +56,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     id: 'app.task.reorder-left',
     layer: 'app',
     category: 'Tasks',
-    description: 'Move active task left',
+    description: 'Move task left',
     platform: 'both',
     key: 'ArrowLeft',
     modifiers: { cmdOrCtrl: true, shift: true },
@@ -67,7 +67,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     id: 'app.task.reorder-right',
     layer: 'app',
     category: 'Tasks',
-    description: 'Move active task right',
+    description: 'Move task right',
     platform: 'both',
     key: 'ArrowRight',
     modifiers: { cmdOrCtrl: true, shift: true },
@@ -78,13 +78,17 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
   // -------------------------------------------------------------------------
   // App layer — Jump to task by position (Cmd+1 through Cmd+9)
   // -------------------------------------------------------------------------
+  // Shift variants for keyboard layouts where the digit row requires Shift
+  // (e.g. AZERTY) live in shortcuts.ts (registerJumpToTaskShortcuts), mirroring
+  // the Cmd+0 reset-zoom pattern — keeping them out of the registry avoids
+  // duplicating these rows in the keybindings UI.
   ...Array.from({ length: 9 }, (_, i) => ({
     id: `app.nav.jump-to-task-${i + 1}`,
     layer: 'app' as const,
     category: 'Navigation',
     description: `Jump to task ${i + 1}`,
     platform: 'both' as const,
-    key: `Digit${i + 1}`,
+    key: `${i + 1}`,
     modifiers: { cmdOrCtrl: true },
     action: `jumpToTask:${i + 1}`,
     global: true,

@@ -1,5 +1,7 @@
 import { ipcMain, dialog, shell, app, clipboard, BrowserWindow, Notification } from 'electron';
+import crypto from 'crypto';
 import fs from 'fs';
+import net from 'net';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
@@ -28,7 +30,7 @@ import {
 import { startStepsWatcher, stopStepsWatcher, readStepsForWorktree } from './steps.js';
 import { initPrChecks, startPrChecksWatcher, stopPrChecksWatcher, isPrUrl } from './pr-checks.js';
 import { readCoverageSummary } from './coverage.js';
-import { startRemoteServer } from '../remote/server.js';
+import { startRemoteServer, getMCPLogs } from '../remote/server.js';
 import {
   getGitIgnoredDirs,
   getMainBranch,
@@ -56,6 +58,7 @@ import {
   getBranchCommits,
   getCommitChangedFiles,
   getCommitDiffs,
+  getUncommittedFileDiffs,
 } from './git.js';
 import { createTask, deleteTask } from './tasks.js';
 import { listAgents } from './agents.js';
@@ -75,6 +78,28 @@ import {
   assertOptionalBoolean,
 } from './validate.js';
 import { warn as logWarn } from '../log.js';
+
+function findFreePort(start: number, end: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let port = start;
+    const tryNext = () => {
+      if (port > end) {
+        reject(new Error(`No free port found in range ${start}–${end}`));
+        return;
+      }
+      const s = net.createServer();
+      s.listen(port, '127.0.0.1', () => {
+        const found = port;
+        s.close(() => resolve(found));
+      });
+      s.on('error', () => {
+        port++;
+        tryNext();
+      });
+    };
+    tryNext();
+  });
+}
 
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -131,6 +156,65 @@ function getOptionalImageTag(value: unknown): string | undefined {
   return imageTag;
 }
 
+/** First file URL on the clipboard, or null if none.
+ *  macOS uses `public.file-url` (one URL per call).
+ *  Linux file managers vary:
+ *    - Files (Nautilus), Nemo, etc. publish `x-special/gnome-copied-files`
+ *      as `<verb>\nfile:///path1\nfile:///path2`, where <verb> is `copy`
+ *      or `cut`. This is the dominant Linux desktop format and MUST be
+ *      checked before `text/uri-list` because some apps publish both
+ *      flavours and the GNOME flavour is the authoritative one.
+ *    - Falls back to `text/uri-list` (newline-separated) for KDE, Xfce,
+ *      and any cross-desktop publisher that follows RFC 2483. */
+function readClipboardFileUrl(formats: string[]): string | null {
+  if (formats.includes('public.file-url')) {
+    const url = clipboard.read('public.file-url').trim();
+    if (url) return url;
+  }
+  if (formats.includes('x-special/gnome-copied-files')) {
+    const payload = clipboard.read('x-special/gnome-copied-files');
+    // First line is the verb (copy/cut); subsequent lines are file URLs.
+    const lines = payload.split('\n');
+    for (let i = 1; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith('file://')) return trimmed;
+    }
+  }
+  if (formats.includes('text/uri-list')) {
+    const list = clipboard.read('text/uri-list');
+    for (const line of list.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && trimmed.startsWith('file://')) return trimmed;
+    }
+  }
+  return null;
+}
+
+/** Convert a file:// URL to an absolute path, returning '' on failure. */
+function fileUrlToPath(url: string): string {
+  try {
+    return fileURLToPath(url);
+  } catch {
+    return '';
+  }
+}
+
+/** Strip path separators and clamp to a sane length so a renderer-supplied
+ *  filename can't escape the temp dir. Falls back to a generic name when empty.
+ *  Always appends a 6-char random suffix so two same-name drops landing in the
+ *  same millisecond don't overwrite each other. */
+function sanitizeDroppedName(name: string): string {
+  const base = name
+    // eslint-disable-next-line no-control-regex -- intentional NUL strip for filesystem safety
+    .replace(/[\\/\x00]/g, '_')
+    .replace(/^\.+/, '')
+    .trim()
+    .slice(0, 200);
+  const stamp = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  if (base) return `parallel-code-drop-${stamp}-${base}`;
+  return `parallel-code-drop-${stamp}.png`;
+}
+
 /**
  * Create a leading+trailing throttled event forwarder.
  * Fires immediately, suppresses for `intervalMs`, then fires once more
@@ -166,6 +250,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
   let remoteServer: ReturnType<typeof startRemoteServer> | null = null;
   const taskNames = new Map<string, string>();
 
+  // --- MCP coordinator (lazy — only loaded when coordinator mode is enabled) ---
+  type CoordinatorType = import('../mcp/coordinator.js').Coordinator;
+  let coordinator: CoordinatorType | null = null;
+  let coordinatorHandlersRegistered = false;
+
   // --- PTY commands ---
   ipcMain.handle(IPC.SpawnAgent, (_e, args) => {
     assertString(args.command, 'command');
@@ -176,6 +265,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
     assertInt(args.rows, 'rows');
     assertOptionalBoolean(args.dockerMode, 'dockerMode');
     assertOptionalString(args.dockerImage, 'dockerImage');
+    assertOptionalBoolean(args.shareDockerAgentAuth, 'shareDockerAgentAuth');
     assertOptionalBoolean(args.stepsEnabled, 'stepsEnabled');
     if (args.cwd) validatePath(args.cwd, 'cwd');
     if (!args.isShell && args.cwd) {
@@ -399,7 +489,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
     validatePath(args.worktreePath, 'worktreePath');
     const baseBranch = args.baseBranch || undefined;
     if (baseBranch) validateBranchName(baseBranch, 'baseBranch');
-    return getBranchCommits(args.worktreePath, baseBranch);
+    const recentFallback =
+      typeof args.recentFallback === 'number' && args.recentFallback > 0
+        ? args.recentFallback
+        : undefined;
+    return getBranchCommits(args.worktreePath, baseBranch, recentFallback);
   });
   ipcMain.handle(IPC.GetCommitChangedFiles, (_e, args) => {
     validatePath(args.worktreePath, 'worktreePath');
@@ -410,6 +504,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
     validatePath(args.worktreePath, 'worktreePath');
     validateCommitHash(args.commitHash, 'commitHash');
     return getCommitDiffs(args.worktreePath, args.commitHash);
+  });
+  ipcMain.handle(IPC.GetUncommittedFileDiffs, (_e, args) => {
+    validatePath(args.worktreePath, 'worktreePath');
+    return getUncommittedFileDiffs(args.worktreePath);
   });
   ipcMain.handle(IPC.GetCoverageSummary, (_e, args) => {
     validatePath(args.repoRoot, 'repoRoot');
@@ -457,11 +555,18 @@ export function registerAllHandlers(win: BrowserWindow): void {
   // show them (taskNames is only populated on CreateTask otherwise).
   function syncTaskNamesFromJson(json: string): void {
     try {
-      const state = JSON.parse(json) as { tasks?: Record<string, { id: string; name: string }> };
+      const state = JSON.parse(json) as {
+        tasks?: Record<string, { id: string; name: string }>;
+        coordinatorNotificationDelayMs?: unknown;
+      };
       if (state.tasks) {
         for (const t of Object.values(state.tasks)) {
           if (t.id && t.name) taskNames.set(t.id, t.name);
         }
+      }
+      const delay = state.coordinatorNotificationDelayMs;
+      if (typeof delay === 'number' && Number.isFinite(delay)) {
+        coordinator?.setNotificationDelayMs(delay);
       }
     } catch (e) {
       console.warn('Ignoring malformed saved state:', e);
@@ -644,17 +749,55 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
   // --- Clipboard ---
   const clipboardImagePath = path.join(os.tmpdir(), 'parallel-code-clipboard.png');
-  ipcMain.handle(IPC.SaveClipboardImage, async () => {
+
+  // Resolve the most useful representation of the current clipboard contents
+  // for pasting into a terminal. Order of preference:
+  //   1. file references (Finder copy, Nautilus copy, etc.) → return absolute path
+  //   2. raster image (screenshot, image-app copy)         → save PNG to tmp + return path
+  //   3. plain text                                        → return as-is
+  //
+  // Without (1), copying an image file from Finder gives only the basename via
+  // navigator.clipboard.readText(), which is useless to a CLI agent that needs a
+  // path it can stat. macOS exposes file copies via the 'public.file-url' format,
+  // Linux via 'text/uri-list'. Windows is not a published target.
+  ipcMain.handle(IPC.ResolveClipboardPaste, async () => {
     try {
+      const formats = clipboard.availableFormats();
+      const fileUrl = readClipboardFileUrl(formats);
+      if (fileUrl) {
+        const filePath = fileUrlToPath(fileUrl);
+        if (filePath) return { kind: 'file', path: filePath };
+      }
       const img = clipboard.readImage();
-      if (img.isEmpty()) return null;
-      const buf = img.toPNG();
-      await fs.promises.writeFile(clipboardImagePath, buf);
-      return clipboardImagePath;
+      if (!img.isEmpty()) {
+        const buf = img.toPNG();
+        await fs.promises.writeFile(clipboardImagePath, buf);
+        return { kind: 'image', path: clipboardImagePath };
+      }
+      const text = clipboard.readText();
+      if (text) return { kind: 'text', text };
+      return { kind: 'empty' };
     } catch (e) {
-      console.error('[clipboard] Failed to save clipboard image:', e);
-      return null;
+      console.error('[clipboard] resolveClipboardPaste failed:', e);
+      return { kind: 'empty' };
     }
+  });
+
+  // Save image bytes that were dropped from a source without a filesystem path
+  // (e.g. <img> dragged from a browser). The renderer reads the dropped File as
+  // an ArrayBuffer, base64-encodes it, and forwards it here so the CLI agent
+  // can read the result. We require base64 (not Uint8Array / ArrayBuffer)
+  // because the renderer's invoke() wrapper does a JSON.parse(JSON.stringify(args))
+  // round-trip that destroys typed arrays.
+  ipcMain.handle(IPC.SaveDroppedImage, async (_e, args) => {
+    if (!args || typeof args !== 'object') throw new Error('invalid args');
+    const { name, data } = args as { name?: unknown; data?: unknown };
+    if (typeof data !== 'string') throw new Error('data must be a base64 string');
+    const buf = Buffer.from(data, 'base64');
+    const safeName = sanitizeDroppedName(typeof name === 'string' ? name : '');
+    const filePath = path.join(os.tmpdir(), safeName);
+    await fs.promises.writeFile(filePath, buf);
+    return filePath;
   });
 
   // --- System ---
@@ -820,6 +963,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           lastLine: '',
         };
       },
+      coordinator: coordinator ?? undefined,
     });
     return {
       url: remoteServer.url,
@@ -849,6 +993,247 @@ export function registerAllHandlers(win: BrowserWindow): void {
       port: remoteServer.port,
     };
   });
+
+  // --- MCP server management ---
+
+  // Registers coordinator-specific IPC handlers. Called lazily when coordinator
+  // mode is enabled (either at startup from persisted state, or on first toggle).
+  function registerCoordinatorHandlers(): void {
+    if (coordinatorHandlersRegistered) return;
+    coordinatorHandlersRegistered = true;
+
+    ipcMain.handle(
+      IPC.StartMCPServer,
+      async (
+        _e,
+        args: {
+          coordinatorTaskId: string;
+          projectId: string;
+          projectRoot: string;
+          worktreePath?: string;
+          skipPermissions?: boolean;
+          propagateSkipPermissions?: boolean;
+          agentCommand?: string;
+          agentArgs?: string[];
+        },
+      ) => {
+        if (!coordinator) return;
+
+        // Set coordinator's default project + coordinator task ID
+        coordinator.setDefaultProject(args.projectId, args.projectRoot, args.coordinatorTaskId);
+
+        // Start remote server if not running
+        if (!remoteServer) {
+          const thisDir = path.dirname(fileURLToPath(import.meta.url));
+          const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
+          const port = await findFreePort(7777, 7800);
+          remoteServer = startRemoteServer({
+            port,
+            staticDir: distRemote,
+            getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
+            getAgentStatus: (agentId: string) => {
+              const meta = getAgentMeta(agentId);
+              return {
+                status: meta ? ('running' as const) : ('exited' as const),
+                exitCode: null,
+                lastLine: '',
+              };
+            },
+            coordinator,
+          });
+        }
+
+        // Write temp MCP config file — use the bundled single-file MCP server
+        // (built by esbuild, no external deps needed at runtime)
+        const thisDir = path.dirname(fileURLToPath(import.meta.url));
+        let mcpServerPath = path.join(thisDir, '..', 'mcp-server.cjs');
+
+        // In packaged builds, asar-unpacked files live in app.asar.unpacked/
+        if (mcpServerPath.includes('/app.asar/')) {
+          mcpServerPath = mcpServerPath.replace('/app.asar/', '/app.asar.unpacked/');
+        }
+        const serverUrl = `http://127.0.0.1:${remoteServer.port}`;
+        coordinator.setMCPServerInfo(serverUrl, remoteServer.token, mcpServerPath);
+        coordinator.setCoordinatorSpawnDefaults(
+          args.agentCommand ?? 'claude',
+          args.agentArgs ?? [],
+        );
+
+        const mcpConfig = {
+          mcpServers: {
+            'parallel-code': {
+              type: 'stdio' as const,
+              command: 'node',
+              args: [
+                mcpServerPath,
+                '--url',
+                serverUrl,
+                '--token',
+                remoteServer.token,
+                '--coordinator-id',
+                args.coordinatorTaskId,
+                ...(args.skipPermissions && args.propagateSkipPermissions
+                  ? ['--skip-permissions']
+                  : []),
+              ],
+            },
+          },
+        };
+
+        const configJson = JSON.stringify(mcpConfig, null, 2);
+
+        // Write temp config for --mcp-config flag
+        const configPath = path.join(
+          app.getPath('temp'),
+          `parallel-code-mcp-${args.coordinatorTaskId}.json`,
+        );
+        fs.writeFileSync(configPath, configJson, { mode: 0o600 });
+
+        // Also write .mcp.json into the worktree so Claude Code auto-discovers it.
+        // Immediately git-exclude it so the token never gets committed.
+        if (args.worktreePath) {
+          const worktreeMcpPath = path.join(args.worktreePath, '.mcp.json');
+          fs.writeFileSync(worktreeMcpPath, configJson, { mode: 0o600 });
+
+          // Append to .git/info/exclude (local-only gitignore, not committed)
+          try {
+            const gitDir = path.join(args.worktreePath, '.git');
+            // Worktrees use a .git file pointing to the real gitdir
+            let infoDir: string;
+            if (fs.statSync(gitDir).isFile()) {
+              const gitFileContent = fs.readFileSync(gitDir, 'utf-8').trim();
+              const realGitDir = gitFileContent.replace(/^gitdir:\s*/, '');
+              infoDir = path.join(
+                path.isAbsolute(realGitDir)
+                  ? realGitDir
+                  : path.resolve(args.worktreePath, realGitDir),
+                'info',
+              );
+            } else {
+              infoDir = path.join(gitDir, 'info');
+            }
+            fs.mkdirSync(infoDir, { recursive: true });
+            const excludePath = path.join(infoDir, 'exclude');
+            const existing = fs.existsSync(excludePath)
+              ? fs.readFileSync(excludePath, 'utf-8')
+              : '';
+            if (!existing.includes('.mcp.json')) {
+              fs.appendFileSync(
+                excludePath,
+                '\n# Parallel Code MCP config (contains ephemeral token)\n.mcp.json\n',
+              );
+            }
+          } catch (err) {
+            console.warn('[MCP] Could not git-exclude .mcp.json:', err);
+          }
+
+          console.warn('[MCP] Worktree .mcp.json written to:', worktreeMcpPath);
+        }
+
+        console.warn('[MCP] Config written to:', configPath);
+        console.warn('[MCP] Server path:', mcpServerPath);
+        console.warn('[MCP] Remote URL:', serverUrl);
+
+        return {
+          configPath,
+          serverUrl,
+          token: remoteServer.token,
+          port: remoteServer.port,
+        };
+      },
+    );
+
+    ipcMain.handle(
+      IPC.MCP_ControlChanged,
+      (_e, args: { taskId: string; controlledBy: 'coordinator' | 'human' }) => {
+        coordinator?.setTaskControl(args.taskId, args.controlledBy);
+      },
+    );
+
+    ipcMain.handle(
+      IPC.MCP_CoordinatorRegistered,
+      (_e, args: { coordinatorTaskId: string; projectId: string }) => {
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        assertString(args.projectId, 'projectId');
+        coordinator?.registerCoordinator(args.coordinatorTaskId, args.projectId);
+      },
+    );
+
+    ipcMain.handle(IPC.MCP_CoordinatorDeregistered, (_e, args: { coordinatorTaskId: string }) => {
+      assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+      coordinator?.deregisterCoordinator(args.coordinatorTaskId);
+    });
+
+    ipcMain.handle(IPC.MCP_CoordinatedTaskPromptDelivered, (_e, args: { taskId: string }) => {
+      assertString(args.taskId, 'taskId');
+      coordinator?.markPromptDelivered(args.taskId);
+    });
+
+    ipcMain.handle(
+      IPC.MCP_CoordinatorNotificationAck,
+      (_e, args: { coordinatorTaskId: string; batchId: string }) => {
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        assertString(args.batchId, 'batchId');
+        coordinator?.ackNotification(args.coordinatorTaskId, args.batchId);
+      },
+    );
+
+    ipcMain.handle(
+      IPC.MCP_CoordinatorRestageAfterUserSend,
+      (_e, args: { coordinatorTaskId: string }) => {
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        coordinator?.rescheduleRestageTimer(args.coordinatorTaskId);
+      },
+    );
+  }
+
+  // Enable coordinator mode: lazily import the Coordinator module and register handlers.
+  // Safe to call multiple times — only initializes once.
+  async function enableCoordinatorMode(): Promise<void> {
+    if (coordinator) return;
+    const { Coordinator } = await import('../mcp/coordinator.js');
+    coordinator = new Coordinator();
+    coordinator.setWindow(win);
+    registerCoordinatorHandlers();
+  }
+
+  // Renderer calls this at startup (if coordinator mode was previously enabled)
+  // and when the user toggles the setting on.
+  ipcMain.handle(IPC.SetCoordinatorModeEnabled, async (_e, args: { enabled: boolean }) => {
+    if (args.enabled) await enableCoordinatorMode();
+  });
+
+  // Eagerly initialize if coordinator mode was enabled in the last saved state,
+  // so the handlers are ready before the renderer finishes loading.
+  (() => {
+    const json = loadAppState();
+    if (!json) return;
+    try {
+      const state = JSON.parse(json) as { coordinatorModeEnabled?: boolean };
+      if (state.coordinatorModeEnabled === true) {
+        void enableCoordinatorMode();
+      }
+    } catch {
+      // ignore malformed state
+    }
+  })();
+
+  ipcMain.handle(IPC.StopMCPServer, async () => {
+    // The MCP server process is spawned by Claude Code (via --mcp-config),
+    // not by us. This handler is a no-op but kept for API completeness.
+  });
+
+  ipcMain.handle(IPC.GetMCPStatus, () => {
+    // The MCP server process is spawned by Claude Code (via --mcp-config),
+    // not by us. We report whether the remote HTTP server that the MCP
+    // server connects to is running — if it's up, MCP tools should work.
+    return {
+      mcpRunning: remoteServer !== null,
+      remoteRunning: remoteServer !== null,
+    };
+  });
+
+  ipcMain.handle(IPC.GetMCPLogs, () => getMCPLogs());
 
   // --- Forward window events to renderer ---
   win.on('focus', () => {

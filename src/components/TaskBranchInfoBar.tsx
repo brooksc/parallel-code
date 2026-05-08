@@ -26,13 +26,28 @@ interface TaskBranchInfoBarProps {
 }
 
 export function TaskBranchInfoBar(props: TaskBranchInfoBarProps) {
+  const mod = isMac ? 'Cmd' : 'Ctrl';
   const editorTitle = () =>
     store.editorCommand
-      ? `Click to open in ${store.editorCommand} · ${isMac ? 'Cmd' : 'Ctrl'}+Click to reveal in file manager`
-      : 'Click to reveal in file manager';
+      ? `Click to open in ${store.editorCommand} · ${mod}+Click to reveal in file manager · ${mod}+Shift+Click to open the project root in ${store.editorCommand}`
+      : `Click to reveal in file manager · ${mod}+Shift+Click to reveal the project root`;
 
   const handleOpenInEditor = (e: MouseEvent) => {
-    if (store.editorCommand && !e.ctrlKey && !e.metaKey) {
+    const modKey = e.ctrlKey || e.metaKey;
+    if (modKey && e.shiftKey) {
+      const projectPath = getProject(props.task.projectId)?.path;
+      if (!projectPath) return;
+      const action = store.editorCommand
+        ? openInEditor(store.editorCommand, projectPath)
+        : revealItemInDir(projectPath);
+      action.catch((err) =>
+        showNotification(
+          `Could not open project folder: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      return;
+    }
+    if (store.editorCommand && !modKey) {
       openInEditor(store.editorCommand, props.task.worktreePath).catch((err) =>
         showNotification(`Editor failed: ${err instanceof Error ? err.message : 'unknown error'}`),
       );

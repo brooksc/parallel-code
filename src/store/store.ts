@@ -54,6 +54,9 @@ export {
   setStepsContent,
   setTaskStepsEnabled,
   setTaskLastInputAt,
+  initMCPListeners,
+  getCoordinatorCloseWarning,
+  setTaskControl,
 } from './tasks';
 export {
   setActiveTask,
@@ -73,6 +76,8 @@ export {
   triggerAction,
   getTaskFocusedPanel,
   setTaskFocusedPanel,
+  isPanelFocused,
+  isPanelFocusedPrefix,
   focusSidebar,
   unfocusSidebar,
   unfocusPlaceholder,
@@ -111,13 +116,16 @@ export {
   setFontSmoothing,
   setDesktopNotificationsEnabled,
   setVerboseLogging,
+  setCoordinatorNotificationDelayMs,
   setInactiveColumnOpacity,
   setEditorCommand,
   setDockerImage,
   setDockerAvailable,
+  setShareDockerAgentAuth,
   setAskCodeProvider,
   setMinimaxApiKey,
   setWindowState,
+  setCoordinatorModeEnabled,
 } from './ui';
 export {
   getTaskDotStatus,
@@ -161,3 +169,9 @@ export {
   checkConflict,
   dismissMigrationBanner,
 } from './keybindings';
+export {
+  hasAnyCoordinatorTask,
+  refreshMCPStatus,
+  startMCPStatusPolling,
+  stopMCPStatusPolling,
+} from './mcpStatus';

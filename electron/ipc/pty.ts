@@ -64,6 +64,50 @@ const BATCH_INTERVAL = 8; // ms
 const TAIL_CAP = 8 * 1024;
 const MAX_LINES = 50;
 
+function redactedSpawnArgs(command: string, args: string[]): string[] {
+  if ((command === '/bin/sh' || command.endsWith('/sh')) && args[0] === '-c') {
+    return ['-c', '<redacted>'];
+  }
+  if (command === 'docker') {
+    return redactDockerArgs(args);
+  }
+  return args;
+}
+
+function redactDockerArgs(args: string[]): string[] {
+  const redacted: string[] = [];
+  let redactNextEnv = false;
+
+  for (const arg of args) {
+    if (redactNextEnv) {
+      redacted.push(redactEnvAssignment(arg));
+      redactNextEnv = false;
+      continue;
+    }
+
+    if (arg === '-e' || arg === '--env') {
+      redacted.push(arg);
+      redactNextEnv = true;
+      continue;
+    }
+
+    if (arg.startsWith('--env=')) {
+      redacted.push(`--env=${redactEnvAssignment(arg.slice('--env='.length))}`);
+      continue;
+    }
+
+    redacted.push(arg);
+  }
+
+  return redacted;
+}
+
+function redactEnvAssignment(value: string): string {
+  const eqIdx = value.indexOf('=');
+  if (eqIdx <= 0) return '<redacted>';
+  return `${value.slice(0, eqIdx)}=<redacted>`;
+}
+
 /** Verify that a command exists in PATH. Throws a descriptive error if not found. */
 export function validateCommand(command: string): void {
   if (!command || !command.trim()) {
@@ -104,6 +148,7 @@ export function spawnAgent(
     isShell?: boolean;
     dockerMode?: boolean;
     dockerImage?: string;
+    shareDockerAgentAuth?: boolean;
     onOutput: { __CHANNEL_ID__: string };
   },
 ): void {
@@ -220,7 +265,7 @@ export function spawnAgent(
       '-e',
       `HOME=${DOCKER_CONTAINER_HOME}`,
       // Mount SSH and git config read-only for git operations
-      ...buildDockerCredentialMounts(),
+      ...buildDockerCredentialMounts(args.command, args.shareDockerAgentAuth === true),
       image,
       command,
       ...args.args,
@@ -229,6 +274,14 @@ export function spawnAgent(
     spawnCommand = command;
     spawnArgs = args.args;
   }
+
+  logDebug('pty', `spawn command ${args.agentId}`, {
+    taskId: args.taskId,
+    command: spawnCommand,
+    args: redactedSpawnArgs(spawnCommand, spawnArgs),
+    cwd,
+    dockerMode: args.dockerMode === true,
+  });
 
   const proc = pty.spawn(spawnCommand, spawnArgs, {
     name: 'xterm-256color',
@@ -564,7 +617,21 @@ function buildDockerEnvFlags(env: Record<string, string>): string[] {
   return flags;
 }
 
-function buildDockerCredentialMounts(): string[] {
+// Config directories each agent CLI uses for auth/settings, relative to HOME.
+const AGENT_CONFIG_DIRS: Record<string, string[]> = {
+  claude: ['.claude'],
+  codex: ['.codex'],
+  gemini: ['.gemini'],
+  opencode: ['.config/opencode'],
+  copilot: ['.config/github-copilot'],
+};
+
+// Config files (not directories) each agent CLI uses for auth, relative to HOME.
+const AGENT_CONFIG_FILES: Record<string, string[]> = {
+  claude: ['.claude.json'],
+};
+
+function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boolean): string[] {
   const mounts: string[] = [];
   const home = process.env.HOME;
   if (!home) return mounts;
@@ -599,6 +666,38 @@ function buildDockerCredentialMounts(): string[] {
   const googleCredsFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (googleCredsFile) {
     mountIfExists(googleCredsFile, googleCredsFile);
+  }
+
+  // When "Share agent auth across Linux containers" is enabled, bind-mount a
+  // host directory (created here, owned by the current user) into the agent's
+  // config location inside the container. Using a host directory avoids the
+  // root-ownership problem of Docker named volumes: the directory is created
+  // by this process (running as the user), so the containerised agent can
+  // write credentials on first login and read them on subsequent runs.
+  if (shareAgentAuth) {
+    const baseCommand = path.basename(agentCommand);
+    for (const relDir of AGENT_CONFIG_DIRS[baseCommand] ?? []) {
+      const hostDir = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relDir);
+      try {
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        mounts.push('-v', `${hostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
+      } catch {
+        console.warn(`[docker-auth] Could not create host auth dir ${hostDir}, skipping mount`);
+      }
+    }
+    for (const relFile of AGENT_CONFIG_FILES[baseCommand] ?? []) {
+      const hostFile = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relFile);
+      try {
+        const hostDir = path.dirname(hostFile);
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        if (!fs.existsSync(hostFile) || fs.statSync(hostFile).size === 0) {
+          fs.writeFileSync(hostFile, '{}', { mode: 0o600 });
+        }
+        mounts.push('-v', `${hostFile}:${DOCKER_CONTAINER_HOME}/${relFile}`);
+      } catch {
+        console.warn(`[docker-auth] Could not create host auth file ${hostFile}, skipping mount`);
+      }
+    }
   }
 
   return mounts;

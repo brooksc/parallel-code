@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, webFrame } = require('electron');
+const { contextBridge, ipcRenderer, webFrame, webUtils } = require('electron');
 
 // Allowlist of valid IPC channels.
 // IMPORTANT: This list MUST stay in sync with the IPC enum in electron/ipc/channels.ts.
@@ -18,6 +18,7 @@ const ALLOWED_CHANNELS = new Set([
   'create_task',
   'delete_task',
   // Git
+  'get_uncommitted_file_diffs',
   'get_changed_files',
   'get_changed_files_from_branch',
   'get_file_diff',
@@ -108,7 +109,8 @@ const ALLOWED_CHANNELS = new Set([
   'open_path',
   'read_file_text',
   // Clipboard
-  'save_clipboard_image',
+  'resolve_clipboard_paste',
+  'save_dropped_image',
   // Notifications
   'show_notification',
   'notification_clicked',
@@ -118,6 +120,24 @@ const ALLOWED_CHANNELS = new Set([
   'pr_checks_update',
   // Logging
   'log_from_renderer',
+  // MCP orchestration
+  'start_mcp_server',
+  'stop_mcp_server',
+  'get_mcp_status',
+  'get_mcp_logs',
+  'mcp_task_created',
+  'mcp_task_closed',
+  'mcp_task_state_sync',
+  'mcp_control_changed',
+  'mcp_coordinator_notification_staged',
+  'mcp_coordinator_orphaned_notification',
+  'mcp_coordinator_registered',
+  'mcp_coordinator_deregistered',
+  'mcp_coordinator_notification_ack',
+  'mcp_coordinated_task_prompt_delivered',
+  'mcp_coordinator_restage_after_user_send',
+  // Coordinator settings
+  'set_coordinator_mode_enabled',
 ]);
 
 function isAllowedChannel(channel) {
@@ -142,4 +162,14 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
   setZoomFactor: (factor) => webFrame.setZoomFactor(factor),
+  // Returns the absolute filesystem path for a File obtained from a drop event
+  // (or any DataTransfer / input[type=file]). Returns '' for File objects that
+  // have no backing path (e.g. images dragged from a browser tab).
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || '';
+    } catch {
+      return '';
+    }
+  },
 });

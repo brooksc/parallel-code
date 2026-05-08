@@ -3,7 +3,18 @@
 </p>
 
 <p align="center">
-  Turn wait time into parallel progress.
+  <strong>Ten agents.<br>
+  Ten branches.<br>
+  One afternoon.</strong>
+</p>
+
+<p align="center">
+  Dispatch AI coding agents in parallel, each in its own worktree.<br>
+  Review the diffs, merge the wins, toss the rest.
+</p>
+
+<p align="center">
+  Works with Claude Code, Codex, and Gemini · Every change isolated in its own git worktree · Free, open source, no extra platform fee
 </p>
 
 <p align="center">
@@ -24,8 +35,6 @@
   <img src="screens/longer-video.gif" alt="Parallel Code demo" width="800">
 </p>
 
-**Parallel Code** is a desktop app that gives every AI coding agent its own git branch and worktree — automatically.
-
 ## Screenshots
 
 | Multiple agents in parallel                           | Focused view on a single task                 |
@@ -36,7 +45,7 @@
 
 ## Why Parallel Code?
 
-- **Use the AI coding tools you already trust** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli) — all from one interface.
+- **Use the AI coding tools you already trust** — [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and [Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli) — all from one interface.
 - **Free and open source** — no extra subscription required. MIT licensed.
 - **Keep every change isolated and reviewable** — each task gets its own git branch and worktree automatically.
 - **Run agents in parallel, not in sequence** — five agents on five features at the same time, zero conflicts.
@@ -71,10 +80,18 @@ When you're happy with the result, merge the branch back to main from the sideba
 <summary><strong>More features</strong></summary>
 
 - Tiled panel layout with drag-to-reorder
-- Built-in diff viewer and changed files list per task
+- **Focus mode** — single-task layout with a clean two-column view on wide screens (`Ctrl+Shift+F`)
+- Built-in diff viewer with inline review comments and per-commit navigation
+- **Steps tracking panel** — engineering-manager-style timeline of agent progress (writes to `.claude/steps.json`)
+- **Notes panel per task** — jot ideas, then send the notes straight to the agent as a prompt
+- **PR CI status watcher** — desktop notification when GitHub checks settle
 - Shell terminals per task, scoped to the worktree
-- Direct mode for working on the main branch without isolation
-- Six themes — Minimal, Graphite, Classic, Indigo, Ember, Glacier
+- **Direct mode** for working on the main branch without isolation, plus support for **folders without a git repo**
+- **Existing worktree import** — bring already-created worktrees into Parallel Code
+- **Sandboxing with project-specific Dockerfiles** — drop a `.parallel-code/Dockerfile` into the project and tasks run inside it
+- **Coverage radar** — per-file test-coverage badges in the Changed Files panel
+- **Configurable keyboard shortcuts** with per-agent presets
+- 10 themes — Islands Dark, Minimal, Graphite, Midnight, Classic, Indigo, Ember, Glacier, Zenburnesque, Workbench
 - State persists across restarts
 - macOS and Linux
 
@@ -98,7 +115,7 @@ When you're happy with the result, merge the branch back to main from the sideba
    - **macOS** — `.dmg` (universal)
    - **Linux** — `.AppImage` or `.deb`
 
-2. **Install at least one AI coding CLI:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+2. **Install at least one AI coding CLI:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli)
 
 3. **Open Parallel Code**, point it at a git repo, and start dispatching tasks.
 
@@ -121,29 +138,30 @@ Requires [Node.js](https://nodejs.org/) v18+.
 
 `Ctrl` = `Cmd` on macOS.
 
-| Shortcut              | Action                         |
-| --------------------- | ------------------------------ |
-| **Tasks**             |                                |
-| `Ctrl+N`              | New task                       |
-| `Ctrl+Shift+A`        | New task (alternative)         |
-| `Ctrl+Enter`          | Send prompt                    |
-| `Ctrl+Shift+M`        | Merge task to main             |
-| `Ctrl+Shift+P`        | Push to remote                 |
-| `Ctrl+W`              | Close focused terminal session |
-| `Ctrl+Shift+W`        | Close active task              |
-| **Navigation**        |                                |
-| `Alt+Arrows`          | Navigate between panels        |
-| `Ctrl+Alt+Left/Right` | Reorder active task            |
-| `Ctrl+B`              | Toggle sidebar                 |
-| **Terminals**         |                                |
-| `Ctrl+Shift+T`        | New shell terminal             |
-| `Ctrl+Shift+D`        | New standalone terminal        |
-| **App**               |                                |
-| `Ctrl+,`              | Open settings                  |
-| `Ctrl+/` or `F1`      | Show all shortcuts             |
-| `Ctrl+0`              | Reset zoom                     |
-| `Ctrl+Scroll`         | Adjust zoom                    |
-| `Escape`              | Close dialog                   |
+| Shortcut              | Action                             |
+| --------------------- | ---------------------------------- |
+| **Tasks**             |                                    |
+| `Ctrl+N`              | New task                           |
+| `Ctrl+Shift+A`        | New task (alternative)             |
+| `Ctrl+Enter`          | Send prompt                        |
+| `Ctrl+Shift+M`        | Merge task to main                 |
+| `Ctrl+Shift+P`        | Push to remote                     |
+| `Ctrl+W`              | Close focused terminal session     |
+| `Ctrl+Shift+W`        | Close active task                  |
+| **Navigation**        |                                    |
+| `Alt+Arrows`          | Focus pane/task in arrow direction |
+| `Ctrl+Alt+Left/Right` | Move task left/right               |
+| `Ctrl+B`              | Toggle sidebar                     |
+| `Ctrl+Shift+F`        | Toggle focus mode                  |
+| **Terminals**         |                                    |
+| `Ctrl+Shift+T`        | New shell terminal                 |
+| `Ctrl+Shift+D`        | New standalone terminal            |
+| **App**               |                                    |
+| `Ctrl+,`              | Open settings                      |
+| `Ctrl+/` or `F1`      | Show all shortcuts                 |
+| `Ctrl+0`              | Reset zoom                         |
+| `Ctrl+Scroll`         | Adjust zoom                        |
+| `Escape`              | Close dialog                       |
 
 </details>
 

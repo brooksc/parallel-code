@@ -366,6 +366,48 @@ html[data-look='zenburnesque'] {
   --task-panel-bg: #2e2d2a;
 }
 
+/* Catppuccin Mocha — official Catppuccin palette
+   (https://github.com/catppuccin/catppuccin). Surfaces follow the
+   Crust → Mantle → Base ladder; mauve serves as the signature accent
+   with sapphire links. */
+html[data-look='catppuccin-mocha'] {
+  --bg: radial-gradient(120% 120% at 18% 0%, #2b223e 0%, #1a1a28 55%, #11111b 100%);
+  --bg-elevated: #1e1e2e;
+  --bg-input: #313244;
+  --bg-hover: #45475a;
+  --bg-selected: #3b2f5a;
+  --bg-selected-subtle: #3b2f5a40;
+  --border: #45475a;
+  --border-subtle: #313244;
+  --border-focus: #cba6f7;
+  --fg: #cdd6f4;
+  --fg-muted: #a6adc8;
+  --fg-subtle: #7f849c;
+  --accent: #cba6f7;
+  --accent-hover: #d6b8fa;
+  --accent-text: #1e1e2e;
+  --link: #74c7ec;
+  --success: #a6e3a1;
+  --error: #f38ba8;
+  --warning: #f9e2af;
+  --island-bg: #1e1e2e;
+  --island-border: #45475a;
+  --task-container-bg: #181825;
+  --task-panel-bg: #1e1e2e;
+}
+
+/* Catppuccin Mocha leans on the surface ladder rather than chrome — drop
+   column borders and the active-column accent glow. Inactive opacity still
+   distinguishes the focused column. */
+html[data-look='catppuccin-mocha'] .task-column,
+html[data-look='catppuccin-mocha'] .task-column.active {
+  border-color: transparent !important;
+}
+
+html[data-look='catppuccin-mocha'] .task-column.active {
+  box-shadow: var(--shadow-soft) !important;
+}
+
 /* Islands Dark — JetBrains 2025.3 inspired: lighter tinted frame, darker uniform island panels.
    Frame uses a color→gray radial reminiscent of JetBrains' "Project Gradient". */
 html[data-look='islands-dark'] {
@@ -395,6 +437,40 @@ html[data-look='islands-dark'] {
   --task-panel-bg: #181a1d;
 }
 
+/* Islands Light — the JetBrains-inspired Islands look on a light palette.
+   Same structural rules as Islands Dark (matched via [data-look^='islands-']);
+   only the color tokens differ. Frame uses a soft blue-tinted radial. */
+html[data-look='islands-light'] {
+  --bg: radial-gradient(circle at 0% 0%, #b3d4ff 0%, #cdd6e4 8%, #dfe1e5 18%);
+  --bg-elevated: #ffffff;
+  --bg-input: #f3f4f6;
+  --bg-hover: #e8eaef;
+  --bg-selected: #cfe1ff;
+  --bg-selected-subtle: #cfe1ff60;
+  --border: #d3d5db;
+  --border-subtle: #e3e5ea;
+  --border-focus: #3574f0;
+  --fg: #1f2329;
+  --fg-muted: #5e6066;
+  --fg-subtle: #8d9199;
+  --accent: #3574f0;
+  --accent-hover: #5a8dff;
+  --accent-text: #ffffff;
+  --link: #3574f0;
+  --success: #369650;
+  --error: #d62b40;
+  --warning: #a98708;
+  --island-bg: #ffffff;
+  --island-border: #d3d5db;
+  --island-radius: 12px;
+  --task-container-bg: #ffffff;
+  --task-panel-bg: #ffffff;
+  --shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-pop:
+    0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
+    0 8px 22px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .app-shell[data-look='minimal']::before {
   opacity: 0 !important;
   background: none !important;
@@ -405,34 +481,34 @@ html[data-look='islands-dark'] {
   border-color: color-mix(in srgb, var(--border) 85%, transparent) !important;
 }
 
-.app-shell[data-look='islands-dark']::before {
+.app-shell[data-look^='islands-']::before {
   opacity: 0 !important;
   background: none !important;
 }
 
-html[data-look='islands-dark'] .task-column,
-html[data-look='islands-dark'] .task-column.active {
+html[data-look^='islands-'] .task-column,
+html[data-look^='islands-'] .task-column.active {
   margin: 0 !important;
   border-color: transparent !important;
   box-shadow: none !important;
 }
 
-html[data-look='islands-dark'] .tiling-layout-strip > .resize-handle-h {
+html[data-look^='islands-'] .tiling-layout-strip > .resize-handle-h {
   margin: 0 -3px;
   position: relative;
   z-index: 3;
 }
 
-html[data-look='islands-dark'] .tiling-layout-strip > .resize-handle-h::before {
+html[data-look^='islands-'] .tiling-layout-strip > .resize-handle-h::before {
   display: none;
 }
 
-html[data-look='islands-dark'] .sidebar-shell {
+html[data-look^='islands-'] .sidebar-shell {
   padding: 6px 3px 6px 6px;
   box-sizing: border-box;
 }
 
-html[data-look='islands-dark'] .sidebar-panel {
+html[data-look^='islands-'] .sidebar-panel {
   padding: 14px !important;
   gap: 14px !important;
   background: var(--island-bg);
@@ -443,14 +519,14 @@ html[data-look='islands-dark'] .sidebar-panel {
   overflow: hidden;
 }
 
-/* Islands Dark: prompt textarea sits flush in its panel (matches the notes
+/* Islands: prompt textarea sits flush in its panel (matches the notes
    textarea pattern) instead of as a chromed input field. */
-html[data-look='islands-dark'] .prompt-input-panel {
+html[data-look^='islands-'] .prompt-input-panel {
   padding: 0 !important;
   border-radius: 0 !important;
 }
 
-html[data-look='islands-dark'] .prompt-textarea {
+html[data-look^='islands-'] .prompt-textarea {
   background: var(--task-panel-bg) !important;
   border: none !important;
   border-radius: 0 !important;
@@ -458,16 +534,16 @@ html[data-look='islands-dark'] .prompt-textarea {
   padding: 6px 36px 6px 8px !important;
 }
 
-html[data-look='islands-dark'] .prompt-textarea:focus {
+html[data-look^='islands-'] .prompt-textarea:focus {
   border: none !important;
   box-shadow: none !important;
 }
 
-/* Islands Dark strips the textarea's own focus ring (it sits flush in the
+/* Islands strips the textarea's own focus ring (it sits flush in the
    panel), so restore the panel-level focus outline that the global rule
    disables for .prompt-input-panel. */
-html[data-look='islands-dark'] .prompt-input-panel:focus-within::after,
-html[data-look='islands-dark'] .prompt-input-panel[data-panel-focused='true']::after {
+html[data-look^='islands-'] .prompt-input-panel:focus-within::after,
+html[data-look^='islands-'] .prompt-input-panel[data-panel-focused='true']::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -479,23 +555,23 @@ html[data-look='islands-dark'] .prompt-input-panel[data-panel-focused='true']::a
 
 /* Soften the send button so it doesn't punch through the muted theme —
    matches the notes panel's send-notes button (soft accent tint). */
-html[data-look='islands-dark'] .prompt-send-btn:not(:disabled) {
+html[data-look^='islands-'] .prompt-send-btn:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 14%, var(--bg-input)) !important;
   color: var(--fg) !important;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)) !important;
 }
 
-html[data-look='islands-dark'] .prompt-send-btn:disabled {
+html[data-look^='islands-'] .prompt-send-btn:disabled {
   background: transparent !important;
   color: var(--fg-subtle) !important;
   border: 1px solid var(--border) !important;
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode {
+html[data-look^='islands-'] .task-column.focus-mode {
   background: transparent !important;
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode .task-header-stack {
+html[data-look^='islands-'] .task-column.focus-mode .task-header-stack {
   margin-bottom: 5px;
   background: var(--task-panel-bg);
   border: 1px solid var(--island-border);
@@ -503,11 +579,11 @@ html[data-look='islands-dark'] .task-column.focus-mode .task-header-stack {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode .task-branch-info-bar {
+html[data-look^='islands-'] .task-column.focus-mode .task-branch-info-bar {
   border-bottom: none;
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode .focusable-panel {
+html[data-look^='islands-'] .task-column.focus-mode .focusable-panel {
   background: var(--task-panel-bg) !important;
   border: 1px solid var(--island-border);
   border-radius: 8px !important;
@@ -522,15 +598,15 @@ html[data-look='islands-dark'] .task-column.focus-mode .focusable-panel {
    shape on whatever portion of the panel is visible. The focus outline lifts
    onto the cell for the same reason — drawn inside the panel it would also
    get clipped at the bottom. */
-html[data-look='islands-dark'] .task-column.focus-mode .rp-cell:has(> .focusable-panel) {
+html[data-look^='islands-'] .task-column.focus-mode .rp-cell:has(> .focusable-panel) {
   border-radius: 8px;
   position: relative;
 }
 
-html[data-look='islands-dark']
+html[data-look^='islands-']
   .task-column.focus-mode
   .rp-cell:has(> .focusable-panel:focus-within)::after,
-html[data-look='islands-dark']
+html[data-look^='islands-']
   .task-column.focus-mode
   .rp-cell:has(> .focusable-panel[data-panel-focused='true'])::after {
   content: '';
@@ -542,24 +618,21 @@ html[data-look='islands-dark']
   z-index: 10;
 }
 
-html[data-look='islands-dark']
-  .task-column.focus-mode
-  .rp-cell
-  > .focusable-panel:focus-within::after,
-html[data-look='islands-dark']
+html[data-look^='islands-'] .task-column.focus-mode .rp-cell > .focusable-panel:focus-within::after,
+html[data-look^='islands-']
   .task-column.focus-mode
   .rp-cell
   > .focusable-panel[data-panel-focused='true']::after {
   display: none;
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode .shell-terminals-row {
+html[data-look^='islands-'] .task-column.focus-mode .shell-terminals-row {
   background: transparent !important;
   gap: 5px !important;
   margin-top: 5px !important;
 }
 
-html[data-look='islands-dark']
+html[data-look^='islands-']
   .task-column.focus-mode
   .task-changed-files-section
   .changed-files-list-panel {
@@ -569,38 +642,38 @@ html[data-look='islands-dark']
   box-shadow: none !important;
 }
 
-html[data-look='islands-dark']
+html[data-look^='islands-']
   .task-column.focus-mode
   .task-changed-files-section
   .changed-files-list-panel::after {
   content: none;
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode .prompt-input-panel {
+html[data-look^='islands-'] .task-column.focus-mode .prompt-input-panel {
   padding: 0 !important;
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode .resize-handle::before {
+html[data-look^='islands-'] .task-column.focus-mode .resize-handle::before {
   display: none;
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode .resize-handle-h {
+html[data-look^='islands-'] .task-column.focus-mode .resize-handle-h {
   width: 5px;
 }
 
-html[data-look='islands-dark'] .task-column.focus-mode .resize-handle-v {
+html[data-look^='islands-'] .task-column.focus-mode .resize-handle-v {
   height: 5px;
 }
 
-/* Islands Dark: hairline between adjacent sub-panels (notes ↔ changed-files,
+/* Islands: hairline between adjacent sub-panels (notes ↔ changed-files,
    shell ↔ agent terminal, etc). Drawn inside the existing 6px resize-handle
    so we don't change layout. Hidden during hover/drag — the handle's accent
    color takes over. */
-html[data-look='islands-dark'] .resize-handle {
+html[data-look^='islands-'] .resize-handle {
   position: relative;
 }
 
-html[data-look='islands-dark'] .resize-handle-v::before {
+html[data-look^='islands-'] .resize-handle-v::before {
   content: '';
   position: absolute;
   top: 50%;
@@ -612,7 +685,7 @@ html[data-look='islands-dark'] .resize-handle-v::before {
   pointer-events: none;
 }
 
-html[data-look='islands-dark'] .resize-handle-h::before {
+html[data-look^='islands-'] .resize-handle-h::before {
   content: '';
   position: absolute;
   left: 50%;
@@ -626,8 +699,8 @@ html[data-look='islands-dark'] .resize-handle-h::before {
 
 /* Bottom hairline under the project/branch info row — matches the
    inter-panel divider for themes that use full-bleed seams instead of
-   gapped islands (islands-dark, workbench). */
-html[data-look='islands-dark'] .task-branch-info-bar,
+   gapped islands (islands, workbench). */
+html[data-look^='islands-'] .task-branch-info-bar,
 html[data-look='workbench'] .task-branch-info-bar {
   border-bottom: 1px solid var(--border);
 }
@@ -1844,13 +1917,13 @@ body.dragging-task * {
   margin: 0.1em 0;
 }
 .plan-markdown code {
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
   padding: 0.1em 0.3em;
   border-radius: 3px;
   font-size: 0.9em;
 }
 .plan-markdown pre {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
   padding: 0.5em;
   border-radius: 4px;
   overflow-x: auto;
@@ -1861,7 +1934,7 @@ body.dragging-task * {
   padding: 0;
 }
 .plan-markdown pre.shiki-block {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--bg-input);
   padding: 0.6em 0.8em;
   border-radius: 6px;
   overflow-x: auto;
@@ -1877,7 +1950,7 @@ body.dragging-task * {
   content: attr(data-lang);
   display: block;
   font-size: 0.75em;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--fg-subtle);
   margin-bottom: 0.3em;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1887,7 +1960,7 @@ body.dragging-task * {
 }
 .plan-markdown hr {
   border: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  border-top: 1px solid var(--border);
   margin: 0.5em 0;
 }
 
@@ -1904,7 +1977,7 @@ body.dragging-task * {
   font-size: 1.6em;
   margin: 1.4em 0 0.6em;
   padding-bottom: 0.3em;
-  border-bottom: 2px solid rgba(255, 255, 255, 0.12);
+  border-bottom: 2px solid var(--border);
   letter-spacing: -0.01em;
 }
 .plan-markdown-dialog h1:first-child {
@@ -1914,7 +1987,7 @@ body.dragging-task * {
   font-size: 1.3em;
   margin: 1.2em 0 0.5em;
   padding-bottom: 0.2em;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .plan-markdown-dialog h3 {
   font-size: 1.1em;
@@ -1952,10 +2025,10 @@ body.dragging-task * {
 .plan-markdown-dialog code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85em;
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
   padding: 0.15em 0.4em;
   border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
 }
 
 /* Code blocks — keep monospace, more padding */
@@ -1973,7 +2046,8 @@ body.dragging-task * {
   padding: 0.8em 1em;
   border-radius: 8px;
   margin: 0.8em 0;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
 }
 
 /* Blockquotes */
@@ -1999,10 +2073,10 @@ body.dragging-task * {
 .plan-markdown-dialog td {
   padding: 0.5em 0.8em;
   text-align: left;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border);
 }
 .plan-markdown-dialog th {
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
   font-weight: 600;
   color: var(--fg-muted);
   font-size: 0.85em;
@@ -2010,13 +2084,13 @@ body.dragging-task * {
   letter-spacing: 0.03em;
 }
 .plan-markdown-dialog tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: color-mix(in srgb, var(--fg) 2%, transparent);
 }
 
 /* Horizontal rules — section dividers */
 .plan-markdown-dialog hr {
   margin: 1.5em 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--border);
 }
 
 /* Checkboxes — bigger click target */
@@ -2042,7 +2116,7 @@ body.dragging-task * {
 
 /* Mermaid diagram blocks */
 .mermaid-block {
-  background: rgba(0, 0, 0, 0.2);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
   border-radius: 8px;
   padding: 1em;
   margin: 0.8em 0;
@@ -2055,7 +2129,7 @@ body.dragging-task * {
 .mermaid-block.mermaid-rendered {
   white-space: normal;
   text-align: center;
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
 }
 
 /* AskCodeCard loading animation */

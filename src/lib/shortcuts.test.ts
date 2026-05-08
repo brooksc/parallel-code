@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { initShortcuts, registerZoomShortcuts } from './shortcuts';
+import { DEFAULT_BINDINGS } from './keybindings/defaults';
+import {
+  initShortcuts,
+  registerFromRegistry,
+  registerJumpToTaskShortcuts,
+  registerZoomShortcuts,
+} from './shortcuts';
 
 type KeyboardEventStub = Pick<
   KeyboardEvent,
@@ -13,6 +19,130 @@ type KeyboardEventStub = Pick<
   | 'stopPropagation'
   | 'target'
 >;
+
+describe('registerFromRegistry — jump-to-task bindings', () => {
+  let keydownHandler: ((event: KeyboardEvent) => void) | undefined;
+
+  beforeEach(() => {
+    vi.stubGlobal('document', { querySelector: () => null });
+    vi.stubGlobal('window', {
+      addEventListener: (type: string, handler: EventListenerOrEventListenerObject) => {
+        if (type === 'keydown' && typeof handler === 'function') {
+          keydownHandler = handler as (event: KeyboardEvent) => void;
+        }
+      },
+      removeEventListener: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    keydownHandler = undefined;
+    vi.unstubAllGlobals();
+  });
+
+  it('fires jumpToTask:1 handler on Cmd+1 (key="1")', () => {
+    const handler = vi.fn();
+    const cleanupRegistry = registerFromRegistry(DEFAULT_BINDINGS, { 'jumpToTask:1': handler });
+    const cleanupShortcuts = initShortcuts();
+
+    const event: Pick<
+      KeyboardEvent,
+      | 'key'
+      | 'ctrlKey'
+      | 'metaKey'
+      | 'altKey'
+      | 'shiftKey'
+      | 'target'
+      | 'preventDefault'
+      | 'stopPropagation'
+    > = {
+      key: '1',
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: false,
+      target: null,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+
+    keydownHandler?.(event as KeyboardEvent);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    cleanupShortcuts();
+    cleanupRegistry();
+  });
+
+  it('fires jumpToTask handler on Cmd+Shift+1 via registerJumpToTaskShortcuts (AZERTY)', () => {
+    const handler = vi.fn();
+    const cleanupJump = registerJumpToTaskShortcuts(handler);
+    const cleanupShortcuts = initShortcuts();
+
+    const event: Pick<
+      KeyboardEvent,
+      | 'key'
+      | 'ctrlKey'
+      | 'metaKey'
+      | 'altKey'
+      | 'shiftKey'
+      | 'target'
+      | 'preventDefault'
+      | 'stopPropagation'
+    > = {
+      key: '1',
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: true,
+      target: null,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+
+    keydownHandler?.(event as KeyboardEvent);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(0);
+
+    cleanupShortcuts();
+    cleanupJump();
+  });
+
+  it('does NOT fire when key is "Digit1" (old broken binding format)', () => {
+    const handler = vi.fn();
+    const cleanupRegistry = registerFromRegistry(DEFAULT_BINDINGS, { 'jumpToTask:1': handler });
+    const cleanupShortcuts = initShortcuts();
+
+    const event: Pick<
+      KeyboardEvent,
+      | 'key'
+      | 'ctrlKey'
+      | 'metaKey'
+      | 'altKey'
+      | 'shiftKey'
+      | 'target'
+      | 'preventDefault'
+      | 'stopPropagation'
+    > = {
+      key: 'Digit1',
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: false,
+      target: null,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+
+    keydownHandler?.(event as KeyboardEvent);
+
+    expect(handler).not.toHaveBeenCalled();
+
+    cleanupShortcuts();
+    cleanupRegistry();
+  });
+});
 
 describe('registerZoomShortcuts', () => {
   let keydownHandler: ((event: KeyboardEvent) => void) | undefined;

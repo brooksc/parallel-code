@@ -3,10 +3,27 @@ import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import type { CommitInfo } from '../ipc/types';
 
+/**
+ * Sentinel value used in place of a commit hash to mean "show only currently
+ * uncommitted changes". Picked so it cannot collide with a hex commit hash
+ * (the IPC validator rejects non-hex strings).
+ */
+export const UNCOMMITTED_SELECTION = 'uncommitted';
+
+export type CommitSelection = string | null;
+
+export function isUncommittedSelection(value: CommitSelection | undefined): boolean {
+  return value === UNCOMMITTED_SELECTION;
+}
+
+export function isCommitHashSelection(value: CommitSelection | undefined): value is string {
+  return value !== null && value !== undefined && value !== UNCOMMITTED_SELECTION;
+}
+
 interface CommitNavBarProps {
   commits: CommitInfo[];
-  selectedCommitHash: string | null;
-  onNavigate: (hash: string | null) => void;
+  selectedCommitHash: CommitSelection;
+  onNavigate: (selection: CommitSelection) => void;
   compact?: boolean;
   showMessage?: boolean;
 }
@@ -14,13 +31,17 @@ interface CommitNavBarProps {
 export function CommitNavBar(props: CommitNavBarProps) {
   const currentIndex = createMemo(() => {
     const hash = props.selectedCommitHash;
-    if (hash === null) return -1;
+    if (hash === null || hash === UNCOMMITTED_SELECTION) return -1;
     return props.commits.findIndex((c) => c.hash === hash);
   });
 
   const isAllChanges = () => props.selectedCommitHash === null;
+  const isUncommittedOnly = () => props.selectedCommitHash === UNCOMMITTED_SELECTION;
   const hasCommits = () => props.commits.length > 0;
-  const canGoLeft = () => hasCommits() && (isAllChanges() || currentIndex() > 0);
+  // All → Uncommitted (always); Uncommitted → latest commit (needs commits);
+  // commit N → commit N-1 (needs a previous commit).
+  const canGoLeft = () =>
+    isAllChanges() || (isUncommittedOnly() && hasCommits()) || (hasCommits() && currentIndex() > 0);
   const canGoRight = () => !isAllChanges();
 
   const selectedCommit = createMemo(() => {
@@ -29,32 +50,61 @@ export function CommitNavBar(props: CommitNavBarProps) {
   });
 
   function goLeft() {
-    const commits = props.commits;
-    if (commits.length === 0) return;
     if (isAllChanges()) {
+      props.onNavigate(UNCOMMITTED_SELECTION);
+      return;
+    }
+    if (isUncommittedOnly()) {
+      const commits = props.commits;
+      if (commits.length === 0) return;
       props.onNavigate(commits[commits.length - 1].hash);
-    } else {
-      const idx = currentIndex();
-      if (idx > 0) {
-        props.onNavigate(commits[idx - 1].hash);
-      }
+      return;
+    }
+    const idx = currentIndex();
+    if (idx > 0) {
+      props.onNavigate(props.commits[idx - 1].hash);
     }
   }
 
   function goRight() {
+    if (isAllChanges()) return;
+    if (isUncommittedOnly()) {
+      props.onNavigate(null);
+      return;
+    }
     const commits = props.commits;
-    if (commits.length === 0 || isAllChanges()) return;
     const idx = currentIndex();
     if (idx < commits.length - 1) {
       props.onNavigate(commits[idx + 1].hash);
     } else {
-      props.onNavigate(null);
+      props.onNavigate(UNCOMMITTED_SELECTION);
     }
   }
 
   const compact = () => props.compact ?? false;
   const btnSize = () => (compact() ? '18px' : '22px');
   const iconSize = () => (compact() ? 12 : 14);
+  const pillPadding = () => (compact() ? '1px 4px' : '2px 8px');
+  const pillFontSize = () => sf(compact() ? 10 : 12);
+
+  function pillStyle(active: boolean) {
+    return {
+      background: active ? `color-mix(in srgb, ${theme.accent} 15%, transparent)` : 'transparent',
+      border: `1px solid ${active ? theme.accent : theme.border}`,
+      color: active ? theme.accent : theme.fgMuted,
+      cursor: 'pointer',
+      'border-radius': '4px',
+      padding: pillPadding(),
+      'font-size': pillFontSize(),
+      'font-family': "'JetBrains Mono', monospace",
+      'font-weight': active ? '600' : '400',
+      'line-height': '1',
+      'flex-shrink': '0',
+      display: 'inline-flex',
+      'align-items': 'center',
+      height: btnSize(),
+    } as const;
+  }
 
   return (
     <div
@@ -72,7 +122,7 @@ export function CommitNavBar(props: CommitNavBarProps) {
           goLeft();
         }}
         disabled={!canGoLeft()}
-        title="Previous commit"
+        title="Previous"
         style={{
           background: 'transparent',
           border: `1px solid ${theme.border}`,
@@ -101,7 +151,7 @@ export function CommitNavBar(props: CommitNavBarProps) {
           goRight();
         }}
         disabled={!canGoRight()}
-        title="Next commit"
+        title="Next"
         style={{
           background: 'transparent',
           border: `1px solid ${theme.border}`,
@@ -123,6 +173,18 @@ export function CommitNavBar(props: CommitNavBarProps) {
         </svg>
       </button>
 
+      {/* Uncommitted-only button */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          props.onNavigate(UNCOMMITTED_SELECTION);
+        }}
+        title="Uncommitted changes only"
+        style={pillStyle(isUncommittedOnly())}
+      >
+        U
+      </button>
+
       {/* All Changes button */}
       <button
         onClick={(e) => {
@@ -130,27 +192,24 @@ export function CommitNavBar(props: CommitNavBarProps) {
           props.onNavigate(null);
         }}
         title="All changes (including uncommitted)"
-        style={{
-          background: isAllChanges()
-            ? `color-mix(in srgb, ${theme.accent} 15%, transparent)`
-            : 'transparent',
-          border: `1px solid ${isAllChanges() ? theme.accent : theme.border}`,
-          color: isAllChanges() ? theme.accent : theme.fgMuted,
-          cursor: 'pointer',
-          'border-radius': '4px',
-          padding: compact() ? '1px 4px' : '2px 8px',
-          'font-size': sf(compact() ? 10 : 12),
-          'font-family': "'JetBrains Mono', monospace",
-          'font-weight': isAllChanges() ? '600' : '400',
-          'line-height': '1',
-          'flex-shrink': '0',
-          display: 'inline-flex',
-          'align-items': 'center',
-          height: btnSize(),
-        }}
+        style={pillStyle(isAllChanges())}
       >
         All
       </button>
+
+      <Show when={props.showMessage && isUncommittedOnly()}>
+        <span
+          style={{
+            'font-size': sf(12),
+            'font-family': "'JetBrains Mono', monospace",
+            color: theme.fgMuted,
+            'white-space': 'nowrap',
+            'flex-shrink': '0',
+          }}
+        >
+          Uncommitted changes only
+        </span>
+      </Show>
 
       <Show when={props.showMessage && selectedCommit()}>
         {(commit) => (

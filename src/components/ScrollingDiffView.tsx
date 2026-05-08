@@ -698,7 +698,12 @@ function FileSection(props: {
         </Show>
 
         <Show when={!props.file.binary && props.file.status !== 'D'}>
-          <div style={{ 'padding-bottom': '8px', background: 'rgba(0, 0, 0, 0.15)' }}>
+          <div
+            style={{
+              'padding-bottom': '8px',
+              background: 'color-mix(in srgb, var(--fg) 6%, transparent)',
+            }}
+          >
             <Show when={props.file.hunks.length > 0 && props.file.status === 'M'}>
               <GapView
                 startLine={1}

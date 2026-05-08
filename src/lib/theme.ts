@@ -49,12 +49,45 @@ const terminalBackground: Record<LookPreset, string> = {
   glacier: '#232e3a',
   minimal: '#252520',
   zenburnesque: '#2e2d2a',
+  'catppuccin-mocha': '#1e1e2e',
   'islands-dark': '#181a1d',
+  'islands-light': '#ffffff',
   workbench: '#1f1f1f',
 };
 
-/** Returns an xterm-compatible theme object for the given preset */
+/**
+ * Returns an xterm-compatible theme object for the given preset.
+ * For light-background presets we override xterm's defaults (white text,
+ * white-ish bright ANSI palette) so plain output stays readable.
+ */
 export function getTerminalTheme(preset: LookPreset) {
+  if (preset === 'islands-light') {
+    return {
+      background: '#ffffff',
+      foreground: '#1f2329',
+      cursor: '#1f2329',
+      cursorAccent: '#ffffff',
+      selectionBackground: '#cfe1ff',
+      // GitHub-light-ish ANSI palette so colored output (claude prompts,
+      // ls --color, git status) stays legible on white.
+      black: '#24292e',
+      red: '#cf222e',
+      green: '#116329',
+      yellow: '#8a6d00',
+      blue: '#0550ae',
+      magenta: '#8250df',
+      cyan: '#1b7c83',
+      white: '#6e7781',
+      brightBlack: '#57606a',
+      brightRed: '#a40e26',
+      brightGreen: '#1a7f37',
+      brightYellow: '#633c01',
+      brightBlue: '#0969da',
+      brightMagenta: '#6639ba',
+      brightCyan: '#3192aa',
+      brightWhite: '#1f2329',
+    };
+  }
   return {
     background: terminalBackground[preset],
   };

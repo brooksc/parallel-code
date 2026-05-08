@@ -47,10 +47,16 @@ import {
   setStepsContent,
   setDockerAvailable,
   toggleTaskFocusMode,
+  initMCPListeners,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
-import { initShortcuts, registerFromRegistry, registerZoomShortcuts } from './lib/shortcuts';
+import {
+  initShortcuts,
+  registerFromRegistry,
+  registerJumpToTaskShortcuts,
+  registerZoomShortcuts,
+} from './lib/shortcuts';
 import { resolvedBindings, loadKeybindings, dismissMigrationBanner } from './store/keybindings';
 import { setupAutosave } from './store/autosave';
 import { isMac, mod } from './lib/platform';
@@ -355,6 +361,7 @@ function App() {
     await captureWindowState();
     setupAutosave();
     startTaskStatusPolling();
+    const stopMCPListeners = initMCPListeners();
     const stopNotificationWatcher = startDesktopNotificationWatcher(windowFocused);
     const stopPrChecksSubscription = startPrChecksSubscription();
 
@@ -520,6 +527,8 @@ function App() {
       resetZoom: () => resetGlobalScale(),
     });
 
+    const cleanupJumpToTaskShortcuts = registerJumpToTaskShortcuts((i) => jumpToTask(i));
+
     createEffect(() => {
       const cleanup = registerFromRegistry(resolvedBindings(), actionHandlers);
       onCleanup(cleanup);
@@ -531,6 +540,7 @@ function App() {
       unlistenCloseRequested();
       cleanupShortcuts();
       stopTaskStatusPolling();
+      stopMCPListeners();
       stopNotificationWatcher();
       stopPrChecksSubscription();
       offPlanContent();
@@ -539,6 +549,7 @@ function App() {
       unlistenResized?.();
       unlistenMoved?.();
       cleanupZoomShortcuts();
+      cleanupJumpToTaskShortcuts();
     });
   });
 

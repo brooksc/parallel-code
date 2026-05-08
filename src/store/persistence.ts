@@ -28,6 +28,9 @@ function enrichAgentDef(agentDef: AgentDef | null | undefined, availableAgents: 
     if (!agentDef.skip_permissions_args)
       agentDef.skip_permissions_args = fresh.skip_permissions_args;
   }
+  if (agentDef.id === 'codex' && agentDef.skip_permissions_args?.includes('--full-auto')) {
+    agentDef.skip_permissions_args = ['--dangerously-bypass-approvals-and-sandbox'];
+  }
 }
 
 export async function saveState(): Promise<void> {
@@ -66,6 +69,12 @@ export async function saveState(): Promise<void> {
     keybindingMigrationDismissed: store.keybindingMigrationDismissed || undefined,
     focusMode: store.focusMode || undefined,
     verboseLogging: store.verboseLogging || undefined,
+    coordinatorNotificationDelayMs:
+      store.coordinatorNotificationDelayMs !== 60_000
+        ? store.coordinatorNotificationDelayMs
+        : undefined,
+    shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
+    coordinatorModeEnabled: store.coordinatorModeEnabled || undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -96,6 +105,8 @@ export async function saveState(): Promise<void> {
       savedInitialPrompt: task.savedInitialPrompt,
       planFileName: task.planFileName,
       stepsEnabled: task.stepsEnabled,
+      coordinatorMode: task.coordinatorMode,
+      coordinatedBy: task.coordinatedBy,
     };
   }
 
@@ -128,6 +139,8 @@ export async function saveState(): Promise<void> {
       planFileName: task.planFileName,
       stepsEnabled: task.stepsEnabled,
       collapsed: true,
+      coordinatorMode: task.coordinatorMode,
+      coordinatedBy: task.coordinatedBy,
     };
   }
 
@@ -254,6 +267,9 @@ interface LegacyPersistedState {
   keybindingMigrationDismissed?: unknown;
   focusMode?: unknown;
   verboseLogging?: unknown;
+  coordinatorNotificationDelayMs?: unknown;
+  shareDockerAgentAuth?: unknown;
+  coordinatorModeEnabled?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -393,6 +409,19 @@ export async function loadState(): Promise<void> {
 
       s.verboseLogging = typeof raw.verboseLogging === 'boolean' ? raw.verboseLogging : false;
 
+      const rawDelay = raw.coordinatorNotificationDelayMs;
+      s.coordinatorNotificationDelayMs =
+        typeof rawDelay === 'number' &&
+        Number.isFinite(rawDelay) &&
+        rawDelay >= 5_000 &&
+        rawDelay <= 300_000
+          ? Math.round(rawDelay)
+          : 60_000;
+
+      s.shareDockerAgentAuth = raw.shareDockerAgentAuth === true;
+
+      s.coordinatorModeEnabled = raw.coordinatorModeEnabled === true;
+
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =
         typeof rawDockerImage === 'string' && rawDockerImage.trim()
@@ -470,6 +499,8 @@ export async function loadState(): Promise<void> {
           savedInitialPrompt: pt.savedInitialPrompt,
           planFileName: pt.planFileName,
           stepsEnabled: pt.stepsEnabled,
+          coordinatorMode: pt.coordinatorMode,
+          coordinatedBy: pt.coordinatedBy,
         };
 
         s.tasks[taskId] = task;
@@ -547,6 +578,8 @@ export async function loadState(): Promise<void> {
           stepsEnabled: pt.stepsEnabled,
           collapsed: true,
           savedAgentDef: agentDef ?? undefined,
+          coordinatorMode: pt.coordinatorMode,
+          coordinatedBy: pt.coordinatedBy,
         };
 
         s.tasks[taskId] = task;
@@ -582,4 +615,11 @@ export async function loadState(): Promise<void> {
   }
 
   syncTerminalCounter();
+
+  // Notify backend to initialize coordinator module if the feature was enabled.
+  if (store.coordinatorModeEnabled) {
+    invoke(IPC.SetCoordinatorModeEnabled, { enabled: true }).catch((e) =>
+      console.warn('Failed to notify backend of coordinator mode:', e),
+    );
+  }
 }

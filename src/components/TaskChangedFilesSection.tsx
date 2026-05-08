@@ -1,7 +1,12 @@
 import { Show, onMount } from 'solid-js';
-import { getProject, store, setTaskFocusedPanel } from '../store/store';
+import { getProject, setTaskFocusedPanel, isPanelFocused } from '../store/store';
 import { ChangedFilesList } from './ChangedFilesList';
-import { CommitNavBar } from './CommitNavBar';
+import {
+  CommitNavBar,
+  isCommitHashSelection,
+  isUncommittedSelection,
+  type CommitSelection,
+} from './CommitNavBar';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { useFocusRegistration } from '../lib/focus-registration';
@@ -12,17 +17,21 @@ interface TaskChangedFilesSectionProps {
   task: Task;
   isActive: boolean;
   commitList: CommitInfo[];
-  selectedCommit: string | null;
-  onCommitNavigate: (hash: string | null) => void;
+  selectedCommit: CommitSelection;
+  onCommitNavigate: (selection: CommitSelection) => void;
   onDiffFileClick: (path: string) => void;
 }
 
 export function TaskChangedFilesSection(props: TaskChangedFilesSectionProps) {
   const coverageReportPath = () => getProject(props.task.projectId)?.coverageReportPath;
+  const hasCommitNav = () =>
+    props.task.gitIsolation === 'worktree' || props.task.gitIsolation === 'direct';
   const selectedCommitInfo = () =>
-    props.selectedCommit !== null && props.task.gitIsolation === 'worktree'
+    isCommitHashSelection(props.selectedCommit) && hasCommitNav()
       ? props.commitList.find((c) => c.hash === props.selectedCommit)
       : undefined;
+  const showUncommittedBanner = () =>
+    isUncommittedSelection(props.selectedCommit) && hasCommitNav();
 
   let changedFilesRef: HTMLDivElement | undefined;
 
@@ -36,9 +45,7 @@ export function TaskChangedFilesSection(props: TaskChangedFilesSectionProps) {
   return (
     <div
       class="task-changed-files-section focusable-panel"
-      data-panel-focused={
-        props.isActive && store.focusedPanel[props.task.id] === 'changed-files' ? 'true' : 'false'
-      }
+      data-panel-focused={isPanelFocused(props.task.id, 'changed-files') ? 'true' : 'false'}
       style={{
         // `height: 100%` fills when the panel is an absorber (notes-split
         // horizontal, 50/50 with notes). `min-height` gives the content-sized
@@ -73,7 +80,7 @@ export function TaskChangedFilesSection(props: TaskChangedFilesSectionProps) {
       >
         <span style={{ 'flex-shrink': '0' }}>Changed Files</span>
         <span style={{ flex: '1' }} />
-        <Show when={props.task.gitIsolation === 'worktree'}>
+        <Show when={hasCommitNav()}>
           <CommitNavBar
             commits={props.commitList}
             selectedCommitHash={props.selectedCommit}
@@ -105,12 +112,29 @@ export function TaskChangedFilesSection(props: TaskChangedFilesSectionProps) {
           </div>
         )}
       </Show>
+      <Show when={showUncommittedBanner()}>
+        <div
+          style={{
+            padding: '4px 8px',
+            'font-size': sf(11),
+            'font-family': "'JetBrains Mono', monospace",
+            color: theme.fgMuted,
+            'border-bottom': `1px solid ${theme.border}`,
+            'flex-shrink': '0',
+            'white-space': 'nowrap',
+            overflow: 'hidden',
+            'text-overflow': 'ellipsis',
+          }}
+        >
+          Uncommitted changes only
+        </div>
+      </Show>
       <div style={{ flex: '1', overflow: 'hidden' }}>
         <ChangedFilesList
           worktreePath={props.task.worktreePath}
           baseBranch={props.task.baseBranch}
           isActive={props.isActive}
-          panelFocused={props.isActive && store.focusedPanel[props.task.id] === 'changed-files'}
+          panelFocused={isPanelFocused(props.task.id, 'changed-files')}
           coverageReportPath={coverageReportPath()}
           selectedCommit={props.selectedCommit}
           onFileClick={(file) => props.onDiffFileClick(file.path)}

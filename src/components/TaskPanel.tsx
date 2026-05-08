@@ -11,6 +11,7 @@ import {
   clearPendingAction,
   showNotification,
   setTaskSplitMode,
+  setTaskControl,
 } from '../store/store';
 import { useFocusRegistration } from '../lib/focus-registration';
 import { ResizablePanel, type PanelChild } from './ResizablePanel';
@@ -26,12 +27,14 @@ import { TaskTitleBar } from './TaskTitleBar';
 import { TaskBranchInfoBar } from './TaskBranchInfoBar';
 import { TaskNotesBody } from './TaskNotesBody';
 import { TaskChangedFilesSection } from './TaskChangedFilesSection';
+import { isCommitHashSelection, type CommitSelection } from './CommitNavBar';
 import { TaskShellSection } from './TaskShellSection';
 import { TaskStepsSection } from './TaskStepsSection';
 import { TaskAITerminal } from './TaskAITerminal';
 import { TaskClosingOverlay } from './TaskClosingOverlay';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
+import { SubTaskStrip } from './SubTaskStrip';
 import { theme } from '../lib/theme';
 import type { Task } from '../store/types';
 import type { CommitInfo } from '../ipc/types';
@@ -56,7 +59,7 @@ export function TaskPanel(props: TaskPanelProps) {
   onCleanup(() => clearTimeout(pushSuccessTimer));
   const [diffScrollTarget, setDiffScrollTarget] = createSignal<string | null>(null);
   const [commitList, setCommitList] = createSignal<CommitInfo[]>([]);
-  const [selectedCommit, setSelectedCommit] = createSignal<string | null>(null);
+  const [selectedCommit, setSelectedCommit] = createSignal<CommitSelection>(null);
   const [editingProjectId, setEditingProjectId] = createSignal<string | null>(null);
   // Jump-to-step state is a single signal so ↗ can be hidden entirely before
   // TerminalView is ready (otherwise firstIndex would default to 0, showing ↗
@@ -163,12 +166,15 @@ export function TaskPanel(props: TaskPanelProps) {
     }
   });
 
-  // Poll for branch commits for all worktree-isolated tasks (not just the active one),
-  // so CommitNavBar shows correct state regardless of which column is focused.
+  // Poll for branch commits for worktree-isolated and direct-mode tasks (not just
+  // the active one), so CommitNavBar shows correct state regardless of which column
+  // is focused. For direct mode, request recent commits as fallback since there are
+  // no branch-specific commits when working on main.
   createEffect(() => {
     const worktreePath = props.task.worktreePath;
     const baseBranch = props.task.baseBranch;
-    if (props.task.gitIsolation !== 'worktree') return;
+    const isolation = props.task.gitIsolation;
+    if (isolation !== 'worktree' && isolation !== 'direct') return;
     let cancelled = false;
 
     async function fetchCommits() {
@@ -176,13 +182,15 @@ export function TaskPanel(props: TaskPanelProps) {
         const result = await invoke<CommitInfo[]>(IPC.GetBranchCommits, {
           worktreePath,
           baseBranch,
+          ...(isolation === 'direct' ? { recentFallback: 50 } : {}),
         });
         if (cancelled) return;
         batch(() => {
           setCommitList(result);
-          // Reset selection if the selected commit no longer exists
+          // Reset selection if the selected commit no longer exists. The
+          // sentinel "uncommitted" selection is not a hash, so it is preserved.
           const sel = selectedCommit();
-          if (sel !== null && !result.some((c) => c.hash === sel)) {
+          if (isCommitHashSelection(sel) && !result.some((c) => c.hash === sel)) {
             setSelectedCommit(null);
           }
         });
@@ -207,14 +215,28 @@ export function TaskPanel(props: TaskPanelProps) {
   // reparented instead of destroyed+recreated. That avoids the expensive
   // xterm.js teardown/reinit and scrollback replay on every layout flip.
   const aiTerminalEl = (
-    <TaskAITerminal
-      task={props.task}
-      isActive={props.isActive}
-      promptHandle={promptHandle}
-      onStepJumpReady={(fn, fromIdx) => {
-        setStepNav(fn ? { jump: fn, firstIndex: fromIdx } : undefined);
-      }}
-    />
+    <div style={{ position: 'relative', height: '100%' }}>
+      <TaskAITerminal
+        task={props.task}
+        isActive={props.isActive}
+        promptHandle={promptHandle}
+        onStepJumpReady={(fn, fromIdx) => {
+          setStepNav(fn ? { jump: fn, firstIndex: fromIdx } : undefined);
+        }}
+      />
+      <Show when={!!props.task.coordinatedBy && props.task.controlledBy !== 'human'}>
+        <div
+          style={{
+            position: 'absolute',
+            inset: '0',
+            'pointer-events': 'all',
+            cursor: 'not-allowed',
+            opacity: '0.3',
+            background: theme.taskPanelBg,
+          }}
+        />
+      </Show>
+    </div>
   );
   const shellSectionEl = <TaskShellSection task={props.task} isActive={props.isActive} />;
   const notesBodyEl = (
@@ -261,6 +283,9 @@ export function TaskPanel(props: TaskPanelProps) {
       <PromptInput
         taskId={props.task.id}
         agentId={firstAgentId()}
+        coordinatedBy={props.task.coordinatedBy}
+        controlledBy={props.task.controlledBy}
+        stagedNotification={props.task.stagedNotification}
         initialPrompt={props.task.initialPrompt}
         prefillPrompt={props.task.prefillPrompt}
         onSend={() => {
@@ -367,6 +392,68 @@ export function TaskPanel(props: TaskPanelProps) {
         closingError={props.task.closingError}
         onRetry={() => retryCloseTask(props.task.id)}
       />
+      <Show when={!!props.task.coordinatedBy}>
+        <Show
+          when={props.task.controlledBy === 'human'}
+          fallback={
+            <div
+              style={{
+                background: theme.bgElevated,
+                'border-bottom': `1px solid ${theme.border}`,
+                padding: '6px 12px',
+                'font-size': '12px',
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'space-between',
+                color: theme.fgMuted,
+              }}
+            >
+              <span>Coordinator driving</span>
+              <button
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  'font-size': '12px',
+                  color: theme.accent,
+                }}
+                onClick={() => setTaskControl(props.task.id, 'human')}
+              >
+                Pause coordinator
+              </button>
+            </div>
+          }
+        >
+          <div
+            style={{
+              background: theme.warning,
+              padding: '6px 12px',
+              'font-size': '12px',
+              display: 'flex',
+              'align-items': 'center',
+              'justify-content': 'space-between',
+              color: 'rgba(0,0,0,0.85)',
+            }}
+          >
+            <span>You have control — coordinator is paused</span>
+            <button
+              style={{
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                'font-size': '12px',
+                color: 'rgba(0,0,0,0.75)',
+              }}
+              onClick={() => setTaskControl(props.task.id, 'coordinator')}
+            >
+              Resume coordinator
+            </button>
+          </div>
+        </Show>
+      </Show>
+      <Show when={props.task.coordinatorMode}>
+        <SubTaskStrip coordinatorTaskId={props.task.id} />
+      </Show>
       <div
         class="task-header-stack"
         style={{
@@ -496,7 +583,9 @@ export function TaskPanel(props: TaskPanelProps) {
         />
         <DiffViewerDialog
           scrollToFile={diffScrollTarget()}
+          taskName={props.task.name}
           worktreePath={props.task.worktreePath}
+          coverageReportPath={getProject(props.task.projectId)?.coverageReportPath}
           projectRoot={getProject(props.task.projectId)?.path}
           branchName={props.task.branchName}
           baseBranch={props.task.baseBranch}

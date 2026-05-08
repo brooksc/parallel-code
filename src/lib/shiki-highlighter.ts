@@ -1,6 +1,12 @@
 import type { Highlighter, BundledLanguage, BundledTheme, SpecialLanguage } from 'shiki';
+import { store } from '../store/store';
 
-const THEME: BundledTheme = 'github-dark';
+const THEMES: BundledTheme[] = ['github-dark', 'github-light'];
+
+/** Pick the shiki theme that pairs with the active look preset. */
+function activeTheme(): BundledTheme {
+  return store.themePreset === 'islands-light' ? 'github-light' : 'github-dark';
+}
 
 /** Map file extensions to Shiki language identifiers. */
 const EXT_TO_LANG: Record<string, BundledLanguage> = {
@@ -57,7 +63,7 @@ function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = import('shiki').then((m) =>
       m.createHighlighter({
-        themes: [THEME],
+        themes: THEMES,
         langs: PRELOAD_LANGS,
       }),
     );
@@ -104,7 +110,7 @@ export async function highlightLines(code: string, lang: string): Promise<string
 
   const { tokens } = hl.codeToTokens(code, {
     lang: effectiveLang,
-    theme: THEME,
+    theme: activeTheme(),
   });
 
   return tokens.map((line) =>

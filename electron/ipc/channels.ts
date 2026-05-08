@@ -39,6 +39,7 @@ export enum IPC {
   GetBranchCommits = 'get_branch_commits',
   GetCommitChangedFiles = 'get_commit_changed_files',
   GetCommitDiffs = 'get_commit_diffs',
+  GetUncommittedFileDiffs = 'get_uncommitted_file_diffs',
   GetCoverageSummary = 'get_coverage_summary',
 
   // Persistence
@@ -119,7 +120,8 @@ export enum IPC {
   ReadFileText = 'read_file_text',
 
   // Clipboard
-  SaveClipboardImage = 'save_clipboard_image',
+  ResolveClipboardPaste = 'resolve_clipboard_paste',
+  SaveDroppedImage = 'save_dropped_image',
 
   // Notifications
   ShowNotification = 'show_notification',
@@ -132,4 +134,24 @@ export enum IPC {
 
   // Logging
   LogFromRenderer = 'log_from_renderer',
+
+  // MCP / Coordinating agent
+  SetCoordinatorModeEnabled = 'set_coordinator_mode_enabled',
+  StartMCPServer = 'start_mcp_server',
+  StopMCPServer = 'stop_mcp_server',
+  GetMCPStatus = 'get_mcp_status',
+  GetMCPLogs = 'get_mcp_logs',
+  MCP_TaskCreated = 'mcp_task_created',
+  MCP_TaskClosed = 'mcp_task_closed',
+  MCP_TaskStateSync = 'mcp_task_state_sync',
+  MCP_ControlChanged = 'mcp_control_changed',
+  // Coordinator notifications (main → renderer)
+  MCP_CoordinatorNotificationStaged = 'mcp_coordinator_notification_staged',
+  MCP_CoordinatorOrphanedNotification = 'mcp_coordinator_orphaned_notification',
+  // Coordinator lifecycle (renderer → main)
+  MCP_CoordinatorRegistered = 'mcp_coordinator_registered',
+  MCP_CoordinatorDeregistered = 'mcp_coordinator_deregistered',
+  MCP_CoordinatorNotificationAck = 'mcp_coordinator_notification_ack',
+  MCP_CoordinatedTaskPromptDelivered = 'mcp_coordinated_task_prompt_delivered',
+  MCP_CoordinatorRestageAfterUserSend = 'mcp_coordinator_restage_after_user_send',
 }

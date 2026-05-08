@@ -7,10 +7,17 @@ import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 import { parseUnifiedDiff } from '../lib/unified-diff-parser';
 import { evictStaleAnnotations } from '../lib/review-eviction';
+import { windowChromeTopInset } from '../lib/platform';
 import { ScrollingDiffView } from './ScrollingDiffView';
-import { CommitNavBar } from './CommitNavBar';
+import {
+  CommitNavBar,
+  type CommitSelection,
+  isCommitHashSelection,
+  isUncommittedSelection,
+} from './CommitNavBar';
 import { ReviewCommentsButton, ReviewSidebarPanel } from './ReviewSidebarPanel';
 import { ReviewProvider, useReview } from './ReviewProvider';
+import { ChangedFilesList } from './ChangedFilesList';
 import type { FileDiff } from '../lib/unified-diff-parser';
 import type { ReviewAnnotation } from './review-types';
 import type { CommitInfo } from '../ipc/types';
@@ -19,8 +26,12 @@ import type { GitIsolationMode } from '../store/types';
 interface DiffViewerDialogProps {
   /** Which file to auto-scroll to (the one the user clicked). Null = closed. */
   scrollToFile: string | null;
+  /** Visible task title shown while reviewing changes. */
+  taskName?: string;
   worktreePath: string;
   onClose: () => void;
+  /** Optional coverage artifact path relative to the repo root. */
+  coverageReportPath?: string;
   /** Project root for branch-based fallback when worktree doesn't exist */
   projectRoot?: string;
   /** Branch name for branch-based fallback when worktree doesn't exist */
@@ -31,10 +42,10 @@ interface DiffViewerDialogProps {
   agentId?: string;
   /** List of commits on this branch (oldest first) for commit navigation */
   commitList?: CommitInfo[];
-  /** Currently selected commit hash, or null for "all changes" mode */
-  selectedCommit?: string | null;
-  /** Callback to navigate to a different commit or null for all changes */
-  onCommitNavigate?: (hash: string | null) => void;
+  /** Current selection: null = all changes, sentinel = uncommitted-only, hash = single commit */
+  selectedCommit?: CommitSelection;
+  /** Callback to navigate to a different selection */
+  onCommitNavigate?: (selection: CommitSelection) => void;
   /** Git isolation mode — CommitNavBar is only shown for worktree-isolated tasks */
   gitIsolation?: GitIsolationMode;
 }
@@ -59,18 +70,21 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
     <Dialog
       open={props.scrollToFile !== null}
       onClose={props.onClose}
-      width="90vw"
+      width="100vw"
       labelledBy={titleId}
       panelStyle={{
-        height: '85vh',
-        'max-width': '1400px',
+        height: '100vh',
+        'max-height': 'none',
+        'max-width': 'none',
+        'border-radius': '0',
+        border: 'none',
         overflow: 'hidden',
         padding: '0',
         gap: '0',
       }}
     >
       <h2 id={titleId} class="dialog-sr-only">
-        Diff viewer: {props.scrollToFile ?? 'all changes'}
+        Diff viewer for {props.taskName ?? 'task'}: {props.scrollToFile ?? 'all changes'}
       </h2>
       <Show when={props.scrollToFile !== null}>
         <ReviewProvider
@@ -81,8 +95,10 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
         >
           <DiffViewerContent
             scrollToFile={props.scrollToFile}
+            taskName={props.taskName}
             worktreePath={props.worktreePath}
             onClose={props.onClose}
+            coverageReportPath={props.coverageReportPath}
             projectRoot={props.projectRoot}
             branchName={props.branchName}
             baseBranch={props.baseBranch}
@@ -102,11 +118,13 @@ export function DiffViewerDialog(props: DiffViewerDialogProps) {
 /** Inner content rendered inside ReviewProvider so it can call useReview(). */
 function DiffViewerContent(props: DiffViewerDialogProps) {
   const review = useReview();
+  const headerPaddingTop = `${windowChromeTopInset + 12}px`;
 
   const [parsedFiles, setParsedFiles] = createSignal<FileDiff[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal('');
   const [searchQuery, setSearchQuery] = createSignal('');
+  const [activeFilePath, setActiveFilePath] = createSignal<string | null>(null);
 
   let fetchGeneration = 0;
   let searchInputRef: HTMLInputElement | undefined;
@@ -132,10 +150,14 @@ function DiffViewerContent(props: DiffViewerDialogProps) {
   });
 
   createEffect(() => {
+    setActiveFilePath(props.scrollToFile);
+  });
+
+  createEffect(() => {
     const scrollTarget = props.scrollToFile;
     // Access selectedCommit before the early return so the effect tracks it
     // even when the dialog is closed — ensures we re-run on reopen.
-    const commitHash = props.selectedCommit;
+    const selection = props.selectedCommit;
     if (!scrollTarget) return;
 
     const worktreePath = props.worktreePath;
@@ -151,9 +173,15 @@ function DiffViewerContent(props: DiffViewerDialogProps) {
 
     let diffPromise: Promise<string>;
 
-    if (commitHash && worktreePath) {
+    if (isCommitHashSelection(selection) && worktreePath) {
       // Single-commit mode
-      diffPromise = invoke<string>(IPC.GetCommitDiffs, { worktreePath, commitHash });
+      diffPromise = invoke<string>(IPC.GetCommitDiffs, {
+        worktreePath,
+        commitHash: selection,
+      });
+    } else if (isUncommittedSelection(selection) && worktreePath) {
+      // Uncommitted-only mode (worktree only — branch fallback has no working tree)
+      diffPromise = invoke<string>(IPC.GetUncommittedFileDiffs, { worktreePath });
     } else {
       // All-changes mode (existing behavior)
       const worktreePromise = worktreePath
@@ -230,12 +258,54 @@ function DiffViewerContent(props: DiffViewerDialogProps) {
           display: 'flex',
           'align-items': 'center',
           gap: '10px',
-          padding: '12px 20px',
+          padding: `${headerPaddingTop} 20px 12px`,
           'border-bottom': `1px solid ${theme.border}`,
           'flex-shrink': '0',
         }}
       >
-        <Show when={props.worktreePath && props.gitIsolation === 'worktree'}>
+        <div
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            gap: '8px',
+            'min-width': '180px',
+            'max-width': '32vw',
+            overflow: 'hidden',
+            'flex-shrink': '1',
+          }}
+          title={props.taskName ?? 'Changes'}
+        >
+          <span
+            style={{
+              'font-size': sf(12),
+              color: theme.fgMuted,
+              'text-transform': 'uppercase',
+              'letter-spacing': '0.06em',
+              'flex-shrink': '0',
+            }}
+          >
+            Changes
+          </span>
+          <span
+            style={{
+              'font-size': sf(14),
+              color: theme.fg,
+              'font-weight': '700',
+              overflow: 'hidden',
+              'text-overflow': 'ellipsis',
+              'white-space': 'nowrap',
+            }}
+          >
+            {props.taskName ?? 'Untitled task'}
+          </span>
+        </div>
+
+        <Show
+          when={
+            props.worktreePath &&
+            (props.gitIsolation === 'worktree' || props.gitIsolation === 'direct')
+          }
+        >
           <CommitNavBar
             commits={props.commitList ?? []}
             selectedCommitHash={props.selectedCommit ?? null}
@@ -331,6 +401,51 @@ function DiffViewerContent(props: DiffViewerDialogProps) {
 
       {/* Body */}
       <div style={{ flex: '1', overflow: 'hidden', display: 'flex' }}>
+        <aside
+          style={{
+            width: '300px',
+            'min-width': '240px',
+            'max-width': '34vw',
+            display: 'flex',
+            'flex-direction': 'column',
+            background: theme.taskPanelBg,
+            'border-right': `1px solid ${theme.border}`,
+            'flex-shrink': '0',
+          }}
+        >
+          <div
+            style={{
+              padding: '8px 10px',
+              'font-size': sf(11),
+              'font-weight': '600',
+              color: theme.fgMuted,
+              'text-transform': 'uppercase',
+              'letter-spacing': '0.05em',
+              'border-bottom': `1px solid ${theme.border}`,
+              'flex-shrink': '0',
+              display: 'flex',
+              'align-items': 'center',
+              gap: '6px',
+            }}
+          >
+            Changed Files
+          </div>
+          <div style={{ flex: '1', overflow: 'hidden' }}>
+            <ChangedFilesList
+              worktreePath={props.worktreePath}
+              baseBranch={props.baseBranch}
+              isActive={props.scrollToFile !== null}
+              panelFocused={false}
+              coverageReportPath={props.coverageReportPath}
+              projectRoot={props.projectRoot}
+              branchName={props.branchName}
+              selectedCommit={props.selectedCommit}
+              activeFilePath={activeFilePath()}
+              onFileClick={(file) => setActiveFilePath(file.path)}
+            />
+          </div>
+        </aside>
+
         <div style={{ flex: '1', overflow: 'hidden' }}>
           <Show when={loading()}>
             <div
@@ -361,7 +476,7 @@ function DiffViewerContent(props: DiffViewerDialogProps) {
           <Show when={!loading() && !error()}>
             <ScrollingDiffView
               files={parsedFiles()}
-              scrollToPath={props.scrollToFile}
+              scrollToPath={activeFilePath()}
               worktreePath={props.worktreePath}
               baseBranch={props.baseBranch}
               searchQuery={searchQuery()}
