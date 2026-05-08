@@ -19,6 +19,28 @@ import {
   onPtyEvent,
 } from '../ipc/pty.js';
 import { parseClientMessage, type ServerMessage, type RemoteAgent } from './protocol.js';
+import type { Coordinator } from '../mcp/coordinator.js';
+
+// --- MCP log ring buffer ---
+export interface MCPLogEntry {
+  ts: number;
+  level: 'info' | 'error';
+  msg: string;
+}
+
+const MAX_LOG_ENTRIES = 200;
+const mcpLogs: MCPLogEntry[] = [];
+
+function mcpLog(level: 'info' | 'error', msg: string): void {
+  const entry: MCPLogEntry = { ts: Date.now(), level, msg };
+  mcpLogs.push(entry);
+  if (mcpLogs.length > MAX_LOG_ENTRIES) mcpLogs.splice(0, mcpLogs.length - MAX_LOG_ENTRIES);
+  console.warn(`[MCP ${level}] ${msg}`);
+}
+
+export function getMCPLogs(): MCPLogEntry[] {
+  return mcpLogs.slice();
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -102,6 +124,7 @@ export function startRemoteServer(opts: {
     exitCode: number | null;
     lastLine: string;
   };
+  coordinator?: Coordinator;
 }): RemoteServer {
   const token = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
@@ -167,6 +190,232 @@ export function startRemoteServer(opts: {
           }),
         );
         return;
+      }
+
+      // --- Coordinator task API routes ---
+      const orch = opts.coordinator;
+      if (orch) {
+        // Helper to read JSON body
+        const readBody = (): Promise<Record<string, unknown>> =>
+          new Promise((resolve, reject) => {
+            let data = '';
+            req.on('data', (chunk: Buffer) => {
+              data += chunk.toString();
+              if (data.length > 1_000_000) {
+                reject(new Error('Body too large'));
+                req.destroy();
+              }
+            });
+            req.on('end', () => {
+              try {
+                resolve(data ? (JSON.parse(data) as Record<string, unknown>) : {});
+              } catch {
+                resolve({});
+              }
+            });
+            req.on('error', reject);
+          });
+
+        const jsonReply = (status: number, body: unknown) => {
+          res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+
+        const taskIdMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(.+))?$/);
+
+        if (url.pathname === '/api/tasks' && req.method === 'POST') {
+          readBody()
+            .then(async (body) => {
+              if (typeof body.name !== 'string' || !body.name)
+                return jsonReply(400, { error: 'name must be a non-empty string' });
+              if (body.prompt !== undefined && typeof body.prompt !== 'string')
+                return jsonReply(400, { error: 'prompt must be a string' });
+              if (body.projectId !== undefined && typeof body.projectId !== 'string')
+                return jsonReply(400, { error: 'projectId must be a string' });
+              if (body.skipPermissions !== undefined && typeof body.skipPermissions !== 'boolean')
+                return jsonReply(400, { error: 'skipPermissions must be a boolean' });
+              if (body.baseBranch !== undefined && typeof body.baseBranch !== 'string')
+                return jsonReply(400, { error: 'baseBranch must be a string' });
+              mcpLog(
+                'info',
+                `create_task name=${body.name} skipPermissions=${!!body.skipPermissions} baseBranch=${body.baseBranch ?? 'default'}`,
+              );
+              const result = await orch.createTask({
+                name: body.name,
+                prompt: body.prompt as string | undefined,
+                coordinatorTaskId:
+                  typeof body.coordinatorTaskId === 'string' ? body.coordinatorTaskId : 'api',
+                projectId: body.projectId as string | undefined,
+                skipPermissions: body.skipPermissions as boolean | undefined,
+                baseBranch: body.baseBranch as string | undefined,
+              });
+              mcpLog('info', `create_task OK id=${result.id}`);
+              jsonReply(201, orch.getTaskStatus(result.id));
+            })
+            .catch((err) => {
+              mcpLog('error', `create_task FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
+          return;
+        }
+
+        if (url.pathname === '/api/tasks' && req.method === 'GET') {
+          mcpLog('info', 'list_tasks');
+          jsonReply(200, orch.listTasks());
+          return;
+        }
+
+        if (taskIdMatch && !taskIdMatch[2] && req.method === 'GET') {
+          const taskId = decodeURIComponent(taskIdMatch[1]);
+          mcpLog('info', `get_task_status id=${taskId}`);
+          const detail = orch.getTaskStatus(taskId);
+          if (!detail) {
+            jsonReply(404, { error: 'task not found' });
+          } else {
+            jsonReply(200, detail);
+          }
+          return;
+        }
+
+        if (taskIdMatch && taskIdMatch[2] === 'prompt' && req.method === 'POST') {
+          readBody()
+            .then(async (body) => {
+              const taskId = decodeURIComponent(taskIdMatch[1]);
+              if (typeof body.prompt !== 'string' || !body.prompt)
+                return jsonReply(400, { error: 'prompt must be a non-empty string' });
+              mcpLog('info', `send_prompt id=${taskId}`);
+              await orch.sendPrompt(taskId, body.prompt);
+              jsonReply(200, { ok: true });
+            })
+            .catch((err) => {
+              mcpLog('error', `send_prompt FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
+          return;
+        }
+
+        if (taskIdMatch && taskIdMatch[2] === 'wait' && req.method === 'POST') {
+          readBody()
+            .then(async (body) => {
+              const taskId = decodeURIComponent(taskIdMatch[1]);
+              if (
+                body.timeoutMs !== undefined &&
+                (typeof body.timeoutMs !== 'number' || !Number.isFinite(body.timeoutMs))
+              )
+                return jsonReply(400, { error: 'timeoutMs must be a finite number' });
+              mcpLog('info', `wait_for_idle id=${taskId}`);
+              await orch.waitForIdle(taskId, body.timeoutMs as number | undefined);
+              const status = orch.getTaskStatus(taskId);
+              mcpLog('info', `wait_for_idle OK id=${taskId} status=${status?.status}`);
+              jsonReply(200, { status: status?.status ?? 'unknown' });
+            })
+            .catch((err) => {
+              mcpLog('error', `wait_for_idle FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
+          return;
+        }
+
+        if (taskIdMatch && taskIdMatch[2] === 'wait-signal' && req.method === 'POST') {
+          readBody()
+            .then(async (body) => {
+              const taskId = decodeURIComponent(taskIdMatch[1]);
+              if (
+                body.timeoutMs !== undefined &&
+                (typeof body.timeoutMs !== 'number' || !Number.isFinite(body.timeoutMs))
+              )
+                return jsonReply(400, { error: 'timeoutMs must be a finite number' });
+              mcpLog('info', `wait_for_signal_done id=${taskId}`);
+              await orch.waitForSignalDone(taskId, body.timeoutMs as number | undefined);
+              const status = orch.getTaskStatus(taskId);
+              mcpLog('info', `wait_for_signal_done OK id=${taskId}`);
+              jsonReply(200, {
+                status: status?.status ?? 'unknown',
+                signalDoneAt: status?.signalDoneAt,
+              });
+            })
+            .catch((err) => {
+              mcpLog('error', `wait_for_signal_done FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
+          return;
+        }
+
+        if (taskIdMatch && taskIdMatch[2] === 'diff' && req.method === 'GET') {
+          const taskId = decodeURIComponent(taskIdMatch[1]);
+          mcpLog('info', `get_task_diff id=${taskId}`);
+          orch
+            .getTaskDiff(taskId)
+            .then((result) => jsonReply(200, result))
+            .catch((err) => {
+              mcpLog('error', `get_task_diff FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
+          return;
+        }
+
+        if (taskIdMatch && taskIdMatch[2] === 'output' && req.method === 'GET') {
+          const taskId = decodeURIComponent(taskIdMatch[1]);
+          mcpLog('info', `get_task_output id=${taskId}`);
+          try {
+            const output = orch.getTaskOutput(taskId);
+            jsonReply(200, { output });
+          } catch (err) {
+            mcpLog('error', `get_task_output FAIL: ${String(err)}`);
+            jsonReply(500, { error: String(err) });
+          }
+          return;
+        }
+
+        if (taskIdMatch && taskIdMatch[2] === 'done' && req.method === 'POST') {
+          const taskId = decodeURIComponent(taskIdMatch[1]);
+          mcpLog('info', `signal_done id=${taskId}`);
+          orch.signalDone(taskId);
+          jsonReply(200, { ok: true });
+          return;
+        }
+
+        if (taskIdMatch && taskIdMatch[2] === 'merge' && req.method === 'POST') {
+          readBody()
+            .then(async (body) => {
+              const taskId = decodeURIComponent(taskIdMatch[1]);
+              if (body.squash !== undefined && typeof body.squash !== 'boolean')
+                return jsonReply(400, { error: 'squash must be a boolean' });
+              if (body.message !== undefined && typeof body.message !== 'string')
+                return jsonReply(400, { error: 'message must be a string' });
+              if (body.cleanup !== undefined && typeof body.cleanup !== 'boolean')
+                return jsonReply(400, { error: 'cleanup must be a boolean' });
+              mcpLog('info', `merge_task id=${taskId} squash=${body.squash ?? false}`);
+              const result = await orch.mergeTask(taskId, {
+                squash: body.squash as boolean | undefined,
+                message: body.message as string | undefined,
+                cleanup: body.cleanup as boolean | undefined,
+              });
+              mcpLog('info', `merge_task OK id=${taskId}`);
+              jsonReply(200, result);
+            })
+            .catch((err) => {
+              mcpLog('error', `merge_task FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
+          return;
+        }
+
+        if (taskIdMatch && !taskIdMatch[2] && req.method === 'DELETE') {
+          const taskId = decodeURIComponent(taskIdMatch[1]);
+          mcpLog('info', `close_task id=${taskId}`);
+          orch
+            .closeTask(taskId)
+            .then(() => {
+              mcpLog('info', `close_task OK id=${taskId}`);
+              jsonReply(200, { ok: true });
+            })
+            .catch((err) => {
+              mcpLog('error', `close_task FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
+          return;
+        }
       }
 
       res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
