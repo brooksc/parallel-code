@@ -23,6 +23,7 @@ import {
   isPanelFocused,
 } from '../store/store';
 import { clearStagedNotification, setStagedNotificationUserEdited } from '../store/tasks';
+import { processAutoFireTick } from './autofire-tick';
 import type { StagedNotification } from '../store/types';
 import { debug, warn as logWarn } from '../lib/log';
 import { theme } from '../lib/theme';
@@ -406,38 +407,35 @@ export function PromptInput(props: PromptInputProps) {
         autoFireInterval = undefined;
         return;
       }
-      const remaining = staged.autoFireAt - Date.now();
-      if (remaining > 0) {
+      const tick = processAutoFireTick({
+        staged,
+        now: Date.now(),
+        controlledBy: untrack(() => store.tasks[props.taskId]?.controlledBy),
+        tail: stripAnsi(untrack(() => getAgentOutputTail(props.agentId))),
+        currentMissCount: autoFirePromptMissCount,
+      });
+
+      if (tick.outcome === 'too-soon') {
         debug('autofire', 'interval: waiting for autoFireAt', {
           taskId: props.taskId,
-          remainingMs: remaining,
+          remainingMs: staged.autoFireAt - Date.now(),
         });
         return;
       }
-
-      // If the user has taken control of the coordinator task, pause firing
-      // without counting misses — resume when they release control.
-      if (untrack(() => store.tasks[props.taskId]?.controlledBy) === 'human') {
+      if (tick.outcome === 'paused') {
         return;
       }
-
-      const tail = stripAnsi(untrack(() => getAgentOutputTail(props.agentId)));
-      const tailSnippet = tail.slice(-PROMPT_MARKER_SCAN_CHARS);
-      const hasPrompt = /[❯›]/.test(tailSnippet);
-      debug('autofire', 'interval: checking prompt marker', {
-        taskId: props.taskId,
-        batchId: staged.batchId,
-        hasPrompt,
-        tailSnippet: tailSnippet.slice(-120).replace(/\n/g, '↵'),
-      });
-      if (!hasPrompt) {
-        autoFirePromptMissCount += 1;
+      if (tick.outcome === 'no-prompt') {
+        autoFirePromptMissCount = tick.newMissCount;
+        const tailSnippet = stripAnsi(untrack(() => getAgentOutputTail(props.agentId))).slice(
+          -PROMPT_MARKER_SCAN_CHARS,
+        );
         if (autoFirePromptMissCount === 1 || autoFirePromptMissCount % 5 === 0) {
           logWarn('autofire', 'prompt not detected after autoFireAt', {
             taskId: props.taskId,
             batchId: staged.batchId,
             missCount: autoFirePromptMissCount,
-            hasPrompt,
+            hasPrompt: false,
             tailSnippet: tailSnippet.slice(-120).replace(/\n/g, '↵'),
           });
         }
@@ -458,6 +456,12 @@ export function PromptInput(props: PromptInputProps) {
         }
         return;
       }
+      // tick.outcome === 'fire'
+      debug('autofire', 'interval: checking prompt marker', {
+        taskId: props.taskId,
+        batchId: staged.batchId,
+        hasPrompt: true,
+      });
       autoFirePromptMissCount = 0;
 
       logWarn('autofire', 'firing notification into coordinator PTY', { taskId: props.taskId });

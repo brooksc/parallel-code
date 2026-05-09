@@ -1,0 +1,40 @@
+import type { StagedNotification } from '../store/types';
+
+const PROMPT_MARKER_SCAN_CHARS = 500;
+
+export type AutoFireTickResult =
+  | { outcome: 'too-soon' }
+  | { outcome: 'paused' }
+  | { outcome: 'no-prompt'; newMissCount: number }
+  | { outcome: 'fire' };
+
+/**
+ * Pure decision function for a single autofire interval tick.
+ * Returns what the tick should do without executing any side effects.
+ * Exported for unit testing.
+ */
+export function processAutoFireTick(params: {
+  staged: StagedNotification;
+  now: number;
+  controlledBy: 'coordinator' | 'human' | undefined;
+  tail: string;
+  currentMissCount: number;
+}): AutoFireTickResult {
+  if (params.staged.autoFireAt - params.now > 0) {
+    return { outcome: 'too-soon' };
+  }
+
+  // Human has taken control — pause without counting misses so the counter
+  // doesn't accumulate while the human is typing.
+  if (params.controlledBy === 'human') {
+    return { outcome: 'paused' };
+  }
+
+  const tailSnippet = params.tail.slice(-PROMPT_MARKER_SCAN_CHARS);
+  const hasPrompt = /[❯›]/.test(tailSnippet);
+  if (!hasPrompt) {
+    return { outcome: 'no-prompt', newMissCount: params.currentMissCount + 1 };
+  }
+
+  return { outcome: 'fire' };
+}
