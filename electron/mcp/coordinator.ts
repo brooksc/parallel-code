@@ -459,6 +459,7 @@ export class Coordinator {
         : preamble;
       writeFileSync(settingsPath, JSON.stringify(existingSettings, null, 2));
     }
+    task.preambleFileExistedBefore = preambleFileOriginalContent !== null;
 
     try {
       // Write a per-sub-task MCP config so the agent can call signal_done.
@@ -720,7 +721,7 @@ export class Coordinator {
     // Strip injected preamble files before staging so they don't land in history,
     // then auto-commit any uncommitted changes in the task worktree before merging.
     if (task.worktreePath) {
-      this.stripPreambleFromBranch(task.worktreePath);
+      this.stripPreambleFromBranch(task);
       try {
         await execAsync('git', ['add', '-A'], { cwd: task.worktreePath });
         await execAsync('git', ['commit', '-m', 'WIP: auto-commit before merge'], {
@@ -782,8 +783,9 @@ export class Coordinator {
     await this.cleanupTask(taskId);
   }
 
-  private stripPreambleFromBranch(worktreePath: string): void {
+  private stripPreambleFromBranch(task: CoordinatedTask): void {
     const PREAMBLE_START = '<sub-task-mode>';
+    const worktreePath = task.worktreePath;
     for (const filename of ['AGENTS.md', 'GEMINI.md', '.agent.md']) {
       const filePath = join(worktreePath, filename);
       if (!existsSync(filePath)) continue;
@@ -798,6 +800,9 @@ export class Coordinator {
       // Remove the preamble block and any preceding \n\n separator
       const stripped = content.slice(0, idx).replace(/\n\n$/, '');
       if (stripped.trim()) {
+        writeFileSync(filePath, stripped);
+      } else if (task.preambleFileExistedBefore) {
+        // File existed before injection (even if empty) — restore to pre-injection bytes
         writeFileSync(filePath, stripped);
       } else {
         // File was created solely for the preamble — remove it so git add -A won't pick it up

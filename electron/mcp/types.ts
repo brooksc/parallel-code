@@ -14,6 +14,7 @@ export interface CoordinatedTask {
   exitCode: number | null;
   pendingPrompt?: string;
   mcpConfigPath?: string; // path to per-task tmp config, deleted on cleanup
+  preambleFileExistedBefore?: boolean; // true if the preamble file existed before injection (even if empty)
   signalDoneAt?: Date; // set when sub-task explicitly calls signal_done
   signalDoneConsumed?: boolean; // true after wait_for_signal_done returns this task's signal
   // Coordinator notification lifecycle flags

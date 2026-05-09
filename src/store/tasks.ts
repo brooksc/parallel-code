@@ -119,6 +119,7 @@ export interface CreateTaskOptions {
   stepsEnabled?: boolean;
   coordinatorMode?: boolean;
   propagateSkipPermissions?: boolean;
+  maxConcurrentTasks?: number;
 }
 
 export async function createTask(opts: CreateTaskOptions): Promise<string> {
@@ -232,7 +233,12 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     lastPrompt: '',
     initialPrompt:
       opts.coordinatorMode && effectivePrompt
-        ? COORDINATOR_PREAMBLE + effectivePrompt
+        ? COORDINATOR_PREAMBLE.replace(
+            /\{\{MAX_CONCURRENT\}\}/g,
+            String(opts.maxConcurrentTasks ?? 3),
+          ) +
+          `Use \`${opts.baseBranch}\` as the baseBranch for all sub-tasks.\n\n` +
+          effectivePrompt
         : (effectivePrompt ?? undefined),
     savedInitialPrompt: initialPrompt ?? undefined,
     stepsEnabled: stepsEnabled || undefined,
