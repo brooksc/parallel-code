@@ -1,5 +1,4 @@
 import { createSignal, createEffect, createUniqueId, Show, For, onCleanup } from 'solid-js';
-import { COORDINATOR_PREAMBLE } from '../lib/coordinator-preamble';
 import { Dialog } from './Dialog';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -525,11 +524,7 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
         baseBranch: baseBranch(),
         symlinkDirs: gitIsolation() === 'worktree' ? [...selectedDirs()] : undefined,
         branchPrefixOverride: gitIsolation() === 'worktree' ? prefix : undefined,
-        initialPrompt: isFromDrop
-          ? undefined
-          : coordinatorMode() && p
-            ? COORDINATOR_PREAMBLE + p
-            : p,
+        initialPrompt: isFromDrop ? undefined : p,
         githubUrl: ghUrl,
         stepsEnabled: stepsEnabled(),
         skipPermissions: agentSupportsSkipPermissions() && skipPermissions(),
