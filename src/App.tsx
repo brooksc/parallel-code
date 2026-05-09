@@ -364,6 +364,7 @@ function App() {
         baseBranch: task.baseBranch,
         worktreePath: task.worktreePath,
         coordinatorTaskId: task.coordinatedBy,
+        controlledBy: task.controlledBy,
       }).catch((err) => {
         console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
       });

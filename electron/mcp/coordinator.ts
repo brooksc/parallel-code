@@ -876,6 +876,7 @@ export class Coordinator {
     worktreePath: string;
     agentId: string;
     coordinatorTaskId: string;
+    controlledBy?: 'coordinator' | 'human';
   }): void {
     if (this.tasks.has(opts.id)) return;
     const task: CoordinatedTask = {
@@ -892,6 +893,9 @@ export class Coordinator {
       exitCode: null,
     };
     this.tasks.set(task.id, task);
+    if (opts.controlledBy === 'human') {
+      this.controlMap.set(task.id, 'human');
+    }
   }
 
   registerCoordinator(coordinatorTaskId: string, projectId: string, worktreePath?: string): void {
