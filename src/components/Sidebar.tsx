@@ -7,7 +7,7 @@ import {
   toggleNewTaskDialog,
   setActiveTask,
   toggleSidebar,
-  reorderTask,
+  reorderTaskVisually,
   getTaskDotStatus,
   getTaskAttentionState,
   getTaskViewportVisibility,
@@ -120,17 +120,28 @@ export function Sidebar() {
     ImportableWorktree[] | null
   >(null);
   const [dragFromIndex, setDragFromIndex] = createSignal<number | null>(null);
+  const [dragFromTaskId, setDragFromTaskId] = createSignal<string | null>(null);
   const [dropTargetIndex, setDropTargetIndex] = createSignal<number | null>(null);
   const [resizing, setResizing] = createSignal(false);
   let taskListRef: HTMLDivElement | undefined;
 
   const sidebarWidth = () => getPanelUserSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
 
+  // Maps each visible draggable task ID to its visual position (0-based, excluding coordinated children).
+  // This keeps drag signals, drop indicators, and data-task-index in the same coordinate space.
   const taskIndexById = createMemo(() => {
     const map = new Map<string, number>();
-    store.taskOrder.forEach((taskId, idx) => map.set(taskId, idx));
+    let visIdx = 0;
+    for (const taskId of store.taskOrder) {
+      if (!isCoordinatedChild(taskId)) {
+        map.set(taskId, visIdx++);
+      }
+    }
     return map;
   });
+
+  // Number of visible draggable items (used for the end-of-list drop indicator).
+  const draggableTaskCount = createMemo(() => taskIndexById().size);
 
   const groupedTasks = createMemo(() => computeGroupedTasks());
   const sidebarTaskCount = createMemo(
@@ -172,12 +183,12 @@ export function Sidebar() {
       const handler = (e: MouseEvent) => {
         const target = (e.target as HTMLElement).closest<HTMLElement>('[data-task-index]');
         if (!target) return;
-        const index = Number(target.dataset.taskIndex);
-        const taskId = store.taskOrder[index];
+        const visibleIndex = Number(target.dataset.taskIndex);
+        // data-task-index is now the visible draggable index; look up the task ID from the visible order
+        const draggableOrder = store.taskOrder.filter((id) => !isCoordinatedChild(id));
+        const taskId = draggableOrder[visibleIndex];
         if (taskId === undefined || taskId === null) return;
-        // Don't allow dragging coordinated children
-        if (isCoordinatedChild(taskId)) return;
-        handleTaskMouseDown(e, taskId, index);
+        handleTaskMouseDown(e, taskId, visibleIndex);
       };
       el.addEventListener('mousedown', handler);
       onCleanup(() => el.removeEventListener('mousedown', handler));
@@ -265,7 +276,7 @@ export function Sidebar() {
     return items.length;
   }
 
-  function handleTaskMouseDown(e: MouseEvent, taskId: string, index: number) {
+  function handleTaskMouseDown(e: MouseEvent, taskId: string, visibleIndex: number) {
     if (e.button !== 0) return;
     e.preventDefault();
     const startX = e.clientX;
@@ -279,11 +290,12 @@ export function Sidebar() {
 
       if (!dragging) {
         dragging = true;
-        setDragFromIndex(index);
+        setDragFromIndex(visibleIndex);
+        setDragFromTaskId(taskId);
         document.body.classList.add('dragging-task');
       }
 
-      setDropTargetIndex(computeDropIndex(ev.clientY, index));
+      setDropTargetIndex(computeDropIndex(ev.clientY, visibleIndex));
     }
 
     function onUp() {
@@ -294,12 +306,14 @@ export function Sidebar() {
         document.body.classList.remove('dragging-task');
         const from = dragFromIndex();
         const to = dropTargetIndex();
+        const fromTaskId = dragFromTaskId();
         setDragFromIndex(null);
+        setDragFromTaskId(null);
         setDropTargetIndex(null);
 
-        if (from !== null && to !== null && from !== to) {
+        if (from !== null && to !== null && from !== to && fromTaskId !== null) {
           const adjustedTo = to > from ? to - 1 : to;
-          reorderTask(from, adjustedTo);
+          reorderTaskVisually(fromTaskId, adjustedTo);
         }
       } else {
         setActiveTask(taskId);
@@ -740,7 +754,7 @@ export function Sidebar() {
             </For>
           </Show>
 
-          <Show when={dropTargetIndex() === store.taskOrder.length}>
+          <Show when={dropTargetIndex() === draggableTaskCount()}>
             <div class="drop-indicator" />
           </Show>
         </div>

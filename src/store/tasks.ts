@@ -29,7 +29,7 @@ import { parseGitHubUrl, taskNameFromGitHubUrl } from '../lib/github-url';
 import type { Agent, Task, GitIsolationMode } from './types';
 import type { DockerSource } from '../lib/docker';
 import { COORDINATOR_PREAMBLE } from './coordinator-preamble';
-import { getCoordinatorChildren } from './sidebar-order';
+import { getCoordinatorChildren, isCoordinatedChild } from './sidebar-order';
 
 function initTaskInStore(
   taskId: string,
@@ -632,6 +632,48 @@ export function reorderTask(fromIndex: number, toIndex: number): void {
       if (fromIndex < 0 || fromIndex >= len || toIndex < 0 || toIndex >= len) return;
       const [moved] = s.taskOrder.splice(fromIndex, 1);
       s.taskOrder.splice(toIndex, 0, moved);
+    }),
+  );
+}
+
+/**
+ * Reorder a task using visible sidebar indices (excluding hidden coordinated children).
+ * Keeps coordinator+children blocks contiguous in taskOrder.
+ *
+ * @param movedId - ID of the task being dragged
+ * @param targetVisibleIdx - target position in the visible draggable order (after removal of movedId)
+ */
+export function reorderTaskVisually(movedId: string, targetVisibleIdx: number): void {
+  // Visible draggable order: active tasks excluding coordinated children
+  const draggableOrder = store.taskOrder.filter((id) => !isCoordinatedChild(id));
+
+  // After removing the moved item, find what task should come after it
+  const remainingDraggable = draggableOrder.filter((id) => id !== movedId);
+  const insertBeforeId = remainingDraggable[targetVisibleIdx] ?? null;
+
+  // Build the block to move: movedId + its active children in taskOrder sequence
+  const { active: activeChildren } = getCoordinatorChildren(movedId);
+  const childSet = new Set(activeChildren);
+  const block = [movedId, ...store.taskOrder.filter((id) => childSet.has(id))];
+
+  // Remove the block from taskOrder
+  const blockSet = new Set(block);
+  const remaining = store.taskOrder.filter((id) => !blockSet.has(id));
+
+  // Find where to insert in the remaining raw order
+  const rawInsertAt =
+    insertBeforeId !== null ? remaining.indexOf(insertBeforeId) : remaining.length;
+  const finalInsertAt = rawInsertAt === -1 ? remaining.length : rawInsertAt;
+
+  const newOrder = [
+    ...remaining.slice(0, finalInsertAt),
+    ...block,
+    ...remaining.slice(finalInsertAt),
+  ];
+
+  setStore(
+    produce((s) => {
+      s.taskOrder = newOrder;
     }),
   );
 }

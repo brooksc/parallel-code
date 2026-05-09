@@ -42,6 +42,7 @@ export {
   clearPrefillPrompt,
   setPrefillPrompt,
   reorderTask,
+  reorderTaskVisually,
   spawnShellForTask,
   runBookmarkInTask,
   closeShell,
