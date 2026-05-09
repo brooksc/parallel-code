@@ -17,6 +17,7 @@ import { warn as logWarn } from '../lib/log';
 import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
 import { dataTransferToShellArgs, escapePath } from '../lib/terminalDrop';
 import { cleanCopiedTerminalText } from '../lib/copy-text';
+import { computeDisableStdin } from '../lib/terminalDisableStdin';
 import type { PtyOutput } from '../ipc/types';
 
 type ClipboardPaste =
@@ -140,7 +141,7 @@ export function TerminalView(props: TerminalViewProps) {
     // changes so Take Control / Release Control works without a remount.
     createEffect(() => {
       const controlledBy = store.tasks[props.taskId]?.controlledBy;
-      if (term) term.options.disableStdin = controlledBy === 'coordinator';
+      if (term) term.options.disableStdin = computeDisableStdin(controlledBy);
     });
 
     // File path link provider — makes file paths clickable in terminal output
