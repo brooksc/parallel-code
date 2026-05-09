@@ -106,7 +106,7 @@ function clearAutoTrustState(agentId: string): void {
 }
 
 export type TaskDotStatus = 'busy' | 'waiting' | 'ready' | 'review';
-export type TaskAttentionState = 'idle' | 'active' | 'needs_input' | 'error' | 'ready';
+export type TaskAttentionState = 'idle' | 'active' | 'needs_input' | 'error' | 'ready' | 'review';
 
 // --- Prompt detection helpers ---
 // Re-exported from shared module for backward compatibility.
@@ -824,6 +824,8 @@ export function getTaskAttentionState(taskId: string): TaskAttentionState {
   const hasQuestion = hasRunningTaskActivity(taskId, isAgentAskingQuestion);
   if (hasQuestion) return 'needs_input';
 
+  if (task.needsReview) return 'review';
+
   const active = activeAgents(); // reactive read
   const hasActive = hasRunningTaskActivity(taskId, (id) => active.has(id));
   if (hasActive) return 'active';
@@ -834,7 +836,12 @@ export function getTaskAttentionState(taskId: string): TaskAttentionState {
 
 export function taskNeedsAttention(taskId: string): boolean {
   const attention = getTaskAttentionState(taskId);
-  return attention === 'active' || attention === 'needs_input' || attention === 'error';
+  return (
+    attention === 'active' ||
+    attention === 'needs_input' ||
+    attention === 'error' ||
+    attention === 'review'
+  );
 }
 
 export function getTaskDotStatus(taskId: string): TaskDotStatus {
@@ -843,6 +850,8 @@ export function getTaskDotStatus(taskId: string): TaskDotStatus {
   const active = activeAgents(); // reactive read
   const hasActive = hasRunningTaskActivity(taskId, (id) => active.has(id));
   if (hasActive) return 'busy';
+
+  if (task.needsReview) return 'review';
 
   const steps = task.stepsContent;
   if (steps && steps.length > 0) {

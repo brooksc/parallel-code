@@ -62,6 +62,7 @@ function getAttentionColor(attention: TaskAttentionState): string | null {
   if (attention === 'active') return theme.accent;
   if (attention === 'needs_input') return theme.warning;
   if (attention === 'error') return theme.error;
+  if (attention === 'review') return '#c084fc';
   return null;
 }
 
