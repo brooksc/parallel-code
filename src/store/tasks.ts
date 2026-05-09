@@ -710,6 +710,7 @@ export function hasDirectTask(projectId: string): boolean {
 export async function collapseTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.collapsed || task.closingStatus) return;
+  if (task.coordinatorMode) return;
 
   // Stop file watchers to prevent FSWatcher leak
   invoke(IPC.StopPlanWatcher, { taskId }).catch(console.error);
