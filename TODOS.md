@@ -2,51 +2,7 @@
 
 Items ordered from simplest to hardest.
 
-> **Testing note:** "Easy" items are single-file stubs used to exercise the
-> coordinator end-to-end. Any files they create (`docs/`, `.editorconfig`,
-> `CONTRIBUTING.md`, `CHANGELOG.md`, etc.) can be deleted after the test run —
-> they exist only to give the coordinator real work to dispatch.
-
-## Easy (coordinator test tasks)
-
-### 1. Add a README file to the docs/ folder
-
-Create `docs/coordinator-mode.md` with a one-paragraph description of
-coordinator mode and how it works. No other files needed.
-
-### 2. Add a `.editorconfig` file to the repo root
-
-Create a standard `.editorconfig` at the root of the project with
-`indent_style = space`, `indent_size = 2`, and `end_of_line = lf`.
-
-### 3. Add a `CONTRIBUTING.md` stub to the repo root
-
-Create `CONTRIBUTING.md` at the root with a single sentence:
-"See the README for build instructions." No other content needed.
-
-### 4. Add a `CHANGELOG.md` stub to the repo root
-
-Create `CHANGELOG.md` at the root with a single line: `# Changelog` and one
-bullet: `- Initial release`. No other content needed.
-
-## Medium
-
-### 5. `get_task_output` truncates at 20 000 chars with no indication
-
-The MCP `get_task_output` tool silently truncates scrollback to 20 000
-characters. If the output is truncated the coordinator gets no signal that it
-saw only part of the output. Append a `\n[... output truncated at 20000 chars ...]`
-sentinel when truncation occurs.
-
-- File: `electron/mcp/coordinator.ts`, `getTaskOutput` method
-
-### 6. `merge_task` worktree fix not validated in a live run
-
-`dfaf91d` fixed `gitMergeTask` to operate in the coordinator's worktree instead
-of doing `git checkout` in the main repo. The fix was committed but never
-exercised — in the last test session the coordinator failed on an old binary and
-then worked around the issue by not calling `merge_task`. Needs a clean
-end-to-end run to confirm the fix works.
+## Medium (known edge cases — no fix yet)
 
 ### 7. Autofire expiry window — coordinator in long tool call during countdown
 
@@ -62,59 +18,6 @@ fix yet.
 the new port/token. However, if the coordinator Claude process itself restarts
 (not the Electron app), the MCP server URL and token change and any running
 sub-tasks are unreachable. Edge case, but real.
-
-## Tests
-
-The MCP backend (`electron/mcp/coordinator.test.ts`) is well covered. The
-frontend integration added in this PR has no tests. Items below are the highest
-value gaps — all are unit-testable with Vitest + jsdom without a running Electron
-instance.
-
-### 12. `setTaskControl` store function — unit test
-
-`src/store/tasks.ts` `setTaskControl(taskId, who)`:
-
-- Sets `controlledBy` in the store
-- Does NOT invoke `MCP_ControlChanged` IPC when `task.coordinatorMode === true`
-- DOES invoke `MCP_ControlChanged` IPC for coordinated sub-tasks
-- Calls `saveState()` in both cases
-
-### 13. `MCP_TaskCreated` handler — `controlledBy` initialisation
-
-`src/store/tasks.ts` handler for `IPC.MCP_TaskCreated`:
-
-- Newly created sub-task has `controlledBy: 'coordinator'` in the store
-- `coordinatedBy` is set to the coordinator task ID
-- (Regression guard for the bug where sub-tasks were created without `controlledBy`)
-
-### 14. Persistence round-trip for `controlledBy`
-
-`src/store/persistence.ts`:
-
-- A coordinator task (`coordinatorMode: true`) with `controlledBy: 'coordinator'`
-  survives a save/load round-trip with the value intact
-- A coordinated sub-task with `controlledBy: 'human'` survives a round-trip
-- An old state file with no `controlledBy` field on a coordinator task defaults
-  to `'coordinator'` on load (not `undefined`)
-- An old state file with no `controlledBy` on a coordinated sub-task defaults
-  to `'coordinator'` on load
-
-### 15. Autofire skips ticks when coordinator task has human control
-
-`src/components/PromptInput.tsx` autofire interval:
-
-- When `store.tasks[taskId].controlledBy === 'human'`, the interval callback
-  returns early without incrementing the miss counter or attempting to fire
-- When `controlledBy` reverts to `'coordinator'`, the next tick runs normally
-
-### 16. `TerminalView` — `disableStdin` tracks `controlledBy`
-
-`src/components/TerminalView.tsx` `createEffect` inside `onMount`:
-
-- When task `controlledBy` is `'coordinator'`, `term.options.disableStdin` is `true`
-- When task `controlledBy` is `'human'`, `term.options.disableStdin` is `false`
-- When task has no `coordinatedBy` or `coordinatorMode` (`controlledBy` undefined),
-  `disableStdin` is `false`
 
 ## Hard
 
@@ -159,3 +62,17 @@ Fix: split into two channels (`MCP_CoordinatorNotificationDropAck` for the
 renderer-to-main ack path, keep `MCP_CoordinatorOrphanedNotification` for
 main-to-renderer sub-task review surfacing). Separately, decide whether the
 drop-ack path should mark affected sub-tasks `needsReview` before acking.
+
+## UI / Behavior
+
+### 18. Sidebar drag indices wrong when coordinated children are hidden/nested
+
+`taskIndexById` indexes raw `store.taskOrder` (`Sidebar.tsx:134`). Coordinated children are filtered out of the flat rendered list and nested under the coordinator (`sidebar-order.ts:54`). `computeDropIndex()` returns a rendered DOM index (`Sidebar.tsx:253`), then `reorderTask(from, to)` applies that index to raw `taskOrder` (`Sidebar.tsx:296`). If `taskOrder` contains hidden coordinated children, dragging top-level tasks can insert them between a coordinator and its child in raw order.
+
+Fix: base dragging on task IDs / visible order, then translate to raw `taskOrder` preserving coordinator child blocks.
+
+### 19. Collapsed coordinator children can recurse into odd UI states
+
+`CollapsedTaskEntry` renders children for collapsed coordinators (`Sidebar.tsx:1071`). Clicking a collapsed child uncollapses it directly while its parent coordinator remains collapsed, creating a visible active child nested under a collapsed coordinator or moving it depending on derived order.
+
+Fix: restoring a collapsed child should restore/activate the coordinator, or children should not be independently restorable while their coordinator is collapsed.
