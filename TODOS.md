@@ -2,6 +2,32 @@
 
 Items ordered from simplest to hardest.
 
+## Regressions (introduced by sub-agent session)
+
+### R1. `MCP_TaskClosed` neighbor selection still broken
+
+`s.taskOrder.indexOf(taskId)` is called at `tasks.ts:902` **after** `cleanupPanelEntries` has already removed `taskId` from `s.taskOrder` (line 897). It always returns `-1`, so `neighborIdx` is always `0` — the active task always jumps to the first task instead of the adjacent one.
+
+Fix: capture idx before `cleanupPanelEntries`, use the return value, and index into `s.taskOrder` (already filtered) rather than re-filtering.
+
+- File: `src/store/tasks.ts` `MCP_TaskClosed` handler (~line 895)
+
+### R2. `signalDoneReceived` and `needsReview` not persisted
+
+Both fields exist on `Task` in `types.ts` but are absent from `saveState()` and `loadState()` in `persistence.ts`, and from `autosave.ts`. They are lost on app restart — "needs review" badges and done signals disappear on reload.
+
+Fix: add both fields to `PersistedTask` in `types.ts` and include them in the save/load blocks in `persistence.ts` (active and collapsed), plus the autosave snapshot.
+
+- Files: `src/store/types.ts`, `src/store/persistence.ts`, `src/store/autosave.ts`
+
+### R3. `createTask` failure cleanup incomplete — zombie tasks left in memory
+
+On `createTask` failure, the `catch` block at `coordinator.ts:578` only restores the preamble file then re-throws. It does NOT call `this.tasks.delete(task.id)`, `this.tailBuffers.delete(agentId)`, `this.subscribers.delete(agentId)`, or `killAgent(agentId)`. If `spawnAgent` succeeded before the failure, a running PTY agent is leaked and the task remains in `this.tasks` indefinitely.
+
+Fix: the catch block should remove all in-memory state and kill the agent if it was spawned (the full cleanup that was implemented earlier and reverted).
+
+- File: `electron/mcp/coordinator.ts` `createTask()` catch block (~line 578)
+
 ## Medium (known edge cases — no fix yet)
 
 ### 7. Autofire expiry window — coordinator in long tool call during countdown
@@ -64,6 +90,42 @@ main-to-renderer sub-task review surfacing). Separately, decide whether the
 drop-ack path should mark affected sub-tasks `needsReview` before acking.
 
 ## UI / Behavior
+
+### R4. `.claude/settings.local.json` preamble injection not stripped before merge
+
+For Claude agents, the preamble is written into `.claude/settings.local.json` (`coordinator.ts:446`). This file is assumed to be gitignored, but if a project tracks it, `git add -A` in the auto-commit will stage the injected preamble content and it will land in the merge. `stripPreambleFromBranch` has no code path for this file.
+
+Fix: either explicitly `git restore .claude/settings.local.json` before auto-commit, or track it the same way as AGENTS.md/GEMINI.md (store original content, strip before commit).
+
+- File: `electron/mcp/coordinator.ts` `mergeTask()` / `stripPreambleFromBranch()`
+
+### 12. `review_and_merge_task` merges before coordinator can review
+
+`reviewAndMergeTask()` calls `getTaskDiff()` then immediately calls `mergeTask()` (`coordinator.ts:774-775`), returning the diff only after the merge is complete. The coordinator preamble instructs agents to "review the result and call `review_and_merge_task`" — but the diff arrives post-merge, so the "review" is cosmetic and cannot abort the merge.
+
+Fix: either update the preamble to use `get_task_diff → merge_task → close_task` explicitly and deprecate `review_and_merge_task`, or split the tool into two calls with a genuine gate between them.
+
+### 13. `gitIsolation` accepted by REST but silently ignored end-to-end
+
+REST validates and forwards `gitIsolation` (`remote/server.ts:271`), but `MCPClient.createTask()` has no `gitIsolation` field, the MCP tool schema omits it, and `Coordinator.createTask()` always creates a worktree unconditionally. A caller that requests a different isolation mode gets a worktree with no error.
+
+Fix: either remove `gitIsolation` from the REST path, or implement and forward only supported modes explicitly.
+
+### 14. `SubTaskStrip` collapsed sub-task click selects without uncollapsing
+
+The strip now includes collapsed sub-tasks, but the click handler only calls `setActiveTask(task.id)` (`SubTaskStrip.tsx:186`). Clicking a collapsed sub-task selects it without uncollapsing it, leaving it hidden.
+
+Fix: if `task.collapsed`, call `uncollapseTask(task.id)` before `setActiveTask`.
+
+- File: `src/components/SubTaskStrip.tsx`
+
+### 15. Preamble stripping deletes intentionally empty tracked instruction files
+
+`stripPreambleFromBranch()` deletes the preamble file when the content before the injected block is empty/whitespace (`coordinator.ts:800`). If a project had an intentionally empty tracked `AGENTS.md`, `GEMINI.md`, or `.agent.md`, the merge will stage its deletion.
+
+Fix: store whether the file existed originally (not just its content) and always restore to original state — delete only if the file was newly created, restore the original bytes (even if empty) if it existed.
+
+- File: `electron/mcp/coordinator.ts` `stripPreambleFromBranch()`
 
 ### 18. Sidebar drag indices wrong when coordinated children are hidden/nested
 

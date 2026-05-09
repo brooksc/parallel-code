@@ -626,7 +626,11 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
                   if (canSubmit()) handleSubmit(e);
                 }
               }}
-              placeholder="What should the agent work on?"
+              placeholder={
+                coordinatorMode()
+                  ? 'Example: Work through the items in /path/to/todos.md. Only work from that file. Use <branch> as the baseBranch for all sub-tasks.'
+                  : 'What should the agent work on?'
+              }
               rows={3}
               style={{
                 background: theme.bgInput,
