@@ -397,9 +397,12 @@ export class Coordinator {
     // Inject sub-task instructions via agent-specific mechanism
     const agentCmd = (opts.agentCommand ?? this.coordinatorSpawnDefaults.command).toLowerCase();
     const preamble = `<sub-task-mode>\nThese rules override all skills and hooks:\n- When your work is complete, call the \`signal_done\` MCP tool. That is the finish line — do NOT use finishing-a-development-branch or offer merge/PR options.\n- Asking questions is fine when requirements are unclear or an action is risky.\n</sub-task-mode>`;
+    let preambleFilePath: string | undefined;
+    let preambleFileOriginalContent: string | null = null;
     if (agentCmd.includes('codex') || agentCmd.includes('opencode')) {
       // Codex/OpenCode reads AGENTS.md from project root
       const agentsPath = join(result.worktree_path, 'AGENTS.md');
+      preambleFilePath = agentsPath;
       let existing = '';
       if (existsSync(agentsPath)) {
         try {
@@ -407,11 +410,13 @@ export class Coordinator {
         } catch {
           /* ignore */
         }
+        preambleFileOriginalContent = existing;
       }
       writeFileSync(agentsPath, existing ? `${existing}\n\n${preamble}` : preamble);
     } else if (agentCmd.includes('gemini')) {
       // Gemini reads GEMINI.md from project root by default
       const geminiPath = join(result.worktree_path, 'GEMINI.md');
+      preambleFilePath = geminiPath;
       let existing = '';
       if (existsSync(geminiPath)) {
         try {
@@ -419,11 +424,13 @@ export class Coordinator {
         } catch {
           /* ignore */
         }
+        preambleFileOriginalContent = existing;
       }
       writeFileSync(geminiPath, existing ? `${existing}\n\n${preamble}` : preamble);
     } else if (agentCmd.includes('copilot')) {
       // Copilot reads .agent.md from workspace root
       const agentMdPath = join(result.worktree_path, '.agent.md');
+      preambleFilePath = agentMdPath;
       let existing = '';
       if (existsSync(agentMdPath)) {
         try {
@@ -431,6 +438,7 @@ export class Coordinator {
         } catch {
           /* ignore */
         }
+        preambleFileOriginalContent = existing;
       }
       writeFileSync(agentMdPath, existing ? `${existing}\n\n${preamble}` : preamble);
     } else {
@@ -452,120 +460,135 @@ export class Coordinator {
       writeFileSync(settingsPath, JSON.stringify(existingSettings, null, 2));
     }
 
-    // Write a per-sub-task MCP config so the agent can call signal_done.
-    // In Docker mode the config is written inside the worktree (accessible via volume mount);
-    // in native mode it goes to the host temp directory.
-    let subTaskMcpConfigPath: string | undefined;
-    if (this.mcpServerInfo) {
-      const { serverUrl, token, serverPath } = this.mcpServerInfo;
-      const mcpConfig = {
-        mcpServers: {
-          'parallel-code': {
-            type: 'stdio' as const,
-            command: 'node',
-            args: [serverPath, '--url', serverUrl, '--token', token, '--task-id', task.id],
+    try {
+      // Write a per-sub-task MCP config so the agent can call signal_done.
+      // In Docker mode the config is written inside the worktree (accessible via volume mount);
+      // in native mode it goes to the host temp directory.
+      let subTaskMcpConfigPath: string | undefined;
+      if (this.mcpServerInfo) {
+        const { serverUrl, token, serverPath } = this.mcpServerInfo;
+        const mcpConfig = {
+          mcpServers: {
+            'parallel-code': {
+              type: 'stdio' as const,
+              command: 'node',
+              args: [serverPath, '--url', serverUrl, '--token', token, '--task-id', task.id],
+            },
           },
-        },
-      };
-      const configPath = this.dockerContainerName
-        ? join(result.worktree_path, '.mcp.json')
-        : join(tmpdir(), `parallel-code-subtask-${task.id}.json`);
-      writeFileSync(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
-      subTaskMcpConfigPath = configPath;
-      task.mcpConfigPath = configPath;
-    }
-
-    const agentCommand = opts.agentCommand ?? this.coordinatorSpawnDefaults.command;
-    const agentArgs = opts.agentArgs ?? this.coordinatorSpawnDefaults.args;
-    const baseArgs = [
-      ...agentArgs,
-      ...(opts.skipPermissions ? ['--dangerously-skip-permissions'] : []),
-    ];
-    // In Docker mode, pass --mcp-config only when NOT using .mcp.json auto-discovery
-    // (.mcp.json in the worktree is auto-discovered by Claude Code).
-    const mcpArgs =
-      subTaskMcpConfigPath && !this.dockerContainerName
-        ? ['--mcp-config', subTaskMcpConfigPath]
-        : [];
-    const agentFinalArgs = [...baseArgs, ...mcpArgs];
-
-    // When the coordinator runs in Docker, spawn sub-agents via `docker exec` into
-    // the same container so they share the mounted project filesystem.
-    let command: string;
-    let args: string[];
-    if (this.dockerContainerName) {
-      command = 'docker';
-      args = [
-        'exec',
-        '-i',
-        '-w',
-        result.worktree_path,
-        this.dockerContainerName,
-        agentCommand,
-        ...agentFinalArgs,
-      ];
-    } else {
-      command = agentCommand;
-      args = agentFinalArgs;
-    }
-
-    const channelId = randomUUID();
-
-    spawnAgent(this.win, {
-      taskId: task.id,
-      agentId,
-      command,
-      args,
-      cwd: result.worktree_path,
-      env: {},
-      cols: 120,
-      rows: 40,
-      onOutput: { __CHANNEL_ID__: channelId },
-    });
-
-    // Subscribe for output monitoring
-    subscribeToAgent(agentId, outputCb);
-    task.status = 'running';
-
-    // Check scrollback in case the prompt was emitted before we subscribed
-    const scrollback = getAgentScrollback(agentId);
-    if (scrollback) {
-      const decoded = Buffer.from(scrollback, 'base64').toString('utf8');
-      const stripped = stripAnsi(decoded)
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\x00-\x1f\x7f]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (chunkContainsAgentPrompt(stripped)) {
-        task.status = 'idle';
-        this.maybeQueueReviewNotification(task, 'idle', null);
+        };
+        const configPath = this.dockerContainerName
+          ? join(result.worktree_path, '.mcp.json')
+          : join(tmpdir(), `parallel-code-subtask-${task.id}.json`);
+        writeFileSync(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
+        subTaskMcpConfigPath = configPath;
+        task.mcpConfigPath = configPath;
       }
+
+      const agentCommand = opts.agentCommand ?? this.coordinatorSpawnDefaults.command;
+      const agentArgs = opts.agentArgs ?? this.coordinatorSpawnDefaults.args;
+      const baseArgs = [
+        ...agentArgs,
+        ...(opts.skipPermissions ? ['--dangerously-skip-permissions'] : []),
+      ];
+      // In Docker mode, pass --mcp-config only when NOT using .mcp.json auto-discovery
+      // (.mcp.json in the worktree is auto-discovered by Claude Code).
+      const mcpArgs =
+        subTaskMcpConfigPath && !this.dockerContainerName
+          ? ['--mcp-config', subTaskMcpConfigPath]
+          : [];
+      const agentFinalArgs = [...baseArgs, ...mcpArgs];
+
+      // When the coordinator runs in Docker, spawn sub-agents via `docker exec` into
+      // the same container so they share the mounted project filesystem.
+      let command: string;
+      let args: string[];
+      if (this.dockerContainerName) {
+        command = 'docker';
+        args = [
+          'exec',
+          '-i',
+          '-w',
+          result.worktree_path,
+          this.dockerContainerName,
+          agentCommand,
+          ...agentFinalArgs,
+        ];
+      } else {
+        command = agentCommand;
+        args = agentFinalArgs;
+      }
+
+      const channelId = randomUUID();
+
+      spawnAgent(this.win, {
+        taskId: task.id,
+        agentId,
+        command,
+        args,
+        cwd: result.worktree_path,
+        env: {},
+        cols: 120,
+        rows: 40,
+        onOutput: { __CHANNEL_ID__: channelId },
+      });
+
+      // Subscribe for output monitoring
+      subscribeToAgent(agentId, outputCb);
+      task.status = 'running';
+
+      // Check scrollback in case the prompt was emitted before we subscribed
+      const scrollback = getAgentScrollback(agentId);
+      if (scrollback) {
+        const decoded = Buffer.from(scrollback, 'base64').toString('utf8');
+        const stripped = stripAnsi(decoded)
+          // eslint-disable-next-line no-control-regex
+          .replace(/[\x00-\x1f\x7f]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (chunkContainsAgentPrompt(stripped)) {
+          task.status = 'idle';
+          this.maybeQueueReviewNotification(task, 'idle', null);
+        }
+      }
+
+      // Notify renderer with the prompt — the renderer sets it as initialPrompt
+      // on the task, and PromptInput auto-delivers it using the same code path
+      // as manually created tasks (stability checks, quiescence detection, etc.)
+      // For renderer storage: agentCommand/agentArgs are used to restart the agent from the UI.
+      // In docker mode, we store the `docker exec <container> <agentCommand>` form so restarts work.
+      const notifyAgentArgs = this.dockerContainerName
+        ? ['exec', '-i', this.dockerContainerName, agentCommand, ...agentArgs]
+        : agentArgs;
+      this.notifyRenderer(IPC.MCP_TaskCreated, {
+        taskId: task.id,
+        name: task.name,
+        projectId: task.projectId,
+        branchName: task.branchName,
+        worktreePath: task.worktreePath,
+        agentId: task.agentId,
+        coordinatorTaskId: task.coordinatorTaskId,
+        prompt: opts.prompt ? SUB_TASK_PREAMBLE + opts.prompt : opts.prompt,
+        mcpConfigPath: subTaskMcpConfigPath,
+        agentCommand: command,
+        agentArgs: notifyAgentArgs,
+        skipPermissions: opts.skipPermissions ?? false,
+      });
+
+      return task;
+    } catch (err) {
+      if (preambleFilePath !== undefined) {
+        try {
+          if (preambleFileOriginalContent !== null) {
+            writeFileSync(preambleFilePath, preambleFileOriginalContent);
+          } else {
+            unlinkSync(preambleFilePath);
+          }
+        } catch {
+          /* ignore cleanup errors */
+        }
+      }
+      throw err;
     }
-
-    // Notify renderer with the prompt — the renderer sets it as initialPrompt
-    // on the task, and PromptInput auto-delivers it using the same code path
-    // as manually created tasks (stability checks, quiescence detection, etc.)
-    // For renderer storage: agentCommand/agentArgs are used to restart the agent from the UI.
-    // In docker mode, we store the `docker exec <container> <agentCommand>` form so restarts work.
-    const notifyAgentArgs = this.dockerContainerName
-      ? ['exec', '-i', this.dockerContainerName, agentCommand, ...agentArgs]
-      : agentArgs;
-    this.notifyRenderer(IPC.MCP_TaskCreated, {
-      taskId: task.id,
-      name: task.name,
-      projectId: task.projectId,
-      branchName: task.branchName,
-      worktreePath: task.worktreePath,
-      agentId: task.agentId,
-      coordinatorTaskId: task.coordinatorTaskId,
-      prompt: opts.prompt ? SUB_TASK_PREAMBLE + opts.prompt : opts.prompt,
-      mcpConfigPath: subTaskMcpConfigPath,
-      agentCommand: command,
-      agentArgs: notifyAgentArgs,
-      skipPermissions: opts.skipPermissions ?? false,
-    });
-
-    return task;
   }
 
   listTasks(): ApiTaskSummary[] {
