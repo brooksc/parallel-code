@@ -15,7 +15,7 @@ You have MCP tools to coordinate work across isolated git worktree tasks:
 - wait_for_idle — Wait until an agent is idle at its prompt (use for send_prompt follow-ups)
 - get_task_diff — Get changed files and diff for a task
 - get_task_output — Get recent terminal output from a task
-- merge_task — Merge a task's branch into main
+- merge_task — Merge a task's branch into the base branch
 - close_task — Close and clean up a task
 
 RULES:

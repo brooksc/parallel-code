@@ -141,7 +141,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'merge_task',
-      description: "Merge a task's branch into the main branch.",
+      description: "Merge a task's branch into the base branch.",
       inputSchema: {
         type: 'object' as const,
         properties: {
