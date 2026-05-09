@@ -1223,6 +1223,42 @@ export function registerAllHandlers(win: BrowserWindow): void {
         coordinator?.rescheduleRestageTimer(args.coordinatorTaskId);
       },
     );
+
+    ipcMain.handle(
+      IPC.MCP_HydrateCoordinatedTask,
+      (
+        _e,
+        args: {
+          id: string;
+          name: string;
+          projectId: string;
+          projectRoot: string;
+          branchName: string;
+          baseBranch?: string;
+          worktreePath: string;
+          coordinatorTaskId: string;
+        },
+      ) => {
+        assertString(args.id, 'id');
+        assertString(args.name, 'name');
+        assertString(args.projectId, 'projectId');
+        validatePath(args.projectRoot, 'projectRoot');
+        assertString(args.branchName, 'branchName');
+        validatePath(args.worktreePath, 'worktreePath');
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        coordinator?.hydrateTask({
+          id: args.id,
+          name: args.name,
+          projectId: args.projectId,
+          projectRoot: args.projectRoot,
+          branchName: args.branchName,
+          baseBranch: args.baseBranch,
+          worktreePath: args.worktreePath,
+          agentId: crypto.randomUUID(),
+          coordinatorTaskId: args.coordinatorTaskId,
+        });
+      },
+    );
   }
 
   // Enable coordinator mode: lazily import the Coordinator module and register handlers.

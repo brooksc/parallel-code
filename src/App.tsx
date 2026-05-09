@@ -348,6 +348,27 @@ function App() {
       });
     }
 
+    // Hydrate backend coordinator task registry with persisted child tasks so MCP
+    // tools (list_tasks, send_prompt, close_task, etc.) work after app restart.
+    for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
+      const task = store.tasks[taskId];
+      if (!task?.coordinatedBy) continue;
+      const projectRoot = store.projects.find((p) => p.id === task.projectId)?.path;
+      if (!projectRoot) continue;
+      invoke(IPC.MCP_HydrateCoordinatedTask, {
+        id: task.id,
+        name: task.name,
+        projectId: task.projectId,
+        projectRoot,
+        branchName: task.branchName,
+        baseBranch: task.baseBranch,
+        worktreePath: task.worktreePath,
+        coordinatorTaskId: task.coordinatedBy,
+      }).catch((err) => {
+        console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
+      });
+    }
+
     // Restore plan content for tasks that had a plan file before restart
     for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
       const task = store.tasks[taskId];

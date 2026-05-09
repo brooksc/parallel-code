@@ -866,6 +866,34 @@ export class Coordinator {
     return this.tasks.get(taskId);
   }
 
+  hydrateTask(opts: {
+    id: string;
+    name: string;
+    projectId: string;
+    projectRoot: string;
+    branchName: string;
+    baseBranch?: string;
+    worktreePath: string;
+    agentId: string;
+    coordinatorTaskId: string;
+  }): void {
+    if (this.tasks.has(opts.id)) return;
+    const task: CoordinatedTask = {
+      id: opts.id,
+      name: opts.name,
+      projectId: opts.projectId,
+      projectRoot: opts.projectRoot,
+      branchName: opts.branchName,
+      baseBranch: opts.baseBranch,
+      worktreePath: opts.worktreePath,
+      agentId: opts.agentId,
+      coordinatorTaskId: opts.coordinatorTaskId,
+      status: 'exited',
+      exitCode: null,
+    };
+    this.tasks.set(task.id, task);
+  }
+
   registerCoordinator(coordinatorTaskId: string, projectId: string, worktreePath?: string): void {
     if (this.coordinators.has(coordinatorTaskId)) return;
     this.coordinators.set(coordinatorTaskId, {
