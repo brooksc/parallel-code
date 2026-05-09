@@ -116,8 +116,16 @@ export class Coordinator {
       return;
     }
     this.controlMap.set(taskId, who);
+    if (who === 'human') {
+      // Resolve any pending idle waiters immediately — human has taken over
+      const resolvers = this.idleResolvers.get(taskId);
+      if (resolvers?.length) {
+        for (const resolve of resolvers) resolve({ reason: 'human_control' });
+        this.idleResolvers.delete(taskId);
+      }
+    }
     if (who === 'coordinator') {
-      // Fire any idle resolvers that were queued while human had control
+      // Fire any idle resolvers queued while human had control
       const resolvers = this.idleResolvers.get(taskId);
       if (resolvers?.length) {
         for (const resolve of resolvers) resolve({ reason: 'human_control' });
@@ -460,11 +468,11 @@ export class Coordinator {
     }
     task.preambleFileExistedBefore = preambleFileOriginalContent !== null;
 
+    let subTaskMcpConfigPath: string | undefined;
     try {
       // Write a per-sub-task MCP config so the agent can call signal_done.
       // In Docker mode the config is written inside the worktree (accessible via volume mount);
       // in native mode it goes to the host temp directory.
-      let subTaskMcpConfigPath: string | undefined;
       if (this.mcpServerInfo) {
         const { serverUrl, token, serverPath } = this.mcpServerInfo;
         const mcpConfig = {
@@ -576,6 +584,7 @@ export class Coordinator {
 
       return task;
     } catch (err) {
+      // Restore injected preamble file before cleaning up
       if (preambleFilePath !== undefined) {
         try {
           if (preambleFileOriginalContent !== null) {
@@ -584,9 +593,20 @@ export class Coordinator {
             unlinkSync(preambleFilePath);
           }
         } catch {
-          /* ignore cleanup errors */
+          /* ignore */
         }
       }
+      // Best-effort cleanup: kill agent, remove worktree/branch, clear in-memory state.
+      // cleanupTask handles all of this; the task is still in this.tasks so it can find it.
+      // Also delete the MCP config if it was written but not yet stored on task.mcpConfigPath.
+      if (subTaskMcpConfigPath && !task.mcpConfigPath) {
+        try {
+          unlinkSync(subTaskMcpConfigPath);
+        } catch {
+          /* ignore */
+        }
+      }
+      this.cleanupTask(task.id).catch(() => {});
       throw err;
     }
   }
@@ -896,6 +916,43 @@ export class Coordinator {
     if (opts.controlledBy === 'human') {
       this.controlMap.set(task.id, 'human');
     }
+
+    // Set up output monitoring so wait_for_idle and idle detection work after restart.
+    // The agentId matches the one the renderer will use when it respawns the PTY.
+    const { agentId } = opts;
+    this.tailBuffers.set(agentId, '');
+    this.decoders.set(agentId, new TextDecoder());
+    const outputCb = (encoded: string) => {
+      const bytes = Buffer.from(encoded, 'base64');
+      const text = (this.decoders.get(agentId) ?? new TextDecoder()).decode(bytes, {
+        stream: true,
+      });
+      const prev = this.tailBuffers.get(agentId) ?? '';
+      const combined = prev + text;
+      this.tailBuffers.set(
+        agentId,
+        combined.length > 4096 ? combined.slice(combined.length - 4096) : combined,
+      );
+      const stripped = stripAnsi(combined)
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\x00-\x1f\x7f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (chunkContainsAgentPrompt(stripped)) {
+        if (task.status === 'running') {
+          task.status = 'idle';
+          this.maybeQueueReviewNotification(task, 'idle', null);
+        }
+        const resolvers = this.idleResolvers.get(task.id);
+        if (resolvers?.length) {
+          for (const resolve of resolvers) resolve({ reason: 'idle' });
+          this.idleResolvers.delete(task.id);
+        }
+      } else if (task.status === 'idle') {
+        task.status = 'running';
+      }
+    };
+    this.subscribers.set(agentId, outputCb);
   }
 
   registerCoordinator(coordinatorTaskId: string, projectId: string, worktreePath?: string): void {

@@ -111,6 +111,8 @@ export async function saveState(): Promise<void> {
       coordinatedBy: task.coordinatedBy,
       controlledBy: task.controlledBy,
       mcpConfigPath: task.mcpConfigPath,
+      signalDoneReceived: task.signalDoneReceived,
+      needsReview: task.needsReview,
     };
   }
 
@@ -147,6 +149,8 @@ export async function saveState(): Promise<void> {
       coordinatedBy: task.coordinatedBy,
       controlledBy: task.controlledBy,
       mcpConfigPath: task.mcpConfigPath,
+      signalDoneReceived: task.signalDoneReceived,
+      needsReview: task.needsReview,
     };
   }
 
@@ -517,6 +521,8 @@ export async function loadState(): Promise<void> {
           controlledBy:
             pt.controlledBy ?? (pt.coordinatorMode || pt.coordinatedBy ? 'coordinator' : undefined),
           mcpConfigPath: pt.mcpConfigPath,
+          signalDoneReceived: pt.signalDoneReceived,
+          needsReview: pt.needsReview,
         };
 
         s.tasks[taskId] = task;
@@ -599,6 +605,8 @@ export async function loadState(): Promise<void> {
           controlledBy:
             pt.controlledBy ?? (pt.coordinatorMode || pt.coordinatedBy ? 'coordinator' : undefined),
           mcpConfigPath: pt.mcpConfigPath,
+          signalDoneReceived: pt.signalDoneReceived,
+          needsReview: pt.needsReview,
         };
 
         s.tasks[taskId] = task;

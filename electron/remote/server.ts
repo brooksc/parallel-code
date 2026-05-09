@@ -342,10 +342,16 @@ export function startRemoteServer(opts: {
               )
                 return jsonReply(400, { error: 'timeoutMs must be a finite number' });
               mcpLog('info', `wait_for_idle id=${taskId}`);
-              await orch.waitForIdle(taskId, body.timeoutMs as number | undefined);
+              const idleResult = await orch.waitForIdle(
+                taskId,
+                body.timeoutMs as number | undefined,
+              );
               const status = orch.getTaskStatus(taskId);
-              mcpLog('info', `wait_for_idle OK id=${taskId} status=${status?.status}`);
-              jsonReply(200, { status: status?.status ?? 'unknown' });
+              mcpLog(
+                'info',
+                `wait_for_idle OK id=${taskId} status=${status?.status} reason=${idleResult.reason}`,
+              );
+              jsonReply(200, { status: status?.status ?? 'unknown', reason: idleResult.reason });
             })
             .catch((err) => {
               mcpLog('error', `wait_for_idle FAIL: ${String(err)}`);

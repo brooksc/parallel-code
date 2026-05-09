@@ -62,8 +62,11 @@ export class MCPClient {
     });
   }
 
-  async waitForIdle(taskId: string, timeoutMs?: number): Promise<{ status: string }> {
-    return this.request<{ status: string }>(
+  async waitForIdle(
+    taskId: string,
+    timeoutMs?: number,
+  ): Promise<{ status: string; reason: string }> {
+    return this.request<{ status: string; reason: string }>(
       'POST',
       `/api/tasks/${encodeURIComponent(taskId)}/wait`,
       { timeoutMs },

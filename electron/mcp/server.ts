@@ -45,174 +45,202 @@ const server = new Server(
 
 // --- Tool definitions ---
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: 'create_task',
-      description:
-        'Create a new task with its own git worktree and AI agent. The agent starts automatically and the prompt is delivered once the agent is ready.',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          name: { type: 'string', description: 'Task name (used for branch name)' },
-          prompt: {
-            type: 'string',
-            description: 'Initial prompt to send to the agent once it finishes starting up.',
+const SUBTASK_TOOLS = [
+  {
+    name: 'signal_done',
+    description:
+      'Signal that your assigned work is complete and ready for the coordinator to review. Call this when you have finished your task — do not call it mid-task.',
+    inputSchema: { type: 'object' as const, properties: {}, required: [] },
+  },
+];
+
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  // Sub-tasks only get signal_done — they must not perform coordinator lifecycle operations
+  if (taskId && !coordinatorId) {
+    return { tools: SUBTASK_TOOLS };
+  }
+  return {
+    tools: [
+      {
+        name: 'create_task',
+        description:
+          'Create a new task with its own git worktree and AI agent. The agent starts automatically and the prompt is delivered once the agent is ready.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            name: { type: 'string', description: 'Task name (used for branch name)' },
+            prompt: {
+              type: 'string',
+              description: 'Initial prompt to send to the agent once it finishes starting up.',
+            },
+            skipPermissions: {
+              type: 'boolean',
+              description:
+                'Run the sub-agent with --dangerously-skip-permissions (auto-approve all tool uses). Use for fully autonomous sub-tasks.',
+            },
+            baseBranch: {
+              type: 'string',
+              description:
+                'Git branch to base the worktree on. Defaults to the project default branch. Use this to ensure sub-agents start with the right code (e.g. a feature branch).',
+            },
           },
-          skipPermissions: {
-            type: 'boolean',
-            description:
-              'Run the sub-agent with --dangerously-skip-permissions (auto-approve all tool uses). Use for fully autonomous sub-tasks.',
+          required: ['name'],
+        },
+      },
+      {
+        name: 'list_tasks',
+        description: 'List all coordinated tasks with their current status.',
+        inputSchema: { type: 'object' as const, properties: {} },
+      },
+      {
+        name: 'get_task_status',
+        description: 'Get detailed status of a specific task including git info and agent state.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            taskId: { type: 'string', description: 'Task ID' },
           },
-          baseBranch: {
-            type: 'string',
-            description:
-              'Git branch to base the worktree on. Defaults to the project default branch. Use this to ensure sub-agents start with the right code (e.g. a feature branch).',
+          required: ['taskId'],
+        },
+      },
+      {
+        name: 'send_prompt',
+        description: "Send a prompt/instruction to a task's AI agent.",
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            taskId: { type: 'string', description: 'Task ID' },
+            prompt: { type: 'string', description: 'Prompt text to send' },
           },
+          required: ['taskId', 'prompt'],
         },
-        required: ['name'],
       },
-    },
-    {
-      name: 'list_tasks',
-      description: 'List all coordinated tasks with their current status.',
-      inputSchema: { type: 'object' as const, properties: {} },
-    },
-    {
-      name: 'get_task_status',
-      description: 'Get detailed status of a specific task including git info and agent state.',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          taskId: { type: 'string', description: 'Task ID' },
-        },
-        required: ['taskId'],
-      },
-    },
-    {
-      name: 'send_prompt',
-      description: "Send a prompt/instruction to a task's AI agent.",
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          taskId: { type: 'string', description: 'Task ID' },
-          prompt: { type: 'string', description: 'Prompt text to send' },
-        },
-        required: ['taskId', 'prompt'],
-      },
-    },
-    {
-      name: 'wait_for_idle',
-      description:
-        "Wait until a task's agent becomes idle (sitting at its prompt). Returns when the agent is ready for the next instruction.",
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          taskId: { type: 'string', description: 'Task ID' },
-          timeoutMs: {
-            type: 'number',
-            description: 'Timeout in milliseconds (default: 300000 = 5 min)',
+      {
+        name: 'wait_for_idle',
+        description:
+          "Wait until a task's agent becomes idle (sitting at its prompt). Returns when the agent is ready for the next instruction.",
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            taskId: { type: 'string', description: 'Task ID' },
+            timeoutMs: {
+              type: 'number',
+              description: 'Timeout in milliseconds (default: 300000 = 5 min)',
+            },
           },
+          required: ['taskId'],
         },
-        required: ['taskId'],
       },
-    },
-    {
-      name: 'get_task_diff',
-      description: "Get the changed files and unified diff for a task's work.",
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          taskId: { type: 'string', description: 'Task ID' },
-        },
-        required: ['taskId'],
-      },
-    },
-    {
-      name: 'get_task_output',
-      description: "Get recent terminal output from a task's agent (stripped of ANSI codes).",
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          taskId: { type: 'string', description: 'Task ID' },
-        },
-        required: ['taskId'],
-      },
-    },
-    {
-      name: 'merge_task',
-      description: "Merge a task's branch into the base branch.",
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          taskId: { type: 'string', description: 'Task ID' },
-          squash: { type: 'boolean', description: 'Squash merge (default: false)' },
-          message: { type: 'string', description: 'Custom merge commit message' },
-          cleanup: {
-            type: 'boolean',
-            description: 'Clean up worktree and branch after merge (default: false)',
+      {
+        name: 'get_task_diff',
+        description: "Get the changed files and unified diff for a task's work.",
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            taskId: { type: 'string', description: 'Task ID' },
           },
+          required: ['taskId'],
         },
-        required: ['taskId'],
       },
-    },
-    {
-      name: 'close_task',
-      description: 'Close and clean up a task — kills the agent, removes worktree and branch.',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          taskId: { type: 'string', description: 'Task ID' },
-        },
-        required: ['taskId'],
-      },
-    },
-    {
-      name: 'wait_for_signal_done',
-      description:
-        'Wait for ANY sub-task to call signal_done. Returns { taskId, name, remaining } where remaining is the count of tasks still running or signaled-but-not-yet-reviewed. Call this in a loop until remaining === 0 to process all completed sub-tasks before spawning more. IMPORTANT: you MUST review the returned task before calling wait_for_signal_done again.',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          timeoutMs: {
-            type: 'number',
-            description: 'Timeout in milliseconds (default: 300000 = 5 min)',
+      {
+        name: 'get_task_output',
+        description: "Get recent terminal output from a task's agent (stripped of ANSI codes).",
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            taskId: { type: 'string', description: 'Task ID' },
           },
+          required: ['taskId'],
         },
-        required: [],
       },
-    },
-    {
-      name: 'review_and_merge_task',
-      description:
-        'DEPRECATED: use get_task_diff → merge_task → close_task instead. This tool merges immediately without giving you a chance to review the diff first — the diff it returns is post-merge. Kept for backwards compatibility only.',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          taskId: { type: 'string', description: 'Task ID' },
-          squash: { type: 'boolean', description: 'Squash merge (default: false)' },
-          message: { type: 'string', description: 'Custom merge commit message' },
+      {
+        name: 'merge_task',
+        description: "Merge a task's branch into the base branch.",
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            taskId: { type: 'string', description: 'Task ID' },
+            squash: { type: 'boolean', description: 'Squash merge (default: false)' },
+            message: { type: 'string', description: 'Custom merge commit message' },
+            cleanup: {
+              type: 'boolean',
+              description: 'Clean up worktree and branch after merge (default: false)',
+            },
+          },
+          required: ['taskId'],
         },
-        required: ['taskId'],
       },
-    },
-    {
-      name: 'signal_done',
-      description:
-        'Signal that your assigned work is complete and ready for the coordinator to review. Call this when you have finished your task — do not call it mid-task.',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {},
-        required: [],
+      {
+        name: 'close_task',
+        description: 'Close and clean up a task — kills the agent, removes worktree and branch.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            taskId: { type: 'string', description: 'Task ID' },
+          },
+          required: ['taskId'],
+        },
       },
-    },
-  ],
-}));
+      {
+        name: 'wait_for_signal_done',
+        description:
+          'Wait for ANY sub-task to call signal_done. Returns { taskId, name, remaining } where remaining is the count of tasks still running or signaled-but-not-yet-reviewed. Call this in a loop until remaining === 0 to process all completed sub-tasks before spawning more. IMPORTANT: you MUST review the returned task before calling wait_for_signal_done again.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            timeoutMs: {
+              type: 'number',
+              description: 'Timeout in milliseconds (default: 300000 = 5 min)',
+            },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'review_and_merge_task',
+        description:
+          'DEPRECATED: use get_task_diff → merge_task → close_task instead. This tool merges immediately without giving you a chance to review the diff first — the diff it returns is post-merge. Kept for backwards compatibility only.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            taskId: { type: 'string', description: 'Task ID' },
+            squash: { type: 'boolean', description: 'Squash merge (default: false)' },
+            message: { type: 'string', description: 'Custom merge commit message' },
+          },
+          required: ['taskId'],
+        },
+      },
+      {
+        name: 'signal_done',
+        description:
+          'Signal that your assigned work is complete and ready for the coordinator to review. Call this when you have finished your task — do not call it mid-task.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {},
+          required: [],
+        },
+      },
+    ],
+  };
+});
 
 // --- Tool execution ---
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: params } = request.params;
+
+  // Sub-tasks may only call signal_done
+  if (taskId && !coordinatorId && name !== 'signal_done') {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error: '${name}' is not available to sub-tasks. Only signal_done is permitted.`,
+        },
+      ],
+      isError: true,
+    };
+  }
 
   try {
     switch (name) {

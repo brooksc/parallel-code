@@ -1238,6 +1238,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           worktreePath: string;
           coordinatorTaskId: string;
           controlledBy?: 'coordinator' | 'human';
+          agentId?: string;
         },
       ) => {
         assertString(args.id, 'id');
@@ -1255,7 +1256,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           branchName: args.branchName,
           baseBranch: args.baseBranch,
           worktreePath: args.worktreePath,
-          agentId: crypto.randomUUID(),
+          agentId: args.agentId ?? crypto.randomUUID(),
           coordinatorTaskId: args.coordinatorTaskId,
           controlledBy: args.controlledBy,
         });

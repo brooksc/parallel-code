@@ -146,6 +146,8 @@ export interface PersistedTask {
   coordinatedBy?: string;
   controlledBy?: 'coordinator' | 'human';
   mcpConfigPath?: string;
+  signalDoneReceived?: boolean;
+  needsReview?: boolean;
 }
 
 export interface PersistedTerminal {
