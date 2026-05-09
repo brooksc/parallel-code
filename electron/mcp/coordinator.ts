@@ -3,9 +3,13 @@
 // using existing backend primitives (pty, git, tasks).
 
 import { randomUUID } from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { writeFileSync, unlinkSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+
+const execAsync = promisify(execFile);
 import type { BrowserWindow } from 'electron';
 import { createTask as createBackendTask, deleteTask } from '../ipc/tasks.js';
 import {
@@ -689,6 +693,27 @@ export class Coordinator {
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
     const root = task.projectRoot;
+
+    // Auto-commit any uncommitted changes in the task worktree before merging.
+    if (task.worktreePath) {
+      try {
+        await execAsync('git', ['commit', '-a', '-m', 'WIP: auto-commit before merge'], {
+          cwd: task.worktreePath,
+        });
+      } catch {
+        // Commit failed — check if uncommitted changes still exist
+        const { stdout: statusOut } = await execAsync('git', ['status', '--porcelain'], {
+          cwd: task.worktreePath,
+        });
+        if (statusOut.trim()) {
+          throw new Error(
+            `Auto-commit failed and the task worktree still has uncommitted changes. ` +
+              `Please commit or discard changes in ${task.worktreePath} before merging.`,
+          );
+        }
+        // Nothing to commit — swallow silently
+      }
+    }
 
     const coordinatorState = this.coordinators.get(task.coordinatorTaskId);
     const result = await gitMergeTask(
