@@ -262,7 +262,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
         // Return files summary + truncated diff
         const summary = result.files
-          .map((f) => `${f.status} ${f.path} (+${f.lines_added} -${f.lines_removed})`)
+          .map(
+            (f) =>
+              `${f.status} ${f.path} (+${f.lines_added} -${f.lines_removed})` +
+              (f.committed ? '' : ' [NOT COMMITTED — will be auto-committed on merge]'),
+          )
           .join('\n');
         let diffText: string;
         if (result.diff.length > 50_000) {
@@ -325,7 +329,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           message: p.message as string | undefined,
         });
         const summary = result.diff.files
-          .map((f) => `${f.status} ${f.path} (+${f.lines_added} -${f.lines_removed})`)
+          .map(
+            (f) =>
+              `${f.status} ${f.path} (+${f.lines_added} -${f.lines_removed})` +
+              (f.committed ? '' : ' [NOT COMMITTED — will be auto-committed on merge]'),
+          )
           .join('\n');
         let diffText = result.diff.diff;
         if (diffText.length > 50_000) {
