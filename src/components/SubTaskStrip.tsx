@@ -1,5 +1,6 @@
 import { For, Show, createMemo, createSignal } from 'solid-js';
 import { store, setActiveTask, getTaskDotStatus } from '../store/store';
+import { getCoordinatorChildren } from '../store/sidebar-order';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { StatusDot } from './StatusDot';
@@ -144,11 +145,10 @@ function MCPLogModal(props: { onClose: () => void }) {
 export function SubTaskStrip(props: SubTaskStripProps) {
   const [showLogs, setShowLogs] = createSignal(false);
 
-  const subTasks = createMemo(() =>
-    store.taskOrder
-      .map((id) => store.tasks[id])
-      .filter((t) => t && t.coordinatedBy === props.coordinatorTaskId),
-  );
+  const subTasks = createMemo(() => {
+    const { active, collapsed } = getCoordinatorChildren(props.coordinatorTaskId);
+    return [...active, ...collapsed].map((id) => store.tasks[id]).filter(Boolean);
+  });
 
   return (
     <>
