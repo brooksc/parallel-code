@@ -1000,7 +1000,7 @@ function CoordinatorFolder(props: TaskEntryProps) {
 
 // --- Collapsed task entry: also handles coordinator folders in collapsed state ---
 
-function CollapsedTaskEntry(props: { taskId: string; indented?: boolean }) {
+function CollapsedTaskEntry(props: { taskId: string; indented?: boolean; coordinatorId?: string }) {
   const task = () => store.tasks[props.taskId];
   // Only top-level coordinators render children — indented entries never recurse
   const isCoordinator = () => !props.indented && (task()?.coordinatorMode ?? false);
@@ -1018,11 +1018,23 @@ function CollapsedTaskEntry(props: { taskId: string; indented?: boolean }) {
             role="button"
             tabIndex={0}
             data-sidebar-task-id={props.taskId}
-            onClick={() => uncollapseTask(props.taskId)}
+            onClick={() => {
+              if (props.coordinatorId) {
+                uncollapseTask(props.coordinatorId);
+                setActiveTask(props.taskId);
+              } else {
+                uncollapseTask(props.taskId);
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                uncollapseTask(props.taskId);
+                if (props.coordinatorId) {
+                  uncollapseTask(props.coordinatorId);
+                  setActiveTask(props.taskId);
+                } else {
+                  uncollapseTask(props.taskId);
+                }
               }
             }}
             title="Click to restore"
@@ -1087,10 +1099,14 @@ function CollapsedTaskEntry(props: { taskId: string; indented?: boolean }) {
           {/* If collapsed coordinator, still show children nested */}
           <Show when={isCoordinator()}>
             <For each={children().active}>
-              {(childId) => <CollapsedTaskEntry taskId={childId} indented />}
+              {(childId) => (
+                <CollapsedTaskEntry taskId={childId} indented coordinatorId={props.taskId} />
+              )}
             </For>
             <For each={children().collapsed}>
-              {(childId) => <CollapsedTaskEntry taskId={childId} indented />}
+              {(childId) => (
+                <CollapsedTaskEntry taskId={childId} indented coordinatorId={props.taskId} />
+              )}
             </For>
           </Show>
         </>
