@@ -959,6 +959,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
     const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
     remoteServer = startRemoteServer({
       port: args.port ?? 7777,
+      host: '0.0.0.0',
       staticDir: distRemote,
       getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
       getAgentStatus: (agentId: string) => {
@@ -1021,6 +1022,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           propagateSkipPermissions?: boolean;
           agentCommand?: string;
           agentArgs?: string[];
+          dockerContainerName?: string;
         },
       ) => {
         if (!coordinator) return;
@@ -1059,6 +1061,22 @@ export function registerAllHandlers(win: BrowserWindow): void {
           mcpServerPath = mcpServerPath.replace('/app.asar/', '/app.asar.unpacked/');
         }
         const serverUrl = `http://127.0.0.1:${remoteServer.port}`;
+
+        // Docker+coordinator: copy the MCP server script into the project root so it is
+        // accessible inside the container (which mounts the project at the same host path).
+        // Also register the coordinator's container name so sub-agents are spawned via docker exec.
+        if (args.dockerContainerName) {
+          const dockerMcpDir = path.join(args.projectRoot, '.parallel-code');
+          fs.mkdirSync(dockerMcpDir, { recursive: true });
+          const dockerMcpServerPath = path.join(dockerMcpDir, 'mcp-server.cjs');
+          fs.copyFileSync(mcpServerPath, dockerMcpServerPath);
+          mcpServerPath = dockerMcpServerPath;
+          coordinator.setDockerContainerName(args.dockerContainerName);
+          console.warn('[MCP] Docker mode: copied MCP server to', dockerMcpServerPath);
+        } else {
+          coordinator.setDockerContainerName(null);
+        }
+
         coordinator.setMCPServerInfo(serverUrl, remoteServer.token, mcpServerPath);
         coordinator.setCoordinatorSpawnDefaults(
           args.agentCommand ?? 'claude',
@@ -1088,31 +1106,34 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
         const configJson = JSON.stringify(mcpConfig, null, 2);
 
-        // Write temp config for --mcp-config flag
-        const configPath = path.join(
-          app.getPath('temp'),
-          `parallel-code-mcp-${args.coordinatorTaskId}.json`,
-        );
-        fs.writeFileSync(configPath, configJson, { mode: 0o600 });
+        // In docker mode the coordinator agent auto-discovers .mcp.json in the project root
+        // (which is the container's working directory). No host-temp configPath needed.
+        let configPath: string | undefined;
+        if (!args.dockerContainerName) {
+          configPath = path.join(
+            app.getPath('temp'),
+            `parallel-code-mcp-${args.coordinatorTaskId}.json`,
+          );
+          fs.writeFileSync(configPath, configJson, { mode: 0o600 });
+        }
 
-        // Also write .mcp.json into the worktree so Claude Code auto-discovers it.
-        // Immediately git-exclude it so the token never gets committed.
-        if (args.worktreePath) {
-          const worktreeMcpPath = path.join(args.worktreePath, '.mcp.json');
+        // Write .mcp.json for auto-discovery: into the worktree (worktree isolation) or into
+        // the project root (direct isolation with docker mode).
+        const mcpJsonDir = args.dockerContainerName ? args.projectRoot : args.worktreePath;
+        if (mcpJsonDir) {
+          const worktreeMcpPath = path.join(mcpJsonDir, '.mcp.json');
           fs.writeFileSync(worktreeMcpPath, configJson, { mode: 0o600 });
 
           // Append to .git/info/exclude (local-only gitignore, not committed)
           try {
-            const gitDir = path.join(args.worktreePath, '.git');
+            const gitDir = path.join(mcpJsonDir, '.git');
             // Worktrees use a .git file pointing to the real gitdir
             let infoDir: string;
             if (fs.statSync(gitDir).isFile()) {
               const gitFileContent = fs.readFileSync(gitDir, 'utf-8').trim();
               const realGitDir = gitFileContent.replace(/^gitdir:\s*/, '');
               infoDir = path.join(
-                path.isAbsolute(realGitDir)
-                  ? realGitDir
-                  : path.resolve(args.worktreePath, realGitDir),
+                path.isAbsolute(realGitDir) ? realGitDir : path.resolve(mcpJsonDir, realGitDir),
                 'info',
               );
             } else {
@@ -1133,10 +1154,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
             console.warn('[MCP] Could not git-exclude .mcp.json:', err);
           }
 
-          console.warn('[MCP] Worktree .mcp.json written to:', worktreeMcpPath);
+          console.warn('[MCP] .mcp.json written to:', worktreeMcpPath);
         }
 
-        console.warn('[MCP] Config written to:', configPath);
+        if (configPath) console.warn('[MCP] Config written to:', configPath);
         console.warn('[MCP] Server path:', mcpServerPath);
         console.warn('[MCP] Remote URL:', serverUrl);
 
@@ -1158,10 +1179,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
     ipcMain.handle(
       IPC.MCP_CoordinatorRegistered,
-      (_e, args: { coordinatorTaskId: string; projectId: string }) => {
+      (_e, args: { coordinatorTaskId: string; projectId: string; worktreePath?: string }) => {
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
         assertString(args.projectId, 'projectId');
-        coordinator?.registerCoordinator(args.coordinatorTaskId, args.projectId);
+        coordinator?.registerCoordinator(args.coordinatorTaskId, args.projectId, args.worktreePath);
       },
     );
 
@@ -1169,6 +1190,17 @@ export function registerAllHandlers(win: BrowserWindow): void {
       assertString(args.coordinatorTaskId, 'coordinatorTaskId');
       coordinator?.deregisterCoordinator(args.coordinatorTaskId);
     });
+
+    // Autofire miss threshold reached — renderer already cleared the staged notification locally.
+    // Ack the batch on the backend too so state stays consistent.
+    ipcMain.handle(
+      IPC.MCP_CoordinatorOrphanedNotification,
+      (_e, args: { coordinatorTaskId: string; batchId: string }) => {
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        assertString(args.batchId, 'batchId');
+        coordinator?.ackNotification(args.coordinatorTaskId, args.batchId);
+      },
+    );
 
     ipcMain.handle(IPC.MCP_CoordinatedTaskPromptDelivered, (_e, args: { taskId: string }) => {
       assertString(args.taskId, 'taskId');

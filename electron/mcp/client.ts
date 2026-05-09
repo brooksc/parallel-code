@@ -1,7 +1,14 @@
 // HTTP client wrapper for calling the remote server API.
 // Used by the MCP server to delegate tool calls to the Electron app.
 
-import type { ApiTaskSummary, ApiTaskDetail, ApiDiffResult, ApiMergeResult } from './types.js';
+import type {
+  ApiTaskSummary,
+  ApiTaskDetail,
+  ApiDiffResult,
+  ApiMergeResult,
+  ApiReviewAndMergeResult,
+  WaitForSignalDoneResult,
+} from './types.js';
 
 export class MCPClient {
   constructor(
@@ -94,13 +101,23 @@ export class MCPClient {
   }
 
   async waitForSignalDone(
-    taskId: string,
+    coordinatorTaskId: string,
     timeoutMs?: number,
-  ): Promise<{ status: string; signalDoneAt?: string }> {
-    return this.request<{ status: string; signalDoneAt?: string }>(
+  ): Promise<WaitForSignalDoneResult> {
+    return this.request<WaitForSignalDoneResult>('POST', '/api/wait-signal', {
+      coordinatorTaskId,
+      timeoutMs,
+    });
+  }
+
+  async reviewAndMergeTask(
+    taskId: string,
+    opts?: { squash?: boolean; message?: string },
+  ): Promise<ApiReviewAndMergeResult> {
+    return this.request<ApiReviewAndMergeResult>(
       'POST',
-      `/api/tasks/${encodeURIComponent(taskId)}/wait-signal`,
-      { timeoutMs },
+      `/api/tasks/${encodeURIComponent(taskId)}/review-merge`,
+      opts ?? {},
     );
   }
 }

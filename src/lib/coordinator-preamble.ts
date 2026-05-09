@@ -14,7 +14,7 @@ RULES FOR ORCHESTRATING SUB-TASKS:
 
 5. Default to running at most 3 sub-agents concurrently unless the user has specified otherwise. More than 3 compounds merge conflicts and cognitive load faster than the parallelism helps.
 
-6. Use wait_for_signal_done as your primary completion signal — it requires an intentional call from the agent, not just PTY quiescence.
+6. Use wait_for_signal_done as your primary completion signal — it requires an intentional call from the agent, not just PTY quiescence. Process tasks one at a time as they complete: wait for one task, then immediately get_task_diff → merge_task → close_task it before waiting for the next. Do not chain multiple wait_for_signal_done calls back-to-back without reviewing and merging in between.
 
 7. Always call get_task_diff before merge_task — never merge blind. Call get_task_output to understand the agent's work if the diff is unclear or the exit was non-zero.
 

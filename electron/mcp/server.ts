@@ -170,15 +170,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'wait_for_signal_done',
       description:
-        "Block until a sub-task's agent explicitly calls signal_done, indicating it has finished its assigned work. More reliable than wait_for_idle because it requires an intentional signal from the agent, not just PTY quiescence.",
+        'Wait for ANY sub-task to call signal_done. Returns { taskId, name, remaining } where remaining is the count of tasks still running or signaled-but-not-yet-reviewed. Call this in a loop until remaining === 0 to process all completed sub-tasks before spawning more. IMPORTANT: you MUST review the returned task before calling wait_for_signal_done again.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          taskId: { type: 'string', description: 'Task ID' },
           timeoutMs: {
             type: 'number',
             description: 'Timeout in milliseconds (default: 300000 = 5 min)',
           },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'review_and_merge_task',
+      description:
+        "Atomically get the diff, merge the task's branch into the base branch, and clean up the worktree. Use this after reviewing a completed task when you're ready to accept the work. Returns { diff, merge } with diff details and merge stats.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          taskId: { type: 'string', description: 'Task ID' },
+          squash: { type: 'boolean', description: 'Squash merge (default: false)' },
+          message: { type: 'string', description: 'Custom merge commit message' },
         },
         required: ['taskId'],
       },
@@ -247,16 +260,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = await client.getTaskDiff(
           (params as Record<string, unknown>).taskId as string,
         );
+        // Return files summary + truncated diff
         const summary = result.files
           .map((f) => `${f.status} ${f.path} (+${f.lines_added} -${f.lines_removed})`)
           .join('\n');
-        const truncNote = result.truncated
-          ? `\n(diff truncated — original size: ${result.originalSizeBytes} bytes)`
-          : '';
+        let diffText: string;
+        if (result.diff.length > 50_000) {
+          result.truncated = true;
+          result.originalSizeBytes = result.diff.length;
+          diffText = result.diff.slice(0, 50_000) + '\n... (diff truncated)';
+        } else {
+          diffText = result.diff;
+        }
         return {
-          content: [
-            { type: 'text', text: `Changed files:\n${summary}\n\n${result.diff}${truncNote}` },
-          ],
+          content: [{ type: 'text', text: `Changed files:\n${summary}\n\n${diffText}` }],
         };
       }
 
@@ -283,11 +300,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'wait_for_signal_done': {
+        if (!coordinatorId) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Error: wait_for_signal_done is only available to coordinators (no --coordinator-id configured).',
+              },
+            ],
+            isError: true,
+          };
+        }
         const result = await client.waitForSignalDone(
-          (params as Record<string, unknown>).taskId as string,
+          coordinatorId,
           (params as Record<string, unknown>).timeoutMs as number | undefined,
         );
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      case 'review_and_merge_task': {
+        const p = params as Record<string, unknown>;
+        const result = await client.reviewAndMergeTask(p.taskId as string, {
+          squash: p.squash as boolean | undefined,
+          message: p.message as string | undefined,
+        });
+        const summary = result.diff.files
+          .map((f) => `${f.status} ${f.path} (+${f.lines_added} -${f.lines_removed})`)
+          .join('\n');
+        let diffText = result.diff.diff;
+        if (diffText.length > 50_000) {
+          diffText = diffText.slice(0, 50_000) + '\n... (diff truncated)';
+        }
+        const mergeInfo = `Merged into ${result.merge.mainBranch}: +${result.merge.linesAdded} -${result.merge.linesRemoved} lines`;
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `${mergeInfo}\n\nChanged files:\n${summary}\n\n${diffText}`,
+            },
+          ],
+        };
       }
 
       case 'signal_done': {

@@ -6,6 +6,7 @@ export interface CoordinatedTask {
   projectId: string;
   projectRoot: string; // snapshot at creation; prevents stale root if setDefaultProject is called for another project later
   branchName: string;
+  baseBranch?: string; // branch the worktree was forked from; merge target for merge_task
   worktreePath: string;
   agentId: string;
   coordinatorTaskId: string;
@@ -13,13 +14,17 @@ export interface CoordinatedTask {
   exitCode: number | null;
   pendingPrompt?: string;
   mcpConfigPath?: string; // path to per-task tmp config, deleted on cleanup
-  claudeMdPath?: string; // path to CLAUDE.md that was modified; restored after first idle
-  claudeMdOriginal?: string | null; // null = file didn't exist before; string = original content
-  claudeMdRestored?: boolean;
   signalDoneAt?: Date; // set when sub-task explicitly calls signal_done
+  signalDoneConsumed?: boolean; // true after wait_for_signal_done returns this task's signal
   // Coordinator notification lifecycle flags
   assignedPromptDelivered?: boolean;
   reviewNotificationQueued?: boolean;
+}
+
+export interface WaitForSignalDoneResult {
+  taskId: string;
+  name: string;
+  remaining: number; // unconsumed signals + still-running tasks for this coordinator
 }
 
 export interface PendingNotification {
@@ -35,6 +40,7 @@ export interface PendingNotification {
 export interface CoordinatorState {
   taskId: string;
   projectId: string;
+  worktreePath?: string;
   pendingNotifications: PendingNotification[];
   /** batchId → array of pendingNotification IDs included in that batch */
   stagedBatches: Map<string, string[]>;
@@ -122,4 +128,9 @@ export interface ApiMergeResult {
   mainBranch: string;
   linesAdded: number;
   linesRemoved: number;
+}
+
+export interface ApiReviewAndMergeResult {
+  diff: ApiDiffResult;
+  merge: ApiMergeResult;
 }

@@ -3,21 +3,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // --- fs / child_process mocks (must come before dynamic import) ---
 const mockWriteFileSync = vi.fn();
 const mockReadFileSync = vi.fn(() => '# existing\n');
-const mockExistsSync = vi.fn(() => false); // default: CLAUDE.md absent
-const mockAppendFileSync = vi.fn();
+const mockExistsSync = vi.fn(() => false);
 const mockUnlinkSync = vi.fn();
-const mockExecSync = vi.fn();
+const mockMkdirSync = vi.fn();
 
 vi.mock('fs', () => ({
   writeFileSync: mockWriteFileSync,
   readFileSync: mockReadFileSync,
   existsSync: mockExistsSync,
-  appendFileSync: mockAppendFileSync,
   unlinkSync: mockUnlinkSync,
-}));
-
-vi.mock('child_process', () => ({
-  execSync: mockExecSync,
+  mkdirSync: mockMkdirSync,
 }));
 
 // --- other mocks ---
@@ -64,7 +59,10 @@ vi.mock('../ipc/channels.js', () => ({
     MCP_TaskClosed: 'mcp_task_closed',
     MCP_TaskStateSync: 'mcp_task_state_sync',
     MCP_CoordinatorNotificationStaged: 'mcp_coordinator_notification_staged',
+    MCP_CoordinatorNotificationCleared: 'mcp_coordinator_notification_cleared',
     MCP_CoordinatorOrphanedNotification: 'mcp_coordinator_orphaned_notification',
+    MCP_CoordinatorDeregistered: 'mcp_coordinator_deregistered',
+    MCP_CoordinatorNotificationAck: 'mcp_coordinator_notification_ack',
   },
 }));
 
@@ -264,6 +262,38 @@ describe('Coordinator coordinator notifications', () => {
       expect.objectContaining({ subTaskId: 'task-1' }),
     );
   });
+
+  it('clears staged notification when a notified task is closed', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      coordinator.markPromptDelivered('task-1');
+      const outputCb = getOutputCb();
+      outputCb(encode('Done ❯ '));
+
+      expect(mockNotifyRenderer).toHaveBeenCalledWith(
+        'mcp_coordinator_notification_staged',
+        expect.objectContaining({ coordinatorTaskId: 'coord-1' }),
+      );
+
+      mockNotifyRenderer.mockClear();
+      await coordinator.closeTask('task-1');
+
+      expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_coordinator_notification_cleared', {
+        coordinatorTaskId: 'coord-1',
+      });
+
+      mockNotifyRenderer.mockClear();
+      vi.advanceTimersByTime(5 * 60_000);
+      expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
+        'mcp_coordinator_notification_staged',
+        expect.anything(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ─── signal_done tests ────────────────────────────────────────────────────────
@@ -418,11 +448,34 @@ describe('Coordinator sub-agent spawn settings', () => {
       expect.objectContaining({ cwd: '/tmp/test' }),
     );
   });
+
+  it('uses docker exec with -w flag when dockerContainerName is set', async () => {
+    coordinator.setDockerContainerName('my-container');
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    expect(mockSpawnAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        command: 'docker',
+        args: expect.arrayContaining(['exec', '-i', '-w', '/tmp/test', 'my-container', 'claude']),
+      }),
+    );
+  });
+
+  it('does not use docker exec when dockerContainerName is null', async () => {
+    coordinator.setDockerContainerName(null);
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    expect(mockSpawnAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ command: 'claude' }),
+    );
+    const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
+    expect(spawnArgs).not.toContain('docker');
+  });
 });
 
-// ─── CLAUDE.md injection tests ────────────────────────────────────────────────
+// ─── settings.local.json injection tests ─────────────────────────────────────
 
-describe('Coordinator CLAUDE.md sub-task injection', () => {
+describe('Coordinator settings.local.json sub-task injection', () => {
   let coordinator: InstanceType<typeof Coordinator>;
 
   beforeEach(() => {
@@ -438,94 +491,70 @@ describe('Coordinator CLAUDE.md sub-task injection', () => {
     });
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
+  it('writes settings.local.json with systemPrompt when file does not exist', async () => {
+    mockExistsSync.mockReturnValue(false);
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const settingsWrite = mockWriteFileSync.mock.calls.find((c) =>
+      (c[0] as string).endsWith('settings.local.json'),
+    );
+    expect(settingsWrite).toBeDefined();
+    const written = JSON.parse(settingsWrite?.[1] as string);
+    expect(written.systemPrompt).toContain('signal_done');
+    expect(written.systemPrompt).toContain('sub-task-mode');
   });
 
-  it('creates CLAUDE.md when it does not exist, records null original', async () => {
+  it('appends preamble to existing systemPrompt in settings.local.json', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ systemPrompt: 'existing prompt' }));
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const settingsWrite = mockWriteFileSync.mock.calls.find((c) =>
+      (c[0] as string).endsWith('settings.local.json'),
+    );
+    expect(settingsWrite).toBeDefined();
+    const written = JSON.parse(settingsWrite?.[1] as string);
+    expect(written.systemPrompt).toContain('existing prompt');
+    expect(written.systemPrompt).toContain('signal_done');
+  });
+
+  it('preserves other keys in existing settings.local.json', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ permissions: { allow: ['Bash'] } }));
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const settingsWrite = mockWriteFileSync.mock.calls.find((c) =>
+      (c[0] as string).endsWith('settings.local.json'),
+    );
+    expect(settingsWrite).toBeDefined();
+    const written = JSON.parse(settingsWrite?.[1] as string);
+    expect(written.permissions).toEqual({ allow: ['Bash'] });
+    expect(written.systemPrompt).toContain('signal_done');
+  });
+
+  it('does not restore settings.local.json on idle (no restore needed)', async () => {
+    mockExistsSync.mockReturnValue(false);
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-1');
+
+    const outputCb = getOutputCb();
+    outputCb(encode('Working ❯ '));
+
+    const settingsWriteCallsAfterIdle = mockWriteFileSync.mock.calls.filter((c) =>
+      (c[0] as string).endsWith('settings.local.json'),
+    );
+    // Only the initial write; no re-write on idle
+    expect(settingsWriteCallsAfterIdle).toHaveLength(1);
+  });
+
+  it('does not write to CLAUDE.md', async () => {
     mockExistsSync.mockReturnValue(false);
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
     const claudeWrite = mockWriteFileSync.mock.calls.find((c) =>
       (c[0] as string).endsWith('CLAUDE.md'),
     );
-    expect(claudeWrite).toBeDefined();
-    expect(claudeWrite?.[1]).toContain('signal_done');
-    expect(coordinator.getTask('task-1')?.claudeMdOriginal).toBeNull();
-  });
-
-  it('appends to existing CLAUDE.md, records original content', async () => {
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('# Project\n');
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-
-    expect(mockAppendFileSync).toHaveBeenCalledWith(
-      '/tmp/test/CLAUDE.md',
-      expect.stringContaining('signal_done'),
-    );
-    expect(coordinator.getTask('task-1')?.claudeMdOriginal).toBe('# Project\n');
-  });
-
-  it('deletes CLAUDE.md (no git restore) when it was created fresh, 3s after first idle', async () => {
-    vi.useFakeTimers();
-    mockExistsSync.mockReturnValue(false);
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    coordinator.markPromptDelivered('task-1');
-
-    const outputCb = getOutputCb();
-    outputCb(encode('Working ❯ '));
-
-    expect(mockUnlinkSync).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(3_000);
-
-    expect(mockUnlinkSync).toHaveBeenCalledWith('/tmp/test/CLAUDE.md');
-    expect(mockExecSync).not.toHaveBeenCalled(); // no git restore for new files
-  });
-
-  it('restores original content + git restore when CLAUDE.md pre-existed', async () => {
-    vi.useFakeTimers();
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('# Existing\n');
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    coordinator.markPromptDelivered('task-1');
-
-    const outputCb = getOutputCb();
-    outputCb(encode('Working ❯ '));
-    vi.advanceTimersByTime(3_000);
-
-    const restoreWrite = mockWriteFileSync.mock.calls.find(
-      (c) => (c[0] as string).endsWith('CLAUDE.md') && c[1] === '# Existing\n',
-    );
-    expect(restoreWrite).toBeDefined();
-    expect(mockExecSync).toHaveBeenCalledWith('git restore CLAUDE.md', expect.anything());
-  });
-
-  it('only restores CLAUDE.md once even with multiple idles', async () => {
-    vi.useFakeTimers();
-    mockExistsSync.mockReturnValue(false);
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    coordinator.markPromptDelivered('task-1');
-
-    const outputCb = getOutputCb();
-    outputCb(encode('Working ❯ '));
-    vi.advanceTimersByTime(3_000);
-    outputCb(encode('more work'));
-    outputCb(encode('done ❯ '));
-    vi.advanceTimersByTime(3_000);
-
-    const unlinkCalls = mockUnlinkSync.mock.calls.filter((c) =>
-      (c[0] as string).endsWith('CLAUDE.md'),
-    );
-    expect(unlinkCalls).toHaveLength(1);
-  });
-
-  it('cleans up CLAUDE.md on closeTask if agent never went idle', async () => {
-    mockExistsSync.mockReturnValue(false);
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-
-    await coordinator.closeTask('task-1');
-
-    expect(mockUnlinkSync).toHaveBeenCalledWith('/tmp/test/CLAUDE.md');
+    expect(claudeWrite).toBeUndefined();
   });
 });
 
@@ -561,7 +590,7 @@ describe('Coordinator waitForIdle', () => {
     coordinator.markPromptDelivered('task-1');
     const outputCb = getOutputCb();
     outputCb(encode('Done ❯ '));
-    await expect(coordinator.waitForIdle('task-1')).resolves.toBeUndefined();
+    await expect(coordinator.waitForIdle('task-1')).resolves.toEqual({ reason: 'idle' });
   });
 
   it('resolves when agent outputs prompt', async () => {
@@ -570,13 +599,13 @@ describe('Coordinator waitForIdle', () => {
     const waitPromise = coordinator.waitForIdle('task-1');
     outputCb(encode('working...'));
     outputCb(encode('Done ❯ '));
-    await expect(waitPromise).resolves.toBeUndefined();
+    await expect(waitPromise).resolves.toEqual({ reason: 'idle' });
   });
 
   it('resolves immediately when task is under human control', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.setTaskControl('task-1', 'human');
-    await expect(coordinator.waitForIdle('task-1')).resolves.toBeUndefined();
+    await expect(coordinator.waitForIdle('task-1')).resolves.toEqual({ reason: 'human_control' });
   });
 
   it('rejects after timeout when task never idles', async () => {
@@ -593,18 +622,15 @@ describe('Coordinator waitForIdle', () => {
     const exitHandler = getExitHandler();
     const waitPromise = coordinator.waitForIdle('task-1');
     exitHandler(agentId, { exitCode: 0 });
-    await expect(waitPromise).resolves.toBeUndefined();
+    await expect(waitPromise).resolves.toEqual({ reason: 'exited' });
   });
 
   it('fires pending idle resolvers when control returns to coordinator', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    // Queue a waiter while under human control — waitForIdle resolves immediately for 'human'
-    // but if we queue first then hand off, the resolver fires on return
     // The real scenario: task is running, coordinator calls waitForIdle, user takes control, coordinator returns
     const waitPromise = coordinator.waitForIdle('task-1');
-    // Without taking control it would wait for idle; now simulate returning control
     coordinator.setTaskControl('task-1', 'coordinator');
-    await expect(waitPromise).resolves.toBeUndefined();
+    await expect(waitPromise).resolves.toEqual({ reason: 'human_control' });
   });
 });
 
@@ -631,29 +657,102 @@ describe('Coordinator waitForSignalDone', () => {
     vi.useRealTimers();
   });
 
-  it('rejects for unknown taskId', async () => {
-    await expect(coordinator.waitForSignalDone('nonexistent')).rejects.toThrow('Task not found');
+  it('rejects for unknown coordinatorId', async () => {
+    await expect(coordinator.waitForSignalDone('nonexistent-coord')).rejects.toThrow(
+      'Coordinator not found',
+    );
   });
 
-  it('resolves immediately if already signalled', async () => {
+  it('resolves immediately with unconsumed signal if already signalled', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.signalDone('task-1');
-    await expect(coordinator.waitForSignalDone('task-1')).resolves.toBeUndefined();
+    await expect(coordinator.waitForSignalDone('coord-1')).resolves.toEqual({
+      taskId: 'task-1',
+      name: 'test',
+      remaining: 0,
+    });
   });
 
-  it('resolves when signalDone is called', async () => {
+  it('resolves when signalDone is called, with remaining count', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    const waitPromise = coordinator.waitForSignalDone('task-1');
+    const waitPromise = coordinator.waitForSignalDone('coord-1');
     coordinator.signalDone('task-1');
-    await expect(waitPromise).resolves.toBeUndefined();
+    await expect(waitPromise).resolves.toEqual({ taskId: 'task-1', name: 'test', remaining: 0 });
   });
 
   it('rejects after timeout when signal never arrives', async () => {
     vi.useFakeTimers();
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    const waitPromise = coordinator.waitForSignalDone('task-1', 1_000);
+    const waitPromise = coordinator.waitForSignalDone('coord-1', 1_000);
     vi.advanceTimersByTime(1_001);
     await expect(waitPromise).rejects.toThrow('Timed out');
+  });
+
+  it('returns remaining=1 when another task is still running', async () => {
+    mockCreateBackendTask
+      .mockResolvedValueOnce({ id: 'task-1', branch_name: 'task/a', worktree_path: '/tmp/a' })
+      .mockResolvedValueOnce({ id: 'task-2', branch_name: 'task/b', worktree_path: '/tmp/b' });
+    await coordinator.createTask({ name: 'task-a', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    await coordinator.createTask({ name: 'task-b', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const waitPromise = coordinator.waitForSignalDone('coord-1');
+    coordinator.signalDone('task-1');
+    await expect(waitPromise).resolves.toEqual({ taskId: 'task-1', name: 'task-a', remaining: 1 });
+  });
+
+  it('does not stage pending notifications while any signal_done wait is active', async () => {
+    mockCreateBackendTask
+      .mockResolvedValueOnce({ id: 'task-1', branch_name: 'task/a', worktree_path: '/tmp/a' })
+      .mockResolvedValueOnce({ id: 'task-2', branch_name: 'task/b', worktree_path: '/tmp/b' });
+
+    await coordinator.createTask({ name: 'task-a', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    await coordinator.createTask({ name: 'task-b', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-2');
+    mockNotifyRenderer.mockClear();
+
+    const waitPromise = coordinator.waitForSignalDone('coord-1');
+    const task2OutputCb = mockSubscribeToAgent.mock.calls[1][1] as (encoded: string) => void;
+    task2OutputCb(encode('Done ❯ '));
+
+    expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
+      'mcp_coordinator_notification_staged',
+      expect.anything(),
+    );
+
+    coordinator.signalDone('task-1');
+    await expect(waitPromise).resolves.toMatchObject({ taskId: 'task-1' });
+    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+      'mcp_coordinator_notification_staged',
+      expect.objectContaining({
+        coordinatorTaskId: 'coord-1',
+        text: expect.stringContaining('"task-b" ready for review'),
+      }),
+    );
+  });
+
+  it('clears an already staged notification when a signal_done wait starts', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-1');
+    const outputCb = getOutputCb();
+    outputCb(encode('Done ❯ '));
+
+    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+      'mcp_coordinator_notification_staged',
+      expect.objectContaining({ coordinatorTaskId: 'coord-1' }),
+    );
+
+    mockNotifyRenderer.mockClear();
+    const waitPromise = coordinator.waitForSignalDone('coord-1');
+
+    expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_coordinator_notification_cleared', {
+      coordinatorTaskId: 'coord-1',
+    });
+
+    coordinator.signalDone('task-1');
+    await expect(waitPromise).resolves.toMatchObject({ taskId: 'task-1' });
+    expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
+      'mcp_coordinator_notification_staged',
+      expect.anything(),
+    );
   });
 });
 
@@ -752,6 +851,26 @@ describe('Coordinator deregisterCoordinator', () => {
     );
   });
 
+  it('clears staged notification when coordinator is deregistered', async () => {
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-1');
+    const outputCb = getOutputCb();
+    outputCb(encode('Done ❯ '));
+
+    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+      'mcp_coordinator_notification_staged',
+      expect.objectContaining({ coordinatorTaskId: 'coord-1' }),
+    );
+
+    mockNotifyRenderer.mockClear();
+    coordinator.deregisterCoordinator('coord-1');
+
+    expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_coordinator_notification_cleared', {
+      coordinatorTaskId: 'coord-1',
+    });
+  });
+
   it('hasActiveCoordinator returns false after deregister', () => {
     coordinator.registerCoordinator('coord-1', 'proj-1');
     expect(coordinator.hasActiveCoordinator()).toBe(true);
@@ -837,13 +956,13 @@ describe('Coordinator waiter resolver cleanup on timeout', () => {
   it('removes signal_done resolver after timeout so stale callback is not called on later signal', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    const p = coordinator.waitForSignalDone('task-1', 500);
+    const p = coordinator.waitForSignalDone('coord-1', 500);
     vi.advanceTimersByTime(501);
     await expect(p).rejects.toThrow('Timed out');
 
     // signalDone fires after timeout — should resolve a new waiter, not the stale one
     let resolveCalled = false;
-    const p2 = coordinator.waitForSignalDone('task-1', 500);
+    const p2 = coordinator.waitForSignalDone('coord-1', 500);
     p2.then(() => {
       resolveCalled = true;
     }).catch(() => {});

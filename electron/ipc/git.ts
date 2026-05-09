@@ -1549,6 +1549,7 @@ export async function mergeTask(
   cleanup: boolean,
   baseBranch?: string,
   worktreePath?: string,
+  mergeWorktreePath?: string,
 ): Promise<{ main_branch: string; lines_added: number; lines_removed: number }> {
   const lockKey = await detectRepoLockKey(projectRoot).catch(() => projectRoot);
 
@@ -1584,19 +1585,29 @@ export async function mergeTask(
       branchName,
     );
 
-    // Verify clean working tree
+    // When the target branch is already checked out in a worktree (e.g. a coordinator
+    // worktree on a feature branch), we can't git checkout it in projectRoot — git
+    // refuses to check out a branch that's live elsewhere. Use mergeWorktreePath as the
+    // working directory for merge ops when provided; it's already on the right branch.
+    const mergeRoot = mergeWorktreePath ?? projectRoot;
+
+    // Verify clean working tree in the merge root
     const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
-      cwd: projectRoot,
+      cwd: mergeRoot,
     });
     if (statusOut.trim())
       throw new Error(
-        'Project root has uncommitted changes. Please commit or stash them before merging.',
+        'Working tree has uncommitted changes. Please commit or stash them before merging.',
       );
 
-    const originalBranch = await getCurrentBranchName(projectRoot).catch(() => null);
+    if (!mergeWorktreePath) {
+      // Need to checkout the target branch in the main repo
+      await exec('git', ['checkout', mainBranch], { cwd: projectRoot });
+    }
 
-    // Checkout main (bare branch name, not remote-tracking ref)
-    await exec('git', ['checkout', mainBranch], { cwd: projectRoot });
+    const originalBranch = mergeWorktreePath
+      ? null
+      : await getCurrentBranchName(projectRoot).catch(() => null);
 
     const restoreBranch = async () => {
       if (originalBranch) {
@@ -1610,9 +1621,9 @@ export async function mergeTask(
 
     if (squash) {
       try {
-        await exec('git', ['merge', '--squash', '--', branchName], { cwd: projectRoot });
+        await exec('git', ['merge', '--squash', '--', branchName], { cwd: mergeRoot });
       } catch (e) {
-        await exec('git', ['reset', '--hard', 'HEAD'], { cwd: projectRoot }).catch((recoverErr) =>
+        await exec('git', ['reset', '--hard', 'HEAD'], { cwd: mergeRoot }).catch((recoverErr) =>
           console.warn('git reset --hard failed during squash recovery:', recoverErr),
         );
         await restoreBranch();
@@ -1620,9 +1631,9 @@ export async function mergeTask(
       }
       const msg = message ?? 'Squash merge';
       try {
-        await exec('git', ['commit', '-m', msg], { cwd: projectRoot });
+        await exec('git', ['commit', '-m', msg], { cwd: mergeRoot });
       } catch (e) {
-        await exec('git', ['reset', '--hard', 'HEAD'], { cwd: projectRoot }).catch((recoverErr) =>
+        await exec('git', ['reset', '--hard', 'HEAD'], { cwd: mergeRoot }).catch((recoverErr) =>
           console.warn('git reset --hard failed during commit recovery:', recoverErr),
         );
         await restoreBranch();
@@ -1630,9 +1641,9 @@ export async function mergeTask(
       }
     } else {
       try {
-        await exec('git', ['merge', '--', branchName], { cwd: projectRoot });
+        await exec('git', ['merge', '--', branchName], { cwd: mergeRoot });
       } catch (e) {
-        await exec('git', ['merge', '--abort'], { cwd: projectRoot }).catch((recoverErr) =>
+        await exec('git', ['merge', '--abort'], { cwd: mergeRoot }).catch((recoverErr) =>
           console.warn('git merge --abort failed:', recoverErr),
         );
         await restoreBranch();

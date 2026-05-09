@@ -29,6 +29,7 @@ export interface MCPLogEntry {
 }
 
 const MAX_LOG_ENTRIES = 200;
+const REST_COORDINATOR_SENTINEL = 'api';
 const mcpLogs: MCPLogEntry[] = [];
 
 function mcpLog(level: 'info' | 'error', msg: string): void {
@@ -117,6 +118,7 @@ function buildAgentList(
 
 export function startRemoteServer(opts: {
   port: number;
+  host?: string;
   staticDir: string;
   getTaskName: (taskId: string) => string;
   getAgentStatus: (agentId: string) => {
@@ -223,6 +225,36 @@ export function startRemoteServer(opts: {
 
         const taskIdMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(.+))?$/);
 
+        if (url.pathname === '/api/wait-signal' && req.method === 'POST') {
+          readBody()
+            .then(async (body) => {
+              const coordinatorTaskId =
+                typeof body.coordinatorTaskId === 'string'
+                  ? body.coordinatorTaskId
+                  : REST_COORDINATOR_SENTINEL;
+              if (
+                body.timeoutMs !== undefined &&
+                (typeof body.timeoutMs !== 'number' || !Number.isFinite(body.timeoutMs))
+              )
+                return jsonReply(400, { error: 'timeoutMs must be a finite number' });
+              mcpLog('info', `wait_for_signal_done coordinator=${coordinatorTaskId}`);
+              const result = await orch.waitForSignalDone(
+                coordinatorTaskId,
+                body.timeoutMs as number | undefined,
+              );
+              mcpLog(
+                'info',
+                `wait_for_signal_done OK taskId=${result.taskId} remaining=${result.remaining}`,
+              );
+              jsonReply(200, result);
+            })
+            .catch((err) => {
+              mcpLog('error', `wait_for_signal_done FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
+          return;
+        }
+
         if (url.pathname === '/api/tasks' && req.method === 'POST') {
           readBody()
             .then(async (body) => {
@@ -246,7 +278,9 @@ export function startRemoteServer(opts: {
                 name: body.name,
                 prompt: body.prompt as string | undefined,
                 coordinatorTaskId:
-                  typeof body.coordinatorTaskId === 'string' ? body.coordinatorTaskId : undefined,
+                  typeof body.coordinatorTaskId === 'string'
+                    ? body.coordinatorTaskId
+                    : REST_COORDINATOR_SENTINEL,
                 projectId: body.projectId as string | undefined,
                 skipPermissions: body.skipPermissions as boolean | undefined,
                 baseBranch: body.baseBranch as string | undefined,
@@ -319,26 +353,24 @@ export function startRemoteServer(opts: {
           return;
         }
 
-        if (taskIdMatch && taskIdMatch[2] === 'wait-signal' && req.method === 'POST') {
+        if (taskIdMatch && taskIdMatch[2] === 'review-merge' && req.method === 'POST') {
           readBody()
             .then(async (body) => {
               const taskId = decodeURIComponent(taskIdMatch[1]);
-              if (
-                body.timeoutMs !== undefined &&
-                (typeof body.timeoutMs !== 'number' || !Number.isFinite(body.timeoutMs))
-              )
-                return jsonReply(400, { error: 'timeoutMs must be a finite number' });
-              mcpLog('info', `wait_for_signal_done id=${taskId}`);
-              await orch.waitForSignalDone(taskId, body.timeoutMs as number | undefined);
-              const status = orch.getTaskStatus(taskId);
-              mcpLog('info', `wait_for_signal_done OK id=${taskId}`);
-              jsonReply(200, {
-                status: status?.status ?? 'unknown',
-                signalDoneAt: status?.signalDoneAt,
+              if (body.squash !== undefined && typeof body.squash !== 'boolean')
+                return jsonReply(400, { error: 'squash must be a boolean' });
+              if (body.message !== undefined && typeof body.message !== 'string')
+                return jsonReply(400, { error: 'message must be a string' });
+              mcpLog('info', `review_and_merge_task id=${taskId}`);
+              const result = await orch.reviewAndMergeTask(taskId, {
+                squash: body.squash as boolean | undefined,
+                message: body.message as string | undefined,
               });
+              mcpLog('info', `review_and_merge_task OK id=${taskId}`);
+              jsonReply(200, result);
             })
             .catch((err) => {
-              mcpLog('error', `wait_for_signal_done FAIL: ${String(err)}`);
+              mcpLog('error', `review_and_merge_task FAIL: ${String(err)}`);
               jsonReply(500, { error: String(err) });
             });
           return;
@@ -644,7 +676,7 @@ export function startRemoteServer(opts: {
   server.on('error', (err) => {
     console.error('[remote] Server error:', err.message);
   });
-  server.listen(opts.port, '0.0.0.0', () => {
+  server.listen(opts.port, opts.host ?? '127.0.0.1', () => {
     /* bind confirmed */
   });
 

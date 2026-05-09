@@ -148,6 +148,7 @@ export enum IPC {
   MCP_ControlChanged = 'mcp_control_changed',
   // Coordinator notifications (main → renderer)
   MCP_CoordinatorNotificationStaged = 'mcp_coordinator_notification_staged',
+  MCP_CoordinatorNotificationCleared = 'mcp_coordinator_notification_cleared',
   MCP_CoordinatorOrphanedNotification = 'mcp_coordinator_orphaned_notification',
   // Coordinator lifecycle (renderer → main)
   MCP_CoordinatorRegistered = 'mcp_coordinator_registered',

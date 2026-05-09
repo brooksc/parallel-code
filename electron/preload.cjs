@@ -132,6 +132,7 @@ const ALLOWED_CHANNELS = new Set([
   'mcp_task_state_sync',
   'mcp_control_changed',
   'mcp_coordinator_notification_staged',
+  'mcp_coordinator_notification_cleared',
   'mcp_coordinator_orphaned_notification',
   'mcp_coordinator_registered',
   'mcp_coordinator_deregistered',

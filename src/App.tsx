@@ -326,6 +326,28 @@ function App() {
     await loadState();
     await loadKeybindings();
 
+    // Rewrite MCP config files for persisted coordinator tasks so the new
+    // session's port/token are in effect before any agent resumes.
+    for (const taskId of store.taskOrder) {
+      const task = store.tasks[taskId];
+      if (!task?.coordinatorMode || !task.mcpConfigPath) continue;
+      const projectRoot = store.projects.find((p) => p.id === task.projectId)?.path;
+      if (!projectRoot) continue;
+      const agentDef = task.agentIds[0] ? store.agents[task.agentIds[0]]?.def : undefined;
+      invoke(IPC.StartMCPServer, {
+        coordinatorTaskId: task.id,
+        projectId: task.projectId,
+        projectRoot,
+        worktreePath: task.gitIsolation === 'worktree' ? task.worktreePath : undefined,
+        skipPermissions: task.skipPermissions ?? false,
+        propagateSkipPermissions: false,
+        agentCommand: agentDef?.command ?? 'claude',
+        agentArgs: agentDef?.args ?? [],
+      }).catch((err) => {
+        console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
+      });
+    }
+
     // Restore plan content for tasks that had a plan file before restart
     for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
       const task = store.tasks[taskId];
