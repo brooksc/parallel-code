@@ -314,7 +314,6 @@ export class Coordinator {
     agentArgs?: string[];
     skipPermissions?: boolean;
     baseBranch?: string;
-    gitIsolation?: string;
   }): Promise<CoordinatedTask> {
     const root = opts.projectRoot ?? this.projectRoot;
     const projId = opts.projectId ?? this.projectId;
