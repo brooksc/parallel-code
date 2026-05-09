@@ -717,10 +717,13 @@ export class Coordinator {
 
     const root = task.projectRoot;
 
-    // Auto-commit any uncommitted changes in the task worktree before merging.
+    // Strip injected preamble files before staging so they don't land in history,
+    // then auto-commit any uncommitted changes in the task worktree before merging.
     if (task.worktreePath) {
+      this.stripPreambleFromBranch(task.worktreePath);
       try {
-        await execAsync('git', ['commit', '-a', '-m', 'WIP: auto-commit before merge'], {
+        await execAsync('git', ['add', '-A'], { cwd: task.worktreePath });
+        await execAsync('git', ['commit', '-m', 'WIP: auto-commit before merge'], {
           cwd: task.worktreePath,
         });
       } catch {
@@ -777,6 +780,30 @@ export class Coordinator {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     await this.cleanupTask(taskId);
+  }
+
+  private stripPreambleFromBranch(worktreePath: string): void {
+    const PREAMBLE_START = '<sub-task-mode>';
+    for (const filename of ['AGENTS.md', 'GEMINI.md', '.agent.md']) {
+      const filePath = join(worktreePath, filename);
+      if (!existsSync(filePath)) continue;
+      let content: string;
+      try {
+        content = readFileSync(filePath, 'utf8');
+      } catch {
+        continue;
+      }
+      const idx = content.indexOf(PREAMBLE_START);
+      if (idx === -1) continue;
+      // Remove the preamble block and any preceding \n\n separator
+      const stripped = content.slice(0, idx).replace(/\n\n$/, '');
+      if (stripped.trim()) {
+        writeFileSync(filePath, stripped);
+      } else {
+        // File was created solely for the preamble — remove it so git add -A won't pick it up
+        unlinkSync(filePath);
+      }
+    }
   }
 
   private async cleanupTask(taskId: string): Promise<void> {
