@@ -185,7 +185,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'review_and_merge_task',
       description:
-        "Atomically get the diff, merge the task's branch into the base branch, and clean up the worktree. Use this after reviewing a completed task when you're ready to accept the work. Returns { diff, merge } with diff details and merge stats.",
+        'DEPRECATED: use get_task_diff → merge_task → close_task instead. This tool merges immediately without giving you a chance to review the diff first — the diff it returns is post-merge. Kept for backwards compatibility only.',
       inputSchema: {
         type: 'object' as const,
         properties: {
