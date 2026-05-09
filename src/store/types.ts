@@ -99,7 +99,7 @@ export interface Task {
   lastInputAt?: string;
   coordinatorMode?: boolean;
   coordinatedBy?: string; // taskId of the coordinator that created this task
-  controlledBy?: 'coordinator' | 'human'; // only set on tasks with coordinatedBy
+  controlledBy?: 'coordinator' | 'human'; // coordinator control state — set on coordinator tasks and coordinated sub-tasks
   mcpConfigPath?: string; // path to MCP config file (for coordinator tasks)
   signalDoneReceived?: boolean; // set when sub-task called signal_done
   needsReview?: boolean; // set when sub-task is reviewable but coordinator is closed
@@ -144,6 +144,8 @@ export interface PersistedTask {
   stepsEnabled?: boolean;
   coordinatorMode?: boolean;
   coordinatedBy?: string;
+  controlledBy?: 'coordinator' | 'human';
+  mcpConfigPath?: string;
 }
 
 export interface PersistedTerminal {
@@ -200,6 +202,7 @@ export interface PersistedState {
   verboseLogging?: boolean;
   coordinatorModeEnabled?: boolean;
   coordinatorNotificationDelayMs?: number;
+  coordinatorControlHintCount?: number;
 }
 
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
@@ -297,4 +300,5 @@ export interface AppStore {
   verboseLogging: boolean;
   coordinatorModeEnabled: boolean;
   coordinatorNotificationDelayMs: number;
+  coordinatorControlHintCount: number;
 }

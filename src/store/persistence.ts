@@ -75,6 +75,8 @@ export async function saveState(): Promise<void> {
         : undefined,
     shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
     coordinatorModeEnabled: store.coordinatorModeEnabled || undefined,
+    coordinatorControlHintCount:
+      store.coordinatorControlHintCount > 0 ? store.coordinatorControlHintCount : undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -107,6 +109,8 @@ export async function saveState(): Promise<void> {
       stepsEnabled: task.stepsEnabled,
       coordinatorMode: task.coordinatorMode,
       coordinatedBy: task.coordinatedBy,
+      controlledBy: task.controlledBy,
+      mcpConfigPath: task.mcpConfigPath,
     };
   }
 
@@ -141,6 +145,8 @@ export async function saveState(): Promise<void> {
       collapsed: true,
       coordinatorMode: task.coordinatorMode,
       coordinatedBy: task.coordinatedBy,
+      controlledBy: task.controlledBy,
+      mcpConfigPath: task.mcpConfigPath,
     };
   }
 
@@ -270,6 +276,7 @@ interface LegacyPersistedState {
   coordinatorNotificationDelayMs?: unknown;
   shareDockerAgentAuth?: unknown;
   coordinatorModeEnabled?: unknown;
+  coordinatorControlHintCount?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -422,6 +429,12 @@ export async function loadState(): Promise<void> {
 
       s.coordinatorModeEnabled = raw.coordinatorModeEnabled === true;
 
+      const rawHintCount = raw.coordinatorControlHintCount;
+      s.coordinatorControlHintCount =
+        typeof rawHintCount === 'number' && Number.isFinite(rawHintCount) && rawHintCount >= 0
+          ? Math.floor(rawHintCount)
+          : 0;
+
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =
         typeof rawDockerImage === 'string' && rawDockerImage.trim()
@@ -501,6 +514,9 @@ export async function loadState(): Promise<void> {
           stepsEnabled: pt.stepsEnabled,
           coordinatorMode: pt.coordinatorMode,
           coordinatedBy: pt.coordinatedBy,
+          controlledBy:
+            pt.controlledBy ?? (pt.coordinatorMode || pt.coordinatedBy ? 'coordinator' : undefined),
+          mcpConfigPath: pt.mcpConfigPath,
         };
 
         s.tasks[taskId] = task;
@@ -580,6 +596,9 @@ export async function loadState(): Promise<void> {
           savedAgentDef: agentDef ?? undefined,
           coordinatorMode: pt.coordinatorMode,
           coordinatedBy: pt.coordinatedBy,
+          controlledBy:
+            pt.controlledBy ?? (pt.coordinatorMode || pt.coordinatedBy ? 'coordinator' : undefined),
+          mcpConfigPath: pt.mcpConfigPath,
         };
 
         s.tasks[taskId] = task;

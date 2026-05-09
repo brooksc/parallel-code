@@ -24,6 +24,7 @@ import {
 } from '../store/store';
 import { clearStagedNotification, setStagedNotificationUserEdited } from '../store/tasks';
 import type { StagedNotification } from '../store/types';
+import { debug, warn as logWarn } from '../lib/log';
 import { theme } from '../lib/theme';
 import { sf } from '../lib/fontScale';
 
@@ -81,6 +82,41 @@ export function PromptInput(props: PromptInputProps) {
   const [sending, setSending] = createSignal(false);
   const [autoSentInitialPrompt, setAutoSentInitialPrompt] = createSignal<string | null>(null);
   let cleanupAutoSend: (() => void) | undefined;
+
+  // Debug: log whenever controlledBy changes (verbose-gated; forwards to /tmp/out via main process)
+  createEffect(() => {
+    const cb = props.controlledBy;
+    const coordBy = props.coordinatedBy;
+    if (cb !== undefined || coordBy !== undefined) {
+      debug('ctrl', 'controlledBy changed', {
+        controlledBy: cb,
+        coordinatedBy: coordBy,
+        taskId: props.taskId,
+        shouldBeDisabled: cb === 'coordinator',
+      });
+      // Check actual DOM state after all render effects have run
+      setTimeout(() => {
+        if (textareaRef) {
+          const domDisabled = textareaRef.disabled;
+          const expected = cb === 'coordinator';
+          if (domDisabled !== expected) {
+            logWarn('ctrl', 'textarea disabled mismatch — DOM vs expected', {
+              domDisabled,
+              expected,
+              controlledBy: cb,
+              taskId: props.taskId,
+            });
+          } else {
+            debug('ctrl', 'textarea disabled matches expected', {
+              domDisabled,
+              controlledBy: cb,
+              taskId: props.taskId,
+            });
+          }
+        }
+      }, 0);
+    }
+  });
 
   createEffect(() => {
     cleanupAutoSend?.();
@@ -306,6 +342,10 @@ export function PromptInput(props: PromptInputProps) {
 
   // --- Staged coordinator notification auto-fire ---
   let autoFireInterval: number | undefined;
+  // Tracks text we populated from a staged notification so we can distinguish
+  // it from text the user actually typed when a replacement notification arrives.
+  let lastStagedText = '';
+  let autoFirePromptMissCount = 0;
 
   createEffect(() => {
     const notification = props.stagedNotification;
@@ -315,16 +355,40 @@ export function PromptInput(props: PromptInputProps) {
       autoFireInterval = undefined;
     }
 
-    if (!notification || notification.userEdited) return;
+    if (!notification) return;
+    if (notification.userEdited) {
+      logWarn('autofire', 'notification staged but userEdited=true — skipping', {
+        taskId: props.taskId,
+        batchId: notification.batchId,
+      });
+      return;
+    }
 
-    // If the user already has content in the textarea, don't overwrite — treat
-    // the notification as user-edited so auto-fire doesn't clobber their text.
+    // If the user has typed their own content (not from a previous staged
+    // notification), don't overwrite it — treat this notification as user-edited.
+    // If the textarea contains text we set from a previous notification that
+    // never fired, replace it with the new notification instead.
     const currentText = untrack(() => text());
-    if (currentText.trim()) {
+    if (currentText.trim() && currentText !== lastStagedText) {
+      logWarn(
+        'autofire',
+        'textarea has user content on notification arrival — marking userEdited',
+        {
+          taskId: props.taskId,
+        },
+      );
       setStagedNotificationUserEdited(props.taskId);
       return;
     }
 
+    logWarn('autofire', 'notification staged — starting interval', {
+      taskId: props.taskId,
+      batchId: notification.batchId,
+      autoFireAt: new Date(notification.autoFireAt).toISOString(),
+      waitMs: notification.autoFireAt - Date.now(),
+    });
+    lastStagedText = notification.text;
+    autoFirePromptMissCount = 0;
     setText(notification.text);
 
     // eslint-disable-next-line solid/reactivity -- intentional untracked reads in interval
@@ -333,16 +397,70 @@ export function PromptInput(props: PromptInputProps) {
       // without subscribing to changes (the outer createEffect handles re-runs).
       const staged = untrack(() => props.stagedNotification);
       if (!staged || staged.userEdited) {
+        logWarn('autofire', 'interval: notification gone or userEdited — cancelling', {
+          taskId: props.taskId,
+          gone: !staged,
+          userEdited: staged?.userEdited,
+        });
         clearInterval(autoFireInterval);
         autoFireInterval = undefined;
         return;
       }
-      if (Date.now() < staged.autoFireAt) return;
+      const remaining = staged.autoFireAt - Date.now();
+      if (remaining > 0) {
+        debug('autofire', 'interval: waiting for autoFireAt', {
+          taskId: props.taskId,
+          remainingMs: remaining,
+        });
+        return;
+      }
+
+      // If the user has taken control of the coordinator task, pause firing
+      // without counting misses — resume when they release control.
+      if (untrack(() => store.tasks[props.taskId]?.controlledBy) === 'human') {
+        return;
+      }
 
       const tail = stripAnsi(untrack(() => getAgentOutputTail(props.agentId)));
-      const hasPrompt = /[❯›]/.test(tail.slice(-PROMPT_MARKER_SCAN_CHARS));
-      if (!hasPrompt) return;
+      const tailSnippet = tail.slice(-PROMPT_MARKER_SCAN_CHARS);
+      const hasPrompt = /[❯›]/.test(tailSnippet);
+      debug('autofire', 'interval: checking prompt marker', {
+        taskId: props.taskId,
+        batchId: staged.batchId,
+        hasPrompt,
+        tailSnippet: tailSnippet.slice(-120).replace(/\n/g, '↵'),
+      });
+      if (!hasPrompt) {
+        autoFirePromptMissCount += 1;
+        if (autoFirePromptMissCount === 1 || autoFirePromptMissCount % 5 === 0) {
+          logWarn('autofire', 'prompt not detected after autoFireAt', {
+            taskId: props.taskId,
+            batchId: staged.batchId,
+            missCount: autoFirePromptMissCount,
+            hasPrompt,
+            tailSnippet: tailSnippet.slice(-120).replace(/\n/g, '↵'),
+          });
+        }
+        if (autoFirePromptMissCount >= 10) {
+          const taskId = props.taskId;
+          const missCount = autoFirePromptMissCount;
+          logWarn('autofire', 'miss threshold reached — escalating to orphaned notification', {
+            taskId,
+            missCount,
+          });
+          clearInterval(autoFireInterval);
+          autoFireInterval = undefined;
+          clearStagedNotification(taskId);
+          fireAndForget(IPC.MCP_CoordinatorOrphanedNotification, {
+            coordinatorTaskId: taskId,
+            batchId: staged.batchId,
+          });
+        }
+        return;
+      }
+      autoFirePromptMissCount = 0;
 
+      logWarn('autofire', 'firing notification into coordinator PTY', { taskId: props.taskId });
       clearInterval(autoFireInterval);
       autoFireInterval = undefined;
       const taskId = props.taskId;
@@ -355,8 +473,11 @@ export function PromptInput(props: PromptInputProps) {
             batchId: staged.batchId,
           });
           clearStagedNotification(taskId);
+          lastStagedText = '';
           setText('');
+          logWarn('autofire', 'auto-fire succeeded', { taskId });
         } catch (e) {
+          logWarn('autofire', 'auto-fire failed', { taskId, err: String(e) });
           console.error('[coordinator] Auto-fire failed:', e);
         }
       })();
@@ -369,6 +490,23 @@ export function PromptInput(props: PromptInputProps) {
       autoFireInterval = undefined;
     }
   });
+
+  // --- Countdown display for auto-fire ---
+  const [nowMs, setNowMs] = createSignal(Date.now());
+  createEffect(() => {
+    const notification = props.stagedNotification;
+    if (!notification || notification.userEdited) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    onCleanup(() => clearInterval(id));
+  });
+
+  const autoFireCountdownText = () => {
+    const notification = props.stagedNotification;
+    if (!notification || notification.userEdited) return null;
+    if (props.controlledBy === 'human') return 'Paused — release control to send';
+    const remaining = Math.ceil((notification.autoFireAt - nowMs()) / 1_000);
+    return remaining > 0 ? `Auto-sending in ${remaining}s…` : 'Sending when coordinator is ready…';
+  };
 
   // When the agent shows a question/dialog, focus the terminal so the user
   // can interact with the TUI directly.
@@ -499,6 +637,7 @@ export function PromptInput(props: PromptInputProps) {
         }).catch(() => {});
       }
       props.onSend?.(val);
+      lastStagedText = '';
       setText('');
     } catch (e) {
       console.error('Failed to send prompt:', e);
@@ -514,6 +653,24 @@ export function PromptInput(props: PromptInputProps) {
       style={{ display: 'flex', height: '100%', padding: '4px 6px', 'border-radius': '12px' }}
     >
       <div style={{ position: 'relative', flex: '1', display: 'flex' }}>
+        <Show when={!!props.stagedNotification && !props.stagedNotification.userEdited}>
+          <div
+            style={{
+              position: 'absolute',
+              top: '4px',
+              left: '8px',
+              'font-size': '10px',
+              color: theme.accent,
+              background: `${theme.accent}22`,
+              padding: '1px 6px',
+              'border-radius': '3px',
+              'pointer-events': 'none',
+              'z-index': '1',
+            }}
+          >
+            Staged for auto-send
+          </div>
+        </Show>
         <textarea
           class="prompt-textarea"
           ref={(el) => {
@@ -524,6 +681,7 @@ export function PromptInput(props: PromptInputProps) {
           value={text()}
           disabled={questionActive() || props.controlledBy === 'coordinator'}
           onInput={(e) => {
+            if (props.controlledBy === 'coordinator') return;
             const val = e.currentTarget.value;
             setText(val);
             const staged = props.stagedNotification;
@@ -532,6 +690,10 @@ export function PromptInput(props: PromptInputProps) {
             }
           }}
           onKeyDown={(e) => {
+            if (props.controlledBy === 'coordinator') {
+              e.preventDefault();
+              return;
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               handleSend();
@@ -539,7 +701,7 @@ export function PromptInput(props: PromptInputProps) {
           }}
           placeholder={
             props.controlledBy === 'coordinator'
-              ? 'Coordinator is driving — click "Pause coordinator" to type'
+              ? 'Auto mode — click "Take Control" to type'
               : questionActive()
                 ? 'Agent is waiting for input in terminal…'
                 : 'Send a prompt... (Enter to send, Shift+Enter for newline)'
@@ -547,9 +709,15 @@ export function PromptInput(props: PromptInputProps) {
           style={{
             flex: '1',
             background: theme.bgInput,
-            border: `1px solid ${theme.border}`,
+            border:
+              props.stagedNotification && !props.stagedNotification.userEdited
+                ? `1px solid ${theme.accent}60`
+                : `1px solid ${theme.border}`,
             'border-radius': '12px',
-            padding: '6px 36px 6px 10px',
+            padding:
+              props.stagedNotification && !props.stagedNotification.userEdited
+                ? '20px 36px 6px 10px'
+                : '6px 36px 6px 10px',
             color: theme.fg,
             'font-size': sf(13),
             'font-family': "'JetBrains Mono', monospace",
@@ -614,6 +782,18 @@ export function PromptInput(props: PromptInputProps) {
           </div>
         </Show>
       </div>
+      <Show when={autoFireCountdownText() !== null}>
+        <div
+          style={{
+            'font-size': '11px',
+            color: theme.fgSubtle,
+            padding: '2px 4px',
+            'margin-top': '2px',
+          }}
+        >
+          {autoFireCountdownText()}
+        </div>
+      </Show>
     </div>
   );
 }

@@ -12,7 +12,9 @@ import {
   showNotification,
   setTaskSplitMode,
   setTaskControl,
+  saveState,
 } from '../store/store';
+import { setStore } from '../store/core';
 import { useFocusRegistration } from '../lib/focus-registration';
 import { ResizablePanel, type PanelChild } from './ResizablePanel';
 import type { EditableTextHandle } from './EditableText';
@@ -71,6 +73,21 @@ export function TaskPanel(props: TaskPanelProps) {
   let promptRef: HTMLTextAreaElement | undefined;
   let titleEditHandle: EditableTextHandle | undefined;
   let promptHandle: PromptInputHandle | undefined;
+
+  // Discoverability hint for coordinator control mode
+  const [showControlHint, setShowControlHint] = createSignal(false);
+  let controlHintTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(controlHintTimer));
+  function maybeShowControlHint() {
+    if (!props.task.coordinatorMode) return;
+    if (props.task.controlledBy === 'human') return;
+    if (store.coordinatorControlHintCount >= 3) return;
+    setShowControlHint(true);
+    setStore('coordinatorControlHintCount', (c) => c + 1);
+    void saveState();
+    clearTimeout(controlHintTimer);
+    controlHintTimer = setTimeout(() => setShowControlHint(false), 4_000);
+  }
 
   // Two-column focus-mode layout kicks in once the task panel is wide enough.
   // Hysteresis: enter at >=1200, leave at <1150. A single threshold flickers
@@ -224,14 +241,19 @@ export function TaskPanel(props: TaskPanelProps) {
           setStepNav(fn ? { jump: fn, firstIndex: fromIdx } : undefined);
         }}
       />
-      <Show when={!!props.task.coordinatedBy && props.task.controlledBy !== 'human'}>
+      <Show
+        when={
+          (!!props.task.coordinatedBy || !!props.task.coordinatorMode) &&
+          props.task.controlledBy !== 'human'
+        }
+      >
         <div
           style={{
             position: 'absolute',
             inset: '0',
             'pointer-events': 'all',
             cursor: 'not-allowed',
-            opacity: '0.3',
+            opacity: props.task.coordinatedBy ? '0.3' : '0',
             background: theme.taskPanelBg,
           }}
         />
@@ -275,10 +297,17 @@ export function TaskPanel(props: TaskPanelProps) {
   );
   // Prompt wrapper carries its own intrinsic height so the flex-first panel
   // tree sizes it to 72 px by default and lets a user-drag pin override.
+  // In coordinator auto mode the wrapper is hidden (display:none) but PromptInput
+  // stays mounted so its autofire interval keeps running.
+  const isCoordAutoMode = () => props.task.coordinatorMode && props.task.controlledBy !== 'human';
   const promptInputEl = (
     <div
       onClick={() => setTaskFocusedPanel(props.task.id, 'prompt')}
-      style={{ height: '100%', 'min-height': '72px' }}
+      style={{
+        height: '100%',
+        'min-height': '72px',
+        display: isCoordAutoMode() ? 'none' : undefined,
+      }}
     >
       <PromptInput
         taskId={props.task.id}
@@ -327,7 +356,11 @@ export function TaskPanel(props: TaskPanelProps) {
 
   const promptInputChild: PanelChild = {
     id: 'prompt',
-    minSize: 54,
+    // Drops to 0 in coordinator auto mode so the layout doesn't reserve space.
+    // PromptInput stays mounted (display:none above) so autofire keeps running.
+    get minSize() {
+      return isCoordAutoMode() ? 0 : 54;
+    },
     content: () => promptInputEl,
   };
 
@@ -385,14 +418,17 @@ export function TaskPanel(props: TaskPanelProps) {
         overflow: 'clip',
         position: 'relative',
       }}
-      onClick={() => setActiveTask(props.task.id)}
+      onClick={() => {
+        setActiveTask(props.task.id);
+        maybeShowControlHint();
+      }}
     >
       <TaskClosingOverlay
         closingStatus={props.task.closingStatus}
         closingError={props.task.closingError}
         onRetry={() => retryCloseTask(props.task.id)}
       />
-      <Show when={!!props.task.coordinatedBy}>
+      <Show when={!!props.task.coordinatedBy || !!props.task.coordinatorMode}>
         <Show
           when={props.task.controlledBy === 'human'}
           fallback={
@@ -408,7 +444,7 @@ export function TaskPanel(props: TaskPanelProps) {
                 color: theme.fgMuted,
               }}
             >
-              <span>Coordinator driving</span>
+              <span>{props.task.coordinatorMode ? 'Auto mode' : 'Coordinator driving'}</span>
               <button
                 style={{
                   background: 'transparent',
@@ -419,7 +455,7 @@ export function TaskPanel(props: TaskPanelProps) {
                 }}
                 onClick={() => setTaskControl(props.task.id, 'human')}
               >
-                Pause coordinator
+                Take Control
               </button>
             </div>
           }
@@ -435,7 +471,7 @@ export function TaskPanel(props: TaskPanelProps) {
               color: 'rgba(0,0,0,0.85)',
             }}
           >
-            <span>You have control — coordinator is paused</span>
+            <span>You have control</span>
             <button
               style={{
                 background: 'transparent',
@@ -446,10 +482,71 @@ export function TaskPanel(props: TaskPanelProps) {
               }}
               onClick={() => setTaskControl(props.task.id, 'coordinator')}
             >
-              Resume coordinator
+              Release Control
             </button>
           </div>
         </Show>
+      </Show>
+      <Show when={showControlHint()}>
+        <div
+          style={{
+            position: 'absolute',
+            top: '48px',
+            right: '12px',
+            'z-index': '100',
+            background: theme.bgElevated,
+            border: `1px solid ${theme.accent}`,
+            'border-radius': '8px',
+            padding: '10px 12px',
+            'font-size': '12px',
+            color: theme.fg,
+            'max-width': '260px',
+            'box-shadow': '0 4px 12px rgba(0,0,0,0.3)',
+          }}
+        >
+          <div style={{ 'margin-bottom': '8px', 'line-height': '1.4' }}>
+            Autofire is active — click <strong>Take Control</strong> to type freely.
+          </div>
+          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+            <label
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '4px',
+                cursor: 'pointer',
+                'font-size': '11px',
+                color: theme.fgMuted,
+              }}
+            >
+              <input
+                type="checkbox"
+                onChange={(e) => {
+                  if (e.currentTarget.checked) {
+                    setStore('coordinatorControlHintCount', 999);
+                    void saveState();
+                    setShowControlHint(false);
+                  }
+                }}
+              />
+              Don't show again
+            </label>
+            <button
+              style={{
+                'margin-left': 'auto',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                'font-size': '14px',
+                color: theme.fgMuted,
+                padding: '0 2px',
+                'line-height': '1',
+              }}
+              onClick={() => setShowControlHint(false)}
+            >
+              ×
+            </button>
+          </div>
+        </div>
       </Show>
       <Show when={props.task.coordinatorMode}>
         <SubTaskStrip coordinatorTaskId={props.task.id} />
@@ -493,7 +590,7 @@ export function TaskPanel(props: TaskPanelProps) {
                 shellSectionChild,
                 aiTerminalChild,
                 ...(props.task.stepsEnabled ? [stepsSectionChild] : []),
-                ...(store.showPromptInput ? [promptInputChild] : []),
+                ...(store.showPromptInput || props.task.coordinatorMode ? [promptInputChild] : []),
               ]}
             />
           }
@@ -513,7 +610,9 @@ export function TaskPanel(props: TaskPanelProps) {
                     absorberIds={['ai-terminal']}
                     children={[
                       aiTerminalChild,
-                      ...(store.showPromptInput ? [promptInputChild] : []),
+                      ...(store.showPromptInput || props.task.coordinatorMode
+                        ? [promptInputChild]
+                        : []),
                     ]}
                   />
                 ),

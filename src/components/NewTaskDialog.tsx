@@ -729,101 +729,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
             wrap={false}
           />
 
-          {/* Coordinator mode toggle */}
-          <Show when={store.coordinatorModeEnabled}>
-            <div
-              data-nav-field="coordinator-mode"
-              style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
-            >
-              <label
-                style={{
-                  display: 'flex',
-                  'align-items': 'center',
-                  gap: '8px',
-                  'font-size': '13px',
-                  color: theme.fg,
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={coordinatorMode()}
-                  disabled={hasActiveCoordinator() || dockerMode()}
-                  onChange={(e) =>
-                    !hasActiveCoordinator() &&
-                    !dockerMode() &&
-                    setCoordinatorMode(e.currentTarget.checked)
-                  }
-                  style={{
-                    'accent-color': theme.accent,
-                    cursor: hasActiveCoordinator() || dockerMode() ? 'not-allowed' : 'inherit',
-                    opacity: hasActiveCoordinator() || dockerMode() ? '0.5' : '1',
-                  }}
-                  title={
-                    dockerMode()
-                      ? 'Docker is not yet supported for coordinator tasks'
-                      : hasActiveCoordinator()
-                        ? 'Only one coordinator per project can be active at a time'
-                        : undefined
-                  }
-                />
-                Coordinator mode
-              </label>
-              <Show when={coordinatorMode()}>
-                <div
-                  style={{
-                    'font-size': '12px',
-                    color: theme.warning,
-                    background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                    padding: '8px 12px',
-                    'border-radius': '8px',
-                    border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                  }}
-                >
-                  This agent will be able to create tasks, send prompts, and merge branches
-                  automatically via MCP tools. The remote server will be started automatically.
-                </div>
-              </Show>
-              <Show when={coordinatorMode() && agentSupportsSkipPermissions() && skipPermissions()}>
-                <label
-                  style={{
-                    display: 'flex',
-                    'align-items': 'center',
-                    gap: '8px',
-                    'font-size': '13px',
-                    color: theme.fg,
-                    cursor: 'pointer',
-                    'padding-left': '4px',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={propagateSkipPermissions()}
-                    onChange={(e) => setPropagateSkipPermissions(e.currentTarget.checked)}
-                    style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
-                  />
-                  Propagate skip-permissions to sub-tasks
-                </label>
-                <Show when={propagateSkipPermissions()}>
-                  <div
-                    style={{
-                      'font-size': '12px',
-                      color: theme.warning,
-                      background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
-                      padding: '8px 12px',
-                      'border-radius': '8px',
-                      border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
-                    }}
-                  >
-                    All sub-tasks created by this coordinator will inherit{' '}
-                    <strong>--dangerously-skip-permissions</strong> and run without confirmation
-                    prompts.
-                  </div>
-                </Show>
-              </Show>
-            </div>
-          </Show>
-
           {/* Isolation mode selector — hidden for non-git projects */}
           <Show when={!isNonGitProject()}>
             <div
@@ -1148,6 +1053,98 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
             </Show>
           </div>
           {/* end checkboxes group */}
+
+          {/* Coordinator mode toggle — below skip-permissions so enabling skip-perms
+              doesn't cause items to appear above the checkbox you just clicked */}
+          <Show when={store.coordinatorModeEnabled}>
+            <div
+              data-nav-field="coordinator-mode"
+              style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}
+            >
+              <label
+                style={{
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '8px',
+                  'font-size': '13px',
+                  color: theme.fg,
+                  cursor: 'pointer',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={coordinatorMode()}
+                  disabled={hasActiveCoordinator()}
+                  onChange={(e) =>
+                    !hasActiveCoordinator() && setCoordinatorMode(e.currentTarget.checked)
+                  }
+                  style={{
+                    'accent-color': theme.accent,
+                    cursor: hasActiveCoordinator() ? 'not-allowed' : 'inherit',
+                    opacity: hasActiveCoordinator() ? '0.5' : '1',
+                  }}
+                  title={
+                    hasActiveCoordinator()
+                      ? 'Only one coordinator per project can be active at a time'
+                      : undefined
+                  }
+                />
+                Coordinator mode
+              </label>
+              <Show when={coordinatorMode()}>
+                <div
+                  style={{
+                    'font-size': '12px',
+                    color: theme.warning,
+                    background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                    padding: '8px 12px',
+                    'border-radius': '8px',
+                    border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                  }}
+                >
+                  This agent will be able to create tasks, send prompts, and merge branches
+                  automatically via MCP tools. The remote server will be started automatically.
+                </div>
+                <Show when={agentSupportsSkipPermissions() && skipPermissions()}>
+                  <label
+                    style={{
+                      display: 'flex',
+                      'align-items': 'center',
+                      gap: '8px',
+                      'font-size': '13px',
+                      color: theme.fg,
+                      cursor: 'pointer',
+                      'padding-left': '4px',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={propagateSkipPermissions()}
+                      onChange={(e) => setPropagateSkipPermissions(e.currentTarget.checked)}
+                      style={{ 'accent-color': theme.accent, cursor: 'inherit' }}
+                    />
+                    Propagate skip-permissions to sub-tasks
+                  </label>
+                  <Show when={propagateSkipPermissions()}>
+                    <div
+                      style={{
+                        'font-size': '12px',
+                        color: theme.warning,
+                        background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+                        padding: '8px 12px',
+                        'border-radius': '8px',
+                        border: `1px solid color-mix(in srgb, ${theme.warning} 20%, transparent)`,
+                      }}
+                    >
+                      All sub-tasks created by this coordinator will inherit{' '}
+                      <strong>--dangerously-skip-permissions</strong> and run without confirmation
+                      prompts.
+                    </div>
+                  </Show>
+                </Show>
+              </Show>
+            </div>
+          </Show>
 
           <Show when={ignoredDirs().length > 0 && gitIsolation() === 'worktree'}>
             <SymlinkDirPicker

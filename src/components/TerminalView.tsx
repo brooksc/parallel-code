@@ -134,6 +134,15 @@ export function TerminalView(props: TerminalViewProps) {
 
     term.open(containerRef);
 
+    // Block direct PTY keyboard input when the task is coordinator-controlled.
+    // disableStdin prevents xterm from forwarding keystrokes to the process;
+    // copy/paste/scrollback still work. The effect re-runs when controlledBy
+    // changes so Take Control / Release Control works without a remount.
+    createEffect(() => {
+      const controlledBy = store.tasks[props.taskId]?.controlledBy;
+      if (term) term.options.disableStdin = controlledBy === 'coordinator';
+    });
+
     // File path link provider — makes file paths clickable in terminal output
     // Must be registered after term.open() so the DOM is available.
     term.registerLinkProvider({
