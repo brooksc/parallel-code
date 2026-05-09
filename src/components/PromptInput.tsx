@@ -449,7 +449,7 @@ export function PromptInput(props: PromptInputProps) {
           clearInterval(autoFireInterval);
           autoFireInterval = undefined;
           clearStagedNotification(taskId);
-          fireAndForget(IPC.MCP_CoordinatorOrphanedNotification, {
+          fireAndForget(IPC.MCP_CoordinatorNotificationDropAck, {
             coordinatorTaskId: taskId,
             batchId: staged.batchId,
           });

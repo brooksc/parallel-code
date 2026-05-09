@@ -1192,13 +1192,13 @@ export function registerAllHandlers(win: BrowserWindow): void {
     });
 
     // Autofire miss threshold reached — renderer already cleared the staged notification locally.
-    // Ack the batch on the backend too so state stays consistent.
+    // Ack the batch on the backend and mark affected sub-tasks as needsReview.
     ipcMain.handle(
-      IPC.MCP_CoordinatorOrphanedNotification,
+      IPC.MCP_CoordinatorNotificationDropAck,
       (_e, args: { coordinatorTaskId: string; batchId: string }) => {
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
         assertString(args.batchId, 'batchId');
-        coordinator?.ackNotification(args.coordinatorTaskId, args.batchId);
+        coordinator?.dropNotification(args.coordinatorTaskId, args.batchId);
       },
     );
 

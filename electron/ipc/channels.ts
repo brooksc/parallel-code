@@ -154,6 +154,7 @@ export enum IPC {
   MCP_CoordinatorRegistered = 'mcp_coordinator_registered',
   MCP_CoordinatorDeregistered = 'mcp_coordinator_deregistered',
   MCP_CoordinatorNotificationAck = 'mcp_coordinator_notification_ack',
+  MCP_CoordinatorNotificationDropAck = 'mcp_coordinator_notification_drop_ack',
   MCP_CoordinatedTaskPromptDelivered = 'mcp_coordinated_task_prompt_delivered',
   MCP_CoordinatorRestageAfterUserSend = 'mcp_coordinator_restage_after_user_send',
 }

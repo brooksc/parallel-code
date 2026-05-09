@@ -922,6 +922,24 @@ export class Coordinator {
     }, this.COORDINATOR_RESTAMP_DELAY_MS);
   }
 
+  dropNotification(coordinatorTaskId: string, batchId: string): void {
+    const coordinator = this.coordinators.get(coordinatorTaskId);
+    const affectedTaskIds: string[] = [];
+    if (coordinator) {
+      const pendingIds = coordinator.stagedBatches.get(batchId);
+      if (pendingIds) {
+        for (const notifId of pendingIds) {
+          const notif = coordinator.pendingNotifications.find((n) => n.id === notifId);
+          if (notif) affectedTaskIds.push(notif.taskId);
+        }
+      }
+    }
+    this.ackNotification(coordinatorTaskId, batchId);
+    for (const taskId of affectedTaskIds) {
+      this.notifyRenderer(IPC.MCP_TaskStateSync, { taskId, needsReview: true });
+    }
+  }
+
   ackNotification(coordinatorTaskId: string, batchId: string): void {
     const coordinator = this.coordinators.get(coordinatorTaskId);
     if (!coordinator) return;
