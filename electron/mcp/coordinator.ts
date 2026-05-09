@@ -1078,7 +1078,13 @@ export class Coordinator {
       // Suppress before finishSignalWait so it doesn't re-stage
       this.suppressPendingNotificationForTask(task);
       const remaining = this.countRemaining(coordinatorId);
-      firstAnyResolver({ taskId, name: task.name, remaining });
+      firstAnyResolver({
+        taskId,
+        name: task.name,
+        status: task.status,
+        signalDoneAt: (task.signalDoneAt ?? new Date()).toISOString(),
+        remaining,
+      });
       this.finishSignalWait(coordinatorId);
       // Tell renderer — coordinator already gets result via MCP return value, no UI notification needed
       this.notifyRenderer(IPC.MCP_TaskStateSync, { taskId, signalDoneReceived: true });
@@ -1154,7 +1160,13 @@ export class Coordinator {
       ) {
         task.signalDoneConsumed = true;
         const remaining = this.countRemaining(coordinatorTaskId);
-        return Promise.resolve({ taskId: task.id, name: task.name, remaining });
+        return Promise.resolve({
+          taskId: task.id,
+          name: task.name,
+          status: task.status,
+          signalDoneAt: task.signalDoneAt.toISOString(),
+          remaining,
+        });
       }
     }
 

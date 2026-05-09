@@ -25,6 +25,8 @@ export interface CoordinatedTask {
 export interface WaitForSignalDoneResult {
   taskId: string;
   name: string;
+  status: string;
+  signalDoneAt: string; // ISO timestamp
   remaining: number; // unconsumed signals + still-running tasks for this coordinator
 }
 

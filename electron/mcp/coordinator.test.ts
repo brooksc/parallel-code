@@ -666,10 +666,12 @@ describe('Coordinator waitForSignalDone', () => {
   it('resolves immediately with unconsumed signal if already signalled', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.signalDone('task-1');
-    await expect(coordinator.waitForSignalDone('coord-1')).resolves.toEqual({
+    await expect(coordinator.waitForSignalDone('coord-1')).resolves.toMatchObject({
       taskId: 'task-1',
       name: 'test',
       remaining: 0,
+      status: expect.any(String),
+      signalDoneAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
     });
   });
 
@@ -677,7 +679,13 @@ describe('Coordinator waitForSignalDone', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const waitPromise = coordinator.waitForSignalDone('coord-1');
     coordinator.signalDone('task-1');
-    await expect(waitPromise).resolves.toEqual({ taskId: 'task-1', name: 'test', remaining: 0 });
+    await expect(waitPromise).resolves.toMatchObject({
+      taskId: 'task-1',
+      name: 'test',
+      remaining: 0,
+      status: expect.any(String),
+      signalDoneAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    });
   });
 
   it('rejects after timeout when signal never arrives', async () => {
@@ -696,7 +704,13 @@ describe('Coordinator waitForSignalDone', () => {
     await coordinator.createTask({ name: 'task-b', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const waitPromise = coordinator.waitForSignalDone('coord-1');
     coordinator.signalDone('task-1');
-    await expect(waitPromise).resolves.toEqual({ taskId: 'task-1', name: 'task-a', remaining: 1 });
+    await expect(waitPromise).resolves.toMatchObject({
+      taskId: 'task-1',
+      name: 'task-a',
+      remaining: 1,
+      status: expect.any(String),
+      signalDoneAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    });
   });
 
   it('does not stage pending notifications while any signal_done wait is active', async () => {
