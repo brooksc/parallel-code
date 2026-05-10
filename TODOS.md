@@ -23,12 +23,6 @@
 **What's wrong:** `StartMCPServer` skips `startRemoteServer()` if already running. If remote access started first (without a coordinator), coordinator-specific API routes are never registered.
 **Done when:** Either route handlers look up coordinator at request time via a mutable closure, or the server is torn down and recreated when a coordinator registers.
 
-### 16. Closing a coordinated child leaves stale backend coordinator state
-
-**Files:** `src/store/tasks.ts:349-368` (`closeTask`), `electron/mcp/coordinator.ts` (task removal)
-**What's wrong:** Closing a coordinated child from the UI deletes the renderer task and worktree but leaves it in the backend `Coordinator.tasks` map. Subsequent MCP calls reference the deleted task.
-**Done when:** A new IPC channel (e.g. `MCP_CoordinatedTaskClosed`) is invoked when a coordinated child is closed from the UI, and the backend removes it from `Coordinator.tasks`.
-
 ### 23. Collapsing coordinated children breaks backend agent identity
 
 **Files:** `src/store/tasks.ts` (`collapseTask`, `uncollapseTask`), `electron/mcp/coordinator.ts`
