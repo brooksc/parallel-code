@@ -43,12 +43,6 @@
 **What's wrong:** `mcpConfigPath` is persisted and rewritten on app restart, but if the coordinator Claude process itself restarts, the MCP token changes and running sub-tasks become unreachable.
 **No fix yet** — edge case.
 
-### 18. Docker sub-agent process cleanup is shaky
-
-**File:** `electron/mcp/coordinator.ts:507`
-**What's wrong:** Sub-agents spawned via `docker exec` are not marked `dockerMode` with a `containerName`. Killing the PTY stops the host `docker exec` client but may leave the inner agent process running inside the coordinator container.
-**Done when:** Docker-exec PTY sessions are marked with the coordinator `containerName` and a `SIGTERM` is sent to the inner process via `docker exec <container> kill <pid>` on cleanup.
-
 ### ~~25. Remote server started without coordinator routes when remote access precedes coordinator~~ ✅ COMPLETE
 
 Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator routes are registered at server startup and call `opts.getCoordinator()` at request time, returning 503 when null. Test coverage added in `electron/remote/coordinator-scoping.test.ts`.
