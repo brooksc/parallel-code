@@ -23,12 +23,6 @@
 **What's wrong:** `StartMCPServer` skips `startRemoteServer()` if already running. If remote access started first (without a coordinator), coordinator-specific API routes are never registered.
 **Done when:** Either route handlers look up coordinator at request time via a mutable closure, or the server is torn down and recreated when a coordinator registers.
 
-### 23. Collapsing coordinated children breaks backend agent identity
-
-**Files:** `src/store/tasks.ts` (`collapseTask`, `uncollapseTask`), `electron/mcp/coordinator.ts`
-**What's wrong:** `collapseTask` clears `agentIds`; `uncollapseTask` creates a new `agentId`. The backend coordinator registry still holds the old `agentId`, so `send_prompt` and idle detection target a dead PTY.
-**Done when:** Either collapse is blocked for tasks with `coordinatedBy` set (simplest), or uncollapse emits an IPC event so the backend updates its agent reference.
-
 ---
 
 ## Known edge cases — no fix yet
