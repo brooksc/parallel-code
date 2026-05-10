@@ -127,7 +127,7 @@ export class Coordinator {
       // Fire any idle resolvers queued while human had control
       const resolvers = this.idleResolvers.get(taskId);
       if (resolvers?.length) {
-        for (const resolve of resolvers) resolve({ reason: 'human_control' });
+        for (const resolve of resolvers) resolve({ reason: 'idle' });
         this.idleResolvers.delete(taskId);
       }
       // Notify coordinator if it tried to send a prompt while blocked
@@ -1025,7 +1025,12 @@ export class Coordinator {
       console.warn('Failed to delete coordinated task worktree:', err);
     }
 
-    // Clean up internal state
+    // Clean up internal state — resolve idle waiters before deleting so callers
+    // don't hang until their own timeout fires.
+    const idleResolvers = this.idleResolvers.get(taskId);
+    if (idleResolvers?.length) {
+      for (const resolve of idleResolvers) resolve({ reason: 'exited' });
+    }
     this.tailBuffers.delete(task.agentId);
     this.decoders.delete(task.agentId);
     this.idleResolvers.delete(taskId);

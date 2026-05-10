@@ -61,3 +61,19 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 **Note:** The bind address question (#30) is unchanged — sub-task containers still need to reach `host.docker.internal:7777` for `signal_done`. Resolve #30 first or in parallel.
 
 **Done when:** Sub-tasks spawned in Docker coordinator mode each run in their own container, HOME collisions are gone, and `close_task` cleanly stops the container.
+
+---
+
+### 32. Preamble injection uses synchronous file I/O on the main thread
+
+**File:** `electron/mcp/coordinator.ts` (`createTask`, ~line 444–499)
+**What's wrong:** `createTask` uses `readFileSync`/`writeFileSync` for preamble injection into the sub-task worktree. This blocks the Electron main thread on every sub-task creation. With multiple concurrent sub-tasks, it can also race — two `create_task` calls reading the same file before either writes.
+**Done when:** Preamble injection uses `fs/promises` (`readFile`/`writeFile`) and either serializes writes per-path or is made safe for concurrent calls.
+
+---
+
+### 33. No integration tests for post-restart coordinator flow
+
+**Files:** `electron/mcp/coordinator.ts` (`hydrateTask`), `src/App.tsx` (restart restore path)
+**What's wrong:** `hydrateTask` restores output callbacks, `setMCPServerInfo` rewrites config files, and `StartMCPServer` is awaited before child hydration — but there are no tests exercising the full restart → re-subscribe → `wait_for_idle` / `wait_for_signal_done` round-trip. A regression in the restart path would be invisible.
+**Done when:** At least one integration test simulates app restart (re-create coordinator, call `hydrateTask`, verify `wait_for_idle` resolves correctly after the next agent output).

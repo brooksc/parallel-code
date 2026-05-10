@@ -694,7 +694,7 @@ describe('Coordinator waitForIdle', () => {
     // The real scenario: task is running, coordinator calls waitForIdle, user takes control, coordinator returns
     const waitPromise = coordinator.waitForIdle('task-1');
     coordinator.setTaskControl('task-1', 'coordinator');
-    await expect(waitPromise).resolves.toEqual({ reason: 'human_control' });
+    await expect(waitPromise).resolves.toEqual({ reason: 'idle' });
   });
 });
 

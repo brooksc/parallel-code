@@ -144,6 +144,7 @@ const ALLOWED_CHANNELS = new Set([
   'mcp_coordinated_task_closed',
   // Coordinator settings
   'set_coordinator_mode_enabled',
+  'mcp_stale_url_warning',
 ]);
 
 function isAllowedChannel(channel) {
