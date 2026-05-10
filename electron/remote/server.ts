@@ -412,8 +412,12 @@ export function startRemoteServer(opts: {
         if (taskIdMatch && taskIdMatch[2] === 'done' && req.method === 'POST') {
           const taskId = decodeURIComponent(taskIdMatch[1]);
           mcpLog('info', `signal_done id=${taskId}`);
-          orch.signalDone(taskId);
-          jsonReply(200, { ok: true });
+          const found = orch.signalDone(taskId);
+          if (!found) {
+            jsonReply(404, { error: `Unknown task: ${taskId}` });
+          } else {
+            jsonReply(200, { ok: true });
+          }
           return;
         }
 

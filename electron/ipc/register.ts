@@ -79,6 +79,52 @@ import {
   assertOptionalBoolean,
 } from './validate.js';
 import { warn as logWarn } from '../log.js';
+import { getMCPRemoteServerUrl } from '../mcp/config.js';
+
+export function selectMcpJsonDir(worktreePath: string | undefined, projectRoot: string): string {
+  return worktreePath ?? projectRoot;
+}
+
+/** Path where `mcp-server.cjs` is copied inside the Docker-mounted worktree. */
+export function getDockerMcpServerDestPath(
+  worktreePath: string | undefined,
+  projectRoot: string,
+): string {
+  return path.join(worktreePath ?? projectRoot, '.parallel-code', 'mcp-server.cjs');
+}
+
+export interface CoordinatorMCPConfigOpts {
+  mcpServerPath: string;
+  serverUrl: string;
+  token: string;
+  coordinatorTaskId: string;
+  skipPermissions?: boolean;
+  propagateSkipPermissions?: boolean;
+}
+
+/** Builds the coordinator `.mcp.json` / `--mcp-config` file content. */
+export function buildCoordinatorMCPConfig(opts: CoordinatorMCPConfigOpts): {
+  mcpServers: { 'parallel-code': { type: 'stdio'; command: 'node'; args: string[] } };
+} {
+  return {
+    mcpServers: {
+      'parallel-code': {
+        type: 'stdio',
+        command: 'node',
+        args: [
+          opts.mcpServerPath,
+          '--url',
+          opts.serverUrl,
+          '--token',
+          opts.token,
+          '--coordinator-id',
+          opts.coordinatorTaskId,
+          ...(opts.skipPermissions && opts.propagateSkipPermissions ? ['--skip-permissions'] : []),
+        ],
+      },
+    },
+  };
+}
 
 function findFreePort(start: number, end: number): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -982,10 +1028,16 @@ export function registerAllHandlers(win: BrowserWindow): void {
   });
 
   ipcMain.handle(IPC.StopRemoteServer, async () => {
-    if (remoteServer) {
-      await remoteServer.stop();
-      remoteServer = null;
+    if (!remoteServer) return;
+    if (coordinator?.hasActiveCoordinator()) {
+      // The coordinator MCP transport shares this HTTP server. Stopping it while
+      // a coordinator is active would break all in-flight MCP tool calls.
+      // The server will be stopped when the last coordinator deregisters.
+      console.warn('[Remote] Stop requested but coordinator MCP is active — server kept running');
+      return;
     }
+    await remoteServer.stop();
+    remoteServer = null;
   });
 
   ipcMain.handle(IPC.GetRemoteStatus, () => {
@@ -1009,170 +1061,16 @@ export function registerAllHandlers(win: BrowserWindow): void {
     if (coordinatorHandlersRegistered) return;
     coordinatorHandlersRegistered = true;
 
-    ipcMain.handle(
-      IPC.StartMCPServer,
-      async (
-        _e,
-        args: {
-          coordinatorTaskId: string;
-          projectId: string;
-          projectRoot: string;
-          worktreePath?: string;
-          skipPermissions?: boolean;
-          propagateSkipPermissions?: boolean;
-          agentCommand?: string;
-          agentArgs?: string[];
-          dockerContainerName?: string;
-        },
-      ) => {
-        if (!coordinator) return;
-
-        // Set coordinator's default project + coordinator task ID
-        coordinator.setDefaultProject(args.projectId, args.projectRoot, args.coordinatorTaskId);
-
-        // Start remote server if not running
-        if (!remoteServer) {
-          const thisDir = path.dirname(fileURLToPath(import.meta.url));
-          const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
-          const port = await findFreePort(7777, 7800);
-          remoteServer = startRemoteServer({
-            port,
-            staticDir: distRemote,
-            getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
-            getAgentStatus: (agentId: string) => {
-              const meta = getAgentMeta(agentId);
-              return {
-                status: meta ? ('running' as const) : ('exited' as const),
-                exitCode: null,
-                lastLine: '',
-              };
-            },
-            coordinator,
-          });
-        }
-
-        // Write temp MCP config file — use the bundled single-file MCP server
-        // (built by esbuild, no external deps needed at runtime)
-        const thisDir = path.dirname(fileURLToPath(import.meta.url));
-        let mcpServerPath = path.join(thisDir, '..', 'mcp-server.cjs');
-
-        // In packaged builds, asar-unpacked files live in app.asar.unpacked/
-        if (mcpServerPath.includes('/app.asar/')) {
-          mcpServerPath = mcpServerPath.replace('/app.asar/', '/app.asar.unpacked/');
-        }
-        const serverUrl = `http://127.0.0.1:${remoteServer.port}`;
-
-        // Docker+coordinator: copy the MCP server script into the project root so it is
-        // accessible inside the container (which mounts the project at the same host path).
-        // Also register the coordinator's container name so sub-agents are spawned via docker exec.
-        if (args.dockerContainerName) {
-          const dockerMcpDir = path.join(args.projectRoot, '.parallel-code');
-          fs.mkdirSync(dockerMcpDir, { recursive: true });
-          const dockerMcpServerPath = path.join(dockerMcpDir, 'mcp-server.cjs');
-          fs.copyFileSync(mcpServerPath, dockerMcpServerPath);
-          mcpServerPath = dockerMcpServerPath;
-          coordinator.setDockerContainerName(args.dockerContainerName);
-          console.warn('[MCP] Docker mode: copied MCP server to', dockerMcpServerPath);
-        } else {
-          coordinator.setDockerContainerName(null);
-        }
-
-        coordinator.setMCPServerInfo(serverUrl, remoteServer.token, mcpServerPath);
-        coordinator.setCoordinatorSpawnDefaults(
-          args.agentCommand ?? 'claude',
-          args.agentArgs ?? [],
-        );
-
-        const mcpConfig = {
-          mcpServers: {
-            'parallel-code': {
-              type: 'stdio' as const,
-              command: 'node',
-              args: [
-                mcpServerPath,
-                '--url',
-                serverUrl,
-                '--token',
-                remoteServer.token,
-                '--coordinator-id',
-                args.coordinatorTaskId,
-                ...(args.skipPermissions && args.propagateSkipPermissions
-                  ? ['--skip-permissions']
-                  : []),
-              ],
-            },
-          },
-        };
-
-        const configJson = JSON.stringify(mcpConfig, null, 2);
-
-        // In docker mode the coordinator agent auto-discovers .mcp.json in the project root
-        // (which is the container's working directory). No host-temp configPath needed.
-        let configPath: string | undefined;
-        if (!args.dockerContainerName) {
-          configPath = path.join(
-            app.getPath('temp'),
-            `parallel-code-mcp-${args.coordinatorTaskId}.json`,
-          );
-          fs.writeFileSync(configPath, configJson, { mode: 0o600 });
-        }
-
-        // Write .mcp.json for auto-discovery: into the worktree (worktree isolation) or into
-        // the project root (direct isolation with docker mode).
-        const mcpJsonDir = args.dockerContainerName ? args.projectRoot : args.worktreePath;
-        if (mcpJsonDir) {
-          const worktreeMcpPath = path.join(mcpJsonDir, '.mcp.json');
-          fs.writeFileSync(worktreeMcpPath, configJson, { mode: 0o600 });
-
-          // Append to .git/info/exclude (local-only gitignore, not committed)
-          try {
-            const gitDir = path.join(mcpJsonDir, '.git');
-            // Worktrees use a .git file pointing to the real gitdir
-            let infoDir: string;
-            if (fs.statSync(gitDir).isFile()) {
-              const gitFileContent = fs.readFileSync(gitDir, 'utf-8').trim();
-              const realGitDir = gitFileContent.replace(/^gitdir:\s*/, '');
-              infoDir = path.join(
-                path.isAbsolute(realGitDir) ? realGitDir : path.resolve(mcpJsonDir, realGitDir),
-                'info',
-              );
-            } else {
-              infoDir = path.join(gitDir, 'info');
-            }
-            fs.mkdirSync(infoDir, { recursive: true });
-            const excludePath = path.join(infoDir, 'exclude');
-            const existing = fs.existsSync(excludePath)
-              ? fs.readFileSync(excludePath, 'utf-8')
-              : '';
-            if (!existing.includes('.mcp.json')) {
-              fs.appendFileSync(
-                excludePath,
-                '\n# Parallel Code MCP config (contains ephemeral token)\n.mcp.json\n',
-              );
-            }
-          } catch (err) {
-            console.warn('[MCP] Could not git-exclude .mcp.json:', err);
-          }
-
-          console.warn('[MCP] .mcp.json written to:', worktreeMcpPath);
-        }
-
-        if (configPath) console.warn('[MCP] Config written to:', configPath);
-        console.warn('[MCP] Server path:', mcpServerPath);
-        console.warn('[MCP] Remote URL:', serverUrl);
-
-        return {
-          configPath,
-          serverUrl,
-          token: remoteServer.token,
-          port: remoteServer.port,
-        };
-      },
-    );
+    // NOTE: StartMCPServer is registered eagerly (below, outside this function) so the
+    // renderer can call it during restore before enableCoordinatorMode() completes.
 
     ipcMain.handle(
       IPC.MCP_ControlChanged,
       (_e, args: { taskId: string; controlledBy: 'coordinator' | 'human' }) => {
+        assertString(args.taskId, 'taskId');
+        if (args.controlledBy !== 'coordinator' && args.controlledBy !== 'human') {
+          throw new Error(`Invalid controlledBy: ${String(args.controlledBy)}`);
+        }
         coordinator?.setTaskControl(args.taskId, args.controlledBy);
       },
     );
@@ -1294,6 +1192,190 @@ export function registerAllHandlers(win: BrowserWindow): void {
       // ignore malformed state
     }
   })();
+
+  // StartMCPServer registered eagerly (not inside registerCoordinatorHandlers) so the
+  // renderer can call it during app-restore before enableCoordinatorMode() resolves.
+  ipcMain.handle(
+    IPC.StartMCPServer,
+    async (
+      _e,
+      args: {
+        coordinatorTaskId: string;
+        projectId: string;
+        projectRoot: string;
+        worktreePath?: string;
+        skipPermissions?: boolean;
+        propagateSkipPermissions?: boolean;
+        agentCommand?: string;
+        agentArgs?: string[];
+        dockerContainerName?: string;
+      },
+    ) => {
+      await enableCoordinatorMode();
+      if (!coordinator) return;
+
+      // Set coordinator's default project + coordinator task ID, and register this coordinator
+      // so create_task / list_tasks know about it. Idempotent — safe to call on restore.
+      coordinator.setDefaultProject(args.projectId, args.projectRoot, args.coordinatorTaskId);
+      coordinator.registerCoordinator(args.coordinatorTaskId, args.projectId, args.worktreePath);
+
+      // Start remote server if not running
+      if (!remoteServer) {
+        const thisDir = path.dirname(fileURLToPath(import.meta.url));
+        const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
+        const port = await findFreePort(7777, 7800);
+        remoteServer = startRemoteServer({
+          port,
+          host: '0.0.0.0',
+          staticDir: distRemote,
+          getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
+          getAgentStatus: (agentId: string) => {
+            const meta = getAgentMeta(agentId);
+            return {
+              status: meta ? ('running' as const) : ('exited' as const),
+              exitCode: null,
+              lastLine: '',
+            };
+          },
+          coordinator,
+        });
+      }
+
+      // Write temp MCP config file — use the bundled single-file MCP server
+      const thisDir = path.dirname(fileURLToPath(import.meta.url));
+      let mcpServerPath = path.join(thisDir, '..', 'mcp-server.cjs');
+
+      // In packaged builds, asar-unpacked files live in app.asar.unpacked/
+      if (mcpServerPath.includes('/app.asar/')) {
+        mcpServerPath = mcpServerPath.replace('/app.asar/', '/app.asar.unpacked/');
+      }
+      const serverUrl = getMCPRemoteServerUrl(remoteServer.port, args.dockerContainerName);
+
+      // Docker+coordinator: copy the MCP server script into the mounted worktree/project path
+      // so it is accessible inside the container.
+      if (args.dockerContainerName) {
+        const dockerMcpServerPath = getDockerMcpServerDestPath(args.worktreePath, args.projectRoot);
+        fs.mkdirSync(path.dirname(dockerMcpServerPath), { recursive: true });
+        fs.copyFileSync(mcpServerPath, dockerMcpServerPath);
+        mcpServerPath = dockerMcpServerPath;
+        coordinator.setDockerContainerName(args.coordinatorTaskId, args.dockerContainerName);
+        console.warn('[MCP] Docker mode: copied MCP server to', dockerMcpServerPath);
+        // Keep .parallel-code/ out of git status in the sub-task worktree
+        const wtRoot = args.worktreePath ?? args.projectRoot;
+        const gitignorePath = path.join(wtRoot, '.gitignore');
+        try {
+          const existing = fs.existsSync(gitignorePath)
+            ? fs.readFileSync(gitignorePath, 'utf-8')
+            : '';
+          if (!existing.includes('.parallel-code/')) {
+            fs.appendFileSync(
+              gitignorePath,
+              `${existing.endsWith('\n') || existing === '' ? '' : '\n'}.parallel-code/\n`,
+            );
+          }
+        } catch {
+          // best-effort — don't block MCP startup over a gitignore write
+        }
+      } else {
+        coordinator.setDockerContainerName(args.coordinatorTaskId, null);
+      }
+
+      coordinator.setMCPServerInfo(
+        args.coordinatorTaskId,
+        serverUrl,
+        remoteServer.token,
+        mcpServerPath,
+      );
+      coordinator.setCoordinatorSpawnDefaults(
+        args.coordinatorTaskId,
+        args.agentCommand ?? 'claude',
+        args.agentArgs ?? [],
+      );
+
+      const mcpConfig = {
+        mcpServers: {
+          'parallel-code': {
+            type: 'stdio' as const,
+            command: 'node',
+            args: [
+              mcpServerPath,
+              '--url',
+              serverUrl,
+              '--token',
+              remoteServer.token,
+              '--coordinator-id',
+              args.coordinatorTaskId,
+              ...(args.skipPermissions && args.propagateSkipPermissions
+                ? ['--skip-permissions']
+                : []),
+            ],
+          },
+        },
+      };
+
+      const configJson = JSON.stringify(mcpConfig, null, 2);
+
+      // In docker mode the coordinator agent auto-discovers .mcp.json in the project root.
+      // No host-temp configPath needed.
+      let configPath: string | undefined;
+      if (!args.dockerContainerName) {
+        configPath = path.join(
+          app.getPath('temp'),
+          `parallel-code-mcp-${args.coordinatorTaskId}.json`,
+        );
+        fs.writeFileSync(configPath, configJson, { mode: 0o600 });
+      }
+
+      // Write .mcp.json for auto-discovery. The Docker container mounts the same
+      // worktree/project path as the host, so the same helper works for both modes:
+      // worktree → write to worktree, direct mode → write to project root.
+      const mcpJsonDir = selectMcpJsonDir(args.worktreePath, args.projectRoot);
+      if (mcpJsonDir) {
+        const worktreeMcpPath = path.join(mcpJsonDir, '.mcp.json');
+        fs.writeFileSync(worktreeMcpPath, configJson, { mode: 0o600 });
+
+        // Append to .git/info/exclude (local-only gitignore, not committed)
+        try {
+          const gitDir = path.join(mcpJsonDir, '.git');
+          let infoDir: string;
+          if (fs.statSync(gitDir).isFile()) {
+            const gitFileContent = fs.readFileSync(gitDir, 'utf-8').trim();
+            const realGitDir = gitFileContent.replace(/^gitdir:\s*/, '');
+            infoDir = path.join(
+              path.isAbsolute(realGitDir) ? realGitDir : path.resolve(mcpJsonDir, realGitDir),
+              'info',
+            );
+          } else {
+            infoDir = path.join(gitDir, 'info');
+          }
+          fs.mkdirSync(infoDir, { recursive: true });
+          const excludePath = path.join(infoDir, 'exclude');
+          const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, 'utf-8') : '';
+          if (!existing.includes('.mcp.json')) {
+            fs.appendFileSync(
+              excludePath,
+              '\n# Parallel Code MCP config (contains ephemeral token)\n.mcp.json\n',
+            );
+          }
+        } catch (err) {
+          console.warn('[MCP] Could not git-exclude .mcp.json:', err);
+        }
+
+        console.warn('[MCP] .mcp.json written to:', worktreeMcpPath);
+      }
+
+      if (configPath) console.warn('[MCP] Config written to:', configPath);
+      console.warn('[MCP] Server path:', mcpServerPath);
+      console.warn('[MCP] Remote URL:', serverUrl);
+
+      return {
+        configPath,
+        serverUrl,
+        token: remoteServer.token,
+        port: remoteServer.port,
+      };
+    },
+  );
 
   ipcMain.handle(IPC.StopMCPServer, async () => {
     // The MCP server process is spawned by Claude Code (via --mcp-config),

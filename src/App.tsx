@@ -328,25 +328,42 @@ function App() {
 
     // Rewrite MCP config files for persisted coordinator tasks so the new
     // session's port/token are in effect before any agent resumes.
+    // Docker coordinator tasks have no persisted mcpConfigPath (their .mcp.json
+    // lives in the worktree, not a temp file), but they still need StartMCPServer
+    // called so the remote server starts and the container name is registered.
+    const mcpRestorePromises: Promise<unknown>[] = [];
     for (const taskId of store.taskOrder) {
       const task = store.tasks[taskId];
-      if (!task?.coordinatorMode || !task.mcpConfigPath) continue;
+      if (!task?.coordinatorMode) continue;
       const projectRoot = store.projects.find((p) => p.id === task.projectId)?.path;
       if (!projectRoot) continue;
       const agentDef = task.agentIds[0] ? store.agents[task.agentIds[0]]?.def : undefined;
-      invoke(IPC.StartMCPServer, {
-        coordinatorTaskId: task.id,
-        projectId: task.projectId,
-        projectRoot,
-        worktreePath: task.gitIsolation === 'worktree' ? task.worktreePath : undefined,
-        skipPermissions: task.skipPermissions ?? false,
-        propagateSkipPermissions: false,
-        agentCommand: agentDef?.command ?? 'claude',
-        agentArgs: agentDef?.args ?? [],
-      }).catch((err) => {
-        console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
-      });
+      // Reconstruct Docker container name from the coordinator's PTY agent id.
+      // The container may be dead after restart, but this wires up docker exec for sub-tasks
+      // when the user manually restarts the coordinator agent.
+      const dockerContainerName =
+        task.dockerMode && task.agentIds[0]
+          ? `parallel-code-${task.agentIds[0].slice(0, 12)}`
+          : undefined;
+      mcpRestorePromises.push(
+        invoke(IPC.StartMCPServer, {
+          coordinatorTaskId: task.id,
+          projectId: task.projectId,
+          projectRoot,
+          worktreePath: task.gitIsolation === 'worktree' ? task.worktreePath : undefined,
+          skipPermissions: task.skipPermissions ?? false,
+          propagateSkipPermissions: false,
+          agentCommand: agentDef?.command ?? 'claude',
+          agentArgs: agentDef?.args ?? [],
+          dockerContainerName,
+        }).catch((err) => {
+          console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
+        }),
+      );
     }
+    // Wait for all coordinators to register before hydrating their children —
+    // hydrateTask() needs the coordinator entry to exist in the backend registry.
+    await Promise.allSettled(mcpRestorePromises);
 
     // Hydrate backend coordinator task registry with persisted child tasks so MCP
     // tools (list_tasks, send_prompt, close_task, etc.) work after app restart.

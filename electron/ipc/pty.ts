@@ -140,6 +140,32 @@ export function validateCommand(command: string): void {
   }
 }
 
+/** Returns `-v mainGitDir:mainGitDir` mount args so git works inside the container.
+ *  Walks up from startPath to find the .git file (worktrees may be nested directories). */
+function resolveWorktreeGitDirMount(startPath: string): string[] {
+  try {
+    let dir = startPath;
+    while (true) {
+      const gitFile = path.join(dir, '.git');
+      if (fs.existsSync(gitFile)) {
+        if (!fs.statSync(gitFile).isFile()) return []; // real .git dir, no extra mount needed
+        const content = fs.readFileSync(gitFile, 'utf8').trim();
+        const match = content.match(/^gitdir:\s*(.+)$/m);
+        if (!match) return [];
+        // gitdir points to e.g. /repo/.git/worktrees/name — go up two levels to get /repo/.git
+        const mainGitDir = path.resolve(match[1].trim(), '..', '..');
+        if (!fs.existsSync(mainGitDir)) return [];
+        return ['-v', `${mainGitDir}:${mainGitDir}`];
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) return []; // filesystem root
+      dir = parent;
+    }
+  } catch {
+    return [];
+  }
+}
+
 export function spawnAgent(
   win: BrowserWindow,
   args: {
@@ -156,6 +182,9 @@ export function spawnAgent(
     dockerImage?: string;
     shareDockerAgentAuth?: boolean;
     attachExisting?: boolean;
+    /** When true (coordinator tasks), also mount the parent of cwd so sub-task
+     *  worktrees created later are immediately visible inside the container. */
+    dockerMountWorktreeParent?: boolean;
     onOutput: { __CHANNEL_ID__: string };
   },
 ): void {
@@ -280,7 +309,14 @@ export function spawnAgent(
       // Run as host user so container files are owned by the host user
       '--user',
       `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
-      // Mount the project directory as the only writable volume
+      // Mount the coordinator worktree. For coordinator tasks, also mount the
+      // parent directory so sub-task worktrees created later are immediately
+      // visible via bind mount (VirtioFS propagation is too slow for new dirs).
+      // Also mount the main .git directory so git commands work inside the
+      // container (worktree .git files point to the main git dir by path).
+      ...(args.dockerMountWorktreeParent
+        ? ['-v', `${path.dirname(cwd)}:${path.dirname(cwd)}`, ...resolveWorktreeGitDirMount(cwd)]
+        : []),
       '-v',
       `${cwd}:${cwd}`,
       '-w',
@@ -291,7 +327,7 @@ export function spawnAgent(
       '-e',
       `HOME=${DOCKER_CONTAINER_HOME}`,
       // Mount SSH and git config read-only for git operations
-      ...buildDockerCredentialMounts(args.command, args.shareDockerAgentAuth === true),
+      ...buildDockerCredentialMounts(args.command, args.shareDockerAgentAuth === true, cwd),
       image,
       command,
       ...args.args,
@@ -617,6 +653,12 @@ const DOCKER_ENV_BLOCK_LIST = new Set([
   'SSH_AUTH_SOCK',
   'GPG_AGENT_INFO',
   'KUBECONFIG',
+  // macOS-specific temp dir (/var/folders/…) does not exist in Linux containers.
+  // Shell init scripts and tools that use $TMPDIR will fail to mkdir on Linux.
+  'TMPDIR',
+  'TEMPDIR',
+  'TMP',
+  'TEMP',
 ]);
 
 /** Returns true for env var names that should be blocked from Docker forwarding. */
@@ -655,7 +697,43 @@ const AGENT_CONFIG_FILES: Record<string, string[]> = {
   claude: ['.claude.json'],
 };
 
-function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boolean): string[] {
+function seedClaudeProjectTrust(hostFile: string, worktreePath: string): void {
+  let config: Record<string, unknown> = {};
+  if (fs.existsSync(hostFile) && fs.statSync(hostFile).size > 0) {
+    try {
+      config = JSON.parse(fs.readFileSync(hostFile, 'utf8')) as Record<string, unknown>;
+    } catch {
+      console.warn(`[docker-auth] Could not parse ${hostFile}, skipping Claude trust seed`);
+      return;
+    }
+  }
+
+  const projects =
+    config.projects && typeof config.projects === 'object' && !Array.isArray(config.projects)
+      ? (config.projects as Record<string, Record<string, unknown>>)
+      : {};
+  const existing =
+    projects[worktreePath] &&
+    typeof projects[worktreePath] === 'object' &&
+    !Array.isArray(projects[worktreePath])
+      ? projects[worktreePath]
+      : {};
+
+  projects[worktreePath] = {
+    ...existing,
+    hasTrustDialogAccepted: true,
+    hasCompletedProjectOnboarding: true,
+  };
+  config.projects = projects;
+
+  fs.writeFileSync(hostFile, JSON.stringify(config, null, 2), { mode: 0o600 });
+}
+
+function buildDockerCredentialMounts(
+  agentCommand: string,
+  shareAgentAuth: boolean,
+  worktreePath: string,
+): string[] {
   const mounts: string[] = [];
   const home = process.env.HOME;
   if (!home) return mounts;
@@ -716,6 +794,9 @@ function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boole
         fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
         if (!fs.existsSync(hostFile) || fs.statSync(hostFile).size === 0) {
           fs.writeFileSync(hostFile, '{}', { mode: 0o600 });
+        }
+        if (baseCommand === 'claude' && relFile === '.claude.json') {
+          seedClaudeProjectTrust(hostFile, worktreePath);
         }
         mounts.push('-v', `${hostFile}:${DOCKER_CONTAINER_HOME}/${relFile}`);
       } catch {
@@ -830,28 +911,27 @@ export async function dockerImageExists(
     return false;
   }
 
+  // Docker Desktop's containerd image store breaks `docker image inspect <tag>` —
+  // tag-based inspection fails even when the image exists. Work around by fetching
+  // the image ID via `docker image ls --filter` first, then inspecting by ID.
+  const imageId = await new Promise<string | null>((resolve) => {
+    execFile(
+      'docker',
+      ['image', 'ls', '--filter', `reference=${image}`, '--format', '{{.ID}}'],
+      { encoding: 'utf8', timeout: 5000 },
+      (err, stdout) => resolve(err ? null : stdout.trim() || null),
+    );
+  });
+
+  if (!imageId) return false;
+  if (!expectedHash) return true;
+
   return new Promise((resolve) => {
     execFile(
       'docker',
-      [
-        'image',
-        'inspect',
-        '--format',
-        `{{index .Config.Labels "${DOCKERFILE_HASH_LABEL}"}}`,
-        image,
-      ],
+      ['inspect', '--format', `{{index .Config.Labels "${DOCKERFILE_HASH_LABEL}"}}`, imageId],
       { encoding: 'utf8', timeout: 5000 },
-      (err, stdout) => {
-        if (err) {
-          resolve(false);
-          return;
-        }
-        if (!expectedHash) {
-          resolve(true);
-          return;
-        }
-        resolve(stdout.trim() === expectedHash);
-      },
+      (err, stdout) => resolve(!err && stdout.trim() === expectedHash),
     );
   });
 }

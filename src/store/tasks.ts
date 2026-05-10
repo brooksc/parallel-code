@@ -203,6 +203,11 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
       }).catch((err) => console.warn('[MCP] Failed to register coordinator:', err));
     } catch (err) {
       console.warn('[MCP] Failed to start MCP server for coordinator:', err);
+      // Clean up worktree so we don't leave a dangling branch
+      if (gitIsolation === 'worktree') {
+        invoke(IPC.RemoveArenaWorktree, { projectRoot, branchName }).catch(() => {});
+      }
+      throw err;
     }
   }
 
@@ -352,26 +357,12 @@ export async function closeTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.closingStatus === 'closing' || task.closingStatus === 'removing') return;
 
-  // If this is a coordinator, unparent all children first
-  if (task.coordinatorMode) {
-    const children = getCoordinatorChildren(taskId);
-    const allChildIds = [...children.active, ...children.collapsed];
-    if (allChildIds.length > 0) {
-      setStore(
-        produce((s) => {
-          for (const childId of allChildIds) {
-            if (s.tasks[childId]) {
-              s.tasks[childId].coordinatedBy = undefined;
-              // Unlock the textarea — control bar disappears when coordinatedBy
-              // is cleared, so the task must also be unlocked.
-              s.tasks[childId].controlledBy = undefined;
-            }
-          }
-        }),
-      );
-    }
-    invoke(IPC.MCP_CoordinatorDeregistered, { coordinatorTaskId: taskId }).catch(() => {});
-  }
+  const childIdsToDetach: string[] = task.coordinatorMode
+    ? (() => {
+        const children = getCoordinatorChildren(taskId);
+        return [...children.active, ...children.collapsed];
+      })()
+    : [];
 
   const agentIds = [...task.agentIds];
   const shellAgentIds = [...task.shellAgentIds];
@@ -409,7 +400,33 @@ export async function closeTask(taskId: string): Promise<void> {
       });
     }
 
-    // Backend cleanup succeeded — remove from UI
+    // Agents are dead — deregister the coordinator so no more MCP tool calls succeed.
+    // Done after kills (not before) so a failed close leaves the backend registered
+    // and the coordinator agent can still make tool calls until it's actually gone.
+    if (task.coordinatorMode) {
+      invoke(IPC.MCP_CoordinatorDeregistered, { coordinatorTaskId: taskId }).catch(() => {});
+    }
+
+    // Backend cleanup succeeded — detach children then remove coordinator from UI.
+    if (childIdsToDetach.length > 0) {
+      setStore(
+        produce((s) => {
+          for (const childId of childIdsToDetach) {
+            if (s.tasks[childId]) {
+              s.tasks[childId].coordinatedBy = undefined;
+              // Unlock the textarea — control bar disappears when coordinatedBy
+              // is cleared, so the task must also be unlocked.
+              s.tasks[childId].controlledBy = undefined;
+              // Clear stale coordinator wiring — the backend registry no longer
+              // knows about these tasks, so MCP tools would fail.
+              s.tasks[childId].mcpConfigPath = undefined;
+              s.tasks[childId].signalDoneReceived = undefined;
+              s.tasks[childId].needsReview = undefined;
+            }
+          }
+        }),
+      );
+    }
     removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
   } catch (err) {
     // Backend cleanup failed — show error, allow retry
@@ -982,6 +999,7 @@ export function initMCPListeners(): () => void {
 
       setStore(
         produce((s) => {
+          if (s.tasks[evt.taskId]) return; // idempotent — ignore duplicate events
           s.tasks[evt.taskId] = task;
           s.agents[evt.agentId] = agent;
           s.taskOrder.push(evt.taskId);

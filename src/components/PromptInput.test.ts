@@ -20,6 +20,7 @@ describe('processAutoFireTick — controlledBy: human', () => {
       staged,
       now: pastNow,
       controlledBy: 'human',
+      questionActive: false,
       tail: noPromptTail,
       currentMissCount: 0,
     });
@@ -33,10 +34,78 @@ describe('processAutoFireTick — controlledBy: human', () => {
       staged,
       now: pastNow,
       controlledBy: 'human',
+      questionActive: false,
       tail: promptTail,
       currentMissCount: 0,
     });
     expect(result.outcome).toBe('paused');
+  });
+});
+
+describe('processAutoFireTick — questionActive suppresses autofire', () => {
+  it('returns paused when questionActive is true, even with a ❯ in the tail', () => {
+    const result = processAutoFireTick({
+      staged,
+      now: pastNow,
+      controlledBy: 'coordinator',
+      questionActive: true,
+      tail: promptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('paused');
+  });
+
+  it('fires normally when questionActive is false and ❯ is visible', () => {
+    const result = processAutoFireTick({
+      staged,
+      now: pastNow,
+      controlledBy: 'coordinator',
+      questionActive: false,
+      tail: promptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('fire');
+  });
+});
+
+describe('processAutoFireTick — dialog-like tails (item 2: initial prompt never fires into dialogs)', () => {
+  it('returns no-prompt when tail contains [Y/n] but no ❯ marker', () => {
+    const result = processAutoFireTick({
+      staged,
+      now: pastNow,
+      controlledBy: 'coordinator',
+      questionActive: false,
+      tail: 'Do you want to proceed? [Y/n]',
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('no-prompt');
+  });
+
+  it('returns fire when tail has ❯ even if it appears in a dialog — caller must check questionActive', () => {
+    // processAutoFireTick itself cannot distinguish dialog ❯ from agent prompt ❯.
+    // Protection against firing into dialogs is enforced at the PromptInput call site
+    // via the questionActive() guard (lines ~604 of PromptInput.tsx).
+    const result = processAutoFireTick({
+      staged,
+      now: pastNow,
+      controlledBy: 'coordinator',
+      questionActive: false,
+      tail: '  ❯ Yes\n    No',
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('fire');
+  });
+
+  it('returns no-prompt for a Claude trust dialog lacking the prompt marker', () => {
+    const result = processAutoFireTick({
+      staged,
+      now: pastNow,
+      controlledBy: 'coordinator',
+      questionActive: false,
+      tail: 'Do you trust the files in this folder? (y/n)',
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('no-prompt');
   });
 });
 
@@ -46,6 +115,7 @@ describe('processAutoFireTick — controlledBy reverts to coordinator', () => {
       staged,
       now: pastNow,
       controlledBy: 'coordinator',
+      questionActive: false,
       tail: noPromptTail,
       currentMissCount: 0,
     });
@@ -61,6 +131,7 @@ describe('processAutoFireTick — controlledBy reverts to coordinator', () => {
       staged,
       now: pastNow,
       controlledBy: 'coordinator',
+      questionActive: false,
       tail: noPromptTail,
       currentMissCount: 3,
     });
@@ -74,6 +145,7 @@ describe('processAutoFireTick — controlledBy reverts to coordinator', () => {
       staged,
       now: pastNow,
       controlledBy: 'coordinator',
+      questionActive: false,
       tail: promptTail,
       currentMissCount: 2,
     });
@@ -85,6 +157,7 @@ describe('processAutoFireTick — controlledBy reverts to coordinator', () => {
       staged,
       now: pastNow,
       controlledBy: undefined,
+      questionActive: false,
       tail: promptTail,
       currentMissCount: 0,
     });

@@ -75,8 +75,7 @@ export async function saveState(): Promise<void> {
         : undefined,
     shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
     coordinatorModeEnabled: store.coordinatorModeEnabled || undefined,
-    coordinatorControlHintCount:
-      store.coordinatorControlHintCount > 0 ? store.coordinatorControlHintCount : undefined,
+    coordinatorControlHintDismissed: store.coordinatorControlHintDismissed || undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -280,7 +279,7 @@ interface LegacyPersistedState {
   coordinatorNotificationDelayMs?: unknown;
   shareDockerAgentAuth?: unknown;
   coordinatorModeEnabled?: unknown;
-  coordinatorControlHintCount?: unknown;
+  coordinatorControlHintDismissed?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -433,11 +432,7 @@ export async function loadState(): Promise<void> {
 
       s.coordinatorModeEnabled = raw.coordinatorModeEnabled === true;
 
-      const rawHintCount = raw.coordinatorControlHintCount;
-      s.coordinatorControlHintCount =
-        typeof rawHintCount === 'number' && Number.isFinite(rawHintCount) && rawHintCount >= 0
-          ? Math.floor(rawHintCount)
-          : 0;
+      s.coordinatorControlHintDismissed = raw.coordinatorControlHintDismissed === true;
 
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =

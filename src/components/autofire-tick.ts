@@ -17,6 +17,7 @@ export function processAutoFireTick(params: {
   staged: StagedNotification;
   now: number;
   controlledBy: 'coordinator' | 'human' | undefined;
+  questionActive: boolean;
   tail: string;
   currentMissCount: number;
 }): AutoFireTickResult {
@@ -27,6 +28,12 @@ export function processAutoFireTick(params: {
   // Human has taken control — pause without counting misses so the counter
   // doesn't accumulate while the human is typing.
   if (params.controlledBy === 'human') {
+    return { outcome: 'paused' };
+  }
+
+  // A question/dialog is active — the ❯ visible in the TUI is a selection
+  // cursor, not the agent prompt. Pause to avoid sending into the dialog.
+  if (params.questionActive) {
     return { outcome: 'paused' };
   }
 

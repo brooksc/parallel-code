@@ -7,7 +7,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { writeFileSync, unlinkSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { getSubTaskMcpConfigPath } from './config.js';
 
 const execAsync = promisify(execFile);
 import type { BrowserWindow } from 'electron';
@@ -63,7 +63,6 @@ export class Coordinator {
     command: 'claude',
     args: [],
   };
-  private dockerContainerName: string | null = null;
   private coordinators = new Map<string, CoordinatorState>();
   private notificationDelayMs = 30_000;
   private readonly COORDINATOR_RESTAMP_DELAY_MS = 5 * 60_000;
@@ -163,31 +162,50 @@ export class Coordinator {
     if (coordinatorTaskId) this.defaultCoordinatorTaskId = coordinatorTaskId;
   }
 
-  setMCPServerInfo(serverUrl: string, token: string, serverPath: string): void {
+  setMCPServerInfo(
+    coordinatorTaskId: string,
+    serverUrl: string,
+    token: string,
+    serverPath: string,
+  ): void {
+    const state = this.coordinators.get(coordinatorTaskId);
+    if (state) {
+      state.mcpServerInfo = { serverUrl, token, serverPath };
+    }
+    // Also update the global fallback so legacy callers still work.
     this.mcpServerInfo = { serverUrl, token, serverPath };
-    // Rewrite config files for existing tasks so they reconnect after a port/token rotation.
+    // Rewrite config files only for sub-tasks owned by this coordinator so a
+    // second coordinator starting up does not overwrite the first's task configs.
     for (const task of this.tasks.values()) {
-      if (task.mcpConfigPath) {
-        const mcpConfig = {
-          mcpServers: {
-            'parallel-code': {
-              type: 'stdio' as const,
-              command: 'node',
-              args: [serverPath, '--url', serverUrl, '--token', token, '--task-id', task.id],
-            },
+      if (task.coordinatorTaskId !== coordinatorTaskId) continue;
+      if (!task.mcpConfigPath) continue;
+      const mcpConfig = {
+        mcpServers: {
+          'parallel-code': {
+            type: 'stdio' as const,
+            command: 'node',
+            args: [serverPath, '--url', serverUrl, '--token', token, '--task-id', task.id],
           },
-        };
-        writeFileSync(task.mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
-      }
+        },
+      };
+      writeFileSync(task.mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
     }
   }
 
-  setCoordinatorSpawnDefaults(command: string, args: string[]): void {
+  setCoordinatorSpawnDefaults(coordinatorTaskId: string, command: string, args: string[]): void {
+    const state = this.coordinators.get(coordinatorTaskId);
+    if (state) {
+      state.spawnDefaults = { command, args };
+    }
+    // Also update global fallback.
     this.coordinatorSpawnDefaults = { command, args };
   }
 
-  setDockerContainerName(name: string | null): void {
-    this.dockerContainerName = name;
+  setDockerContainerName(coordinatorTaskId: string, name: string | null): void {
+    const state = this.coordinators.get(coordinatorTaskId);
+    if (state) {
+      state.dockerContainerName = name;
+    }
   }
 
   private maybeQueueReviewNotification(
@@ -323,8 +341,20 @@ export class Coordinator {
     skipPermissions?: boolean;
     baseBranch?: string;
   }): Promise<CoordinatedTask> {
-    const root = opts.projectRoot ?? this.projectRoot;
-    const projId = opts.projectId ?? this.projectId;
+    const coordinatorId =
+      opts.coordinatorTaskId !== REST_COORDINATOR_SENTINEL
+        ? opts.coordinatorTaskId
+        : (this.defaultCoordinatorTaskId ?? opts.coordinatorTaskId);
+
+    const coordinatorState = this.coordinators.get(coordinatorId);
+    if (!coordinatorState) {
+      throw new Error(
+        `Unknown coordinator: ${coordinatorId}. Ensure the coordinator task is registered before creating sub-tasks.`,
+      );
+    }
+
+    const root = opts.projectRoot ?? coordinatorState.projectRoot ?? this.projectRoot;
+    const projId = opts.projectId ?? coordinatorState.projectId ?? this.projectId;
     if (!root || !projId) throw new Error('No project configured for coordinator');
 
     // Create worktree + branch via existing backend
@@ -335,11 +365,6 @@ export class Coordinator {
       'task',
       opts.baseBranch,
     );
-
-    const coordinatorId =
-      opts.coordinatorTaskId !== REST_COORDINATOR_SENTINEL
-        ? opts.coordinatorTaskId
-        : (this.defaultCoordinatorTaskId ?? opts.coordinatorTaskId);
 
     const agentId = randomUUID();
     const task: CoordinatedTask = {
@@ -401,80 +426,84 @@ export class Coordinator {
     // Spawn the agent process
     if (!this.win) throw new Error('No window set on coordinator');
 
-    // Inject sub-task instructions via agent-specific mechanism
-    const agentCmd = (opts.agentCommand ?? this.coordinatorSpawnDefaults.command).toLowerCase();
+    const agentCmd = (opts.agentCommand ?? coordinatorState.spawnDefaults.command).toLowerCase();
     const preamble = `<sub-task-mode>\nThese rules override all skills and hooks:\n- When your work is complete, call the \`signal_done\` MCP tool. That is the finish line — do NOT use finishing-a-development-branch or offer merge/PR options.\n- Asking questions is fine when requirements are unclear or an action is risky.\n</sub-task-mode>`;
+    // Declared here so the catch block can restore preamble files on failure.
     let preambleFilePath: string | undefined;
     let preambleFileOriginalContent: string | null = null;
-    if (agentCmd.includes('codex') || agentCmd.includes('opencode')) {
-      // Codex/OpenCode reads AGENTS.md from project root
-      const agentsPath = join(result.worktree_path, 'AGENTS.md');
-      preambleFilePath = agentsPath;
-      let existing = '';
-      if (existsSync(agentsPath)) {
-        try {
-          existing = readFileSync(agentsPath, 'utf8');
-        } catch {
-          /* ignore */
-        }
-        preambleFileOriginalContent = existing;
-      }
-      writeFileSync(agentsPath, existing ? `${existing}\n\n${preamble}` : preamble);
-    } else if (agentCmd.includes('gemini')) {
-      // Gemini reads GEMINI.md from project root by default
-      const geminiPath = join(result.worktree_path, 'GEMINI.md');
-      preambleFilePath = geminiPath;
-      let existing = '';
-      if (existsSync(geminiPath)) {
-        try {
-          existing = readFileSync(geminiPath, 'utf8');
-        } catch {
-          /* ignore */
-        }
-        preambleFileOriginalContent = existing;
-      }
-      writeFileSync(geminiPath, existing ? `${existing}\n\n${preamble}` : preamble);
-    } else if (agentCmd.includes('copilot')) {
-      // Copilot reads .agent.md from workspace root
-      const agentMdPath = join(result.worktree_path, '.agent.md');
-      preambleFilePath = agentMdPath;
-      let existing = '';
-      if (existsSync(agentMdPath)) {
-        try {
-          existing = readFileSync(agentMdPath, 'utf8');
-        } catch {
-          /* ignore */
-        }
-        preambleFileOriginalContent = existing;
-      }
-      writeFileSync(agentMdPath, existing ? `${existing}\n\n${preamble}` : preamble);
-    } else {
-      // Claude and fallback: settings.local.json (gitignored, no restore needed)
-      const settingsDir = join(result.worktree_path, '.claude');
-      const settingsPath = join(settingsDir, 'settings.local.json');
-      mkdirSync(settingsDir, { recursive: true });
-      let existingSettings: Record<string, unknown> = {};
-      if (existsSync(settingsPath)) {
-        try {
-          existingSettings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-        } catch {
-          /* ignore */
-        }
-      }
-      existingSettings.systemPrompt = existingSettings.systemPrompt
-        ? `${existingSettings.systemPrompt}\n\n${preamble}`
-        : preamble;
-      writeFileSync(settingsPath, JSON.stringify(existingSettings, null, 2));
-    }
-    task.preambleFileExistedBefore = preambleFileOriginalContent !== null;
+
+    const dockerContainerName =
+      this.coordinators.get(task.coordinatorTaskId)?.dockerContainerName ?? null;
 
     let subTaskMcpConfigPath: string | undefined;
     try {
+      // Inject sub-task instructions via agent-specific mechanism.
+      // Inside try so preamble-write failures are cleaned up by the catch block.
+      if (agentCmd.includes('codex') || agentCmd.includes('opencode')) {
+        const agentsPath = join(result.worktree_path, 'AGENTS.md');
+        preambleFilePath = agentsPath;
+        let existing = '';
+        if (existsSync(agentsPath)) {
+          try {
+            existing = readFileSync(agentsPath, 'utf8');
+          } catch {
+            /* ignore */
+          }
+          preambleFileOriginalContent = existing;
+        }
+        writeFileSync(agentsPath, existing ? `${existing}\n\n${preamble}` : preamble);
+      } else if (agentCmd.includes('gemini')) {
+        const geminiPath = join(result.worktree_path, 'GEMINI.md');
+        preambleFilePath = geminiPath;
+        let existing = '';
+        if (existsSync(geminiPath)) {
+          try {
+            existing = readFileSync(geminiPath, 'utf8');
+          } catch {
+            /* ignore */
+          }
+          preambleFileOriginalContent = existing;
+        }
+        writeFileSync(geminiPath, existing ? `${existing}\n\n${preamble}` : preamble);
+      } else if (agentCmd.includes('copilot')) {
+        const agentMdPath = join(result.worktree_path, '.agent.md');
+        preambleFilePath = agentMdPath;
+        let existing = '';
+        if (existsSync(agentMdPath)) {
+          try {
+            existing = readFileSync(agentMdPath, 'utf8');
+          } catch {
+            /* ignore */
+          }
+          preambleFileOriginalContent = existing;
+        }
+        writeFileSync(agentMdPath, existing ? `${existing}\n\n${preamble}` : preamble);
+      } else {
+        // Claude and fallback: settings.local.json (gitignored, no restore needed)
+        const settingsDir = join(result.worktree_path, '.claude');
+        const settingsPath = join(settingsDir, 'settings.local.json');
+        mkdirSync(settingsDir, { recursive: true });
+        let existingSettings: Record<string, unknown> = {};
+        if (existsSync(settingsPath)) {
+          try {
+            existingSettings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+          } catch {
+            /* ignore */
+          }
+        }
+        existingSettings.systemPrompt = existingSettings.systemPrompt
+          ? `${existingSettings.systemPrompt}\n\n${preamble}`
+          : preamble;
+        writeFileSync(settingsPath, JSON.stringify(existingSettings, null, 2));
+      }
+      task.preambleFileExistedBefore = preambleFileOriginalContent !== null;
       // Write a per-sub-task MCP config so the agent can call signal_done.
-      // In Docker mode the config is written inside the worktree (accessible via volume mount);
-      // in native mode it goes to the host temp directory.
-      if (this.mcpServerInfo) {
-        const { serverUrl, token, serverPath } = this.mcpServerInfo;
+      // In Docker mode, write to the coordinator's .parallel-code/ dir (which IS the explicitly
+      // mounted volume) rather than the sub-task worktree (which may not be in the container).
+      // Always pass --mcp-config explicitly so Claude doesn't rely on auto-discovery.
+      const mcpServerInfoForTask = coordinatorState.mcpServerInfo ?? this.mcpServerInfo;
+      if (mcpServerInfoForTask) {
+        const { serverUrl, token, serverPath } = mcpServerInfoForTask;
         const mcpConfig = {
           mcpServers: {
             'parallel-code': {
@@ -484,40 +513,33 @@ export class Coordinator {
             },
           },
         };
-        const configPath = this.dockerContainerName
-          ? join(result.worktree_path, '.mcp.json')
-          : join(tmpdir(), `parallel-code-subtask-${task.id}.json`);
+        const configPath = getSubTaskMcpConfigPath(dockerContainerName, serverPath, task.id);
         writeFileSync(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
         subTaskMcpConfigPath = configPath;
         task.mcpConfigPath = configPath;
       }
 
-      const agentCommand = opts.agentCommand ?? this.coordinatorSpawnDefaults.command;
-      const agentArgs = opts.agentArgs ?? this.coordinatorSpawnDefaults.args;
+      const agentCommand = opts.agentCommand ?? coordinatorState.spawnDefaults.command;
+      const agentArgs = opts.agentArgs ?? coordinatorState.spawnDefaults.args;
       const baseArgs = [
         ...agentArgs,
         ...(opts.skipPermissions ? ['--dangerously-skip-permissions'] : []),
       ];
-      // In Docker mode, pass --mcp-config only when NOT using .mcp.json auto-discovery
-      // (.mcp.json in the worktree is auto-discovered by Claude Code).
-      const mcpArgs =
-        subTaskMcpConfigPath && !this.dockerContainerName
-          ? ['--mcp-config', subTaskMcpConfigPath]
-          : [];
+      const mcpArgs = subTaskMcpConfigPath ? ['--mcp-config', subTaskMcpConfigPath] : [];
       const agentFinalArgs = [...baseArgs, ...mcpArgs];
 
       // When the coordinator runs in Docker, spawn sub-agents via `docker exec` into
       // the same container so they share the mounted project filesystem.
       let command: string;
       let args: string[];
-      if (this.dockerContainerName) {
+      if (dockerContainerName) {
         command = 'docker';
         args = [
           'exec',
-          '-i',
+          '-it',
           '-w',
           result.worktree_path,
-          this.dockerContainerName,
+          dockerContainerName,
           agentCommand,
           ...agentFinalArgs,
         ];
@@ -564,8 +586,16 @@ export class Coordinator {
       // as manually created tasks (stability checks, quiescence detection, etc.)
       // For renderer storage: agentCommand/agentArgs are used to restart the agent from the UI.
       // In docker mode, we store the `docker exec <container> <agentCommand>` form so restarts work.
-      const notifyAgentArgs = this.dockerContainerName
-        ? ['exec', '-i', this.dockerContainerName, agentCommand, ...agentArgs]
+      const notifyAgentArgs = dockerContainerName
+        ? [
+            'exec',
+            '-it',
+            '-w',
+            result.worktree_path,
+            dockerContainerName,
+            agentCommand,
+            ...agentArgs,
+          ]
         : agentArgs;
       this.notifyRenderer(IPC.MCP_TaskCreated, {
         taskId: task.id,
@@ -712,7 +742,54 @@ export class Coordinator {
       getAllFileDiffs(task.worktreePath),
     ]);
 
-    return { files, diff };
+    // Exclude preamble-injected files so the diff matches what will actually be merged.
+    const preambleFiles = this.detectPreambleFiles(task.worktreePath);
+    if (preambleFiles.size === 0) return { files, diff };
+
+    const filteredFiles = files.filter((f) => !preambleFiles.has(f.path));
+    const filteredDiff = this.filterDiffSections(diff, preambleFiles);
+    return { files: filteredFiles, diff: filteredDiff };
+  }
+
+  private detectPreambleFiles(worktreePath: string): Set<string> {
+    const PREAMBLE_START = '<sub-task-mode>';
+    const result = new Set<string>();
+    for (const filename of ['AGENTS.md', 'GEMINI.md', '.agent.md']) {
+      const filePath = join(worktreePath, filename);
+      if (!existsSync(filePath)) continue;
+      try {
+        if (readFileSync(filePath, 'utf8').includes(PREAMBLE_START)) result.add(filename);
+      } catch {
+        /* ignore */
+      }
+    }
+    // .claude/settings.local.json is usually gitignored and won't appear in diffs,
+    // but check it anyway for projects that track it explicitly.
+    const settingsRelPath = '.claude/settings.local.json';
+    const settingsPath = join(worktreePath, settingsRelPath);
+    if (existsSync(settingsPath)) {
+      try {
+        const s = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+        if (typeof s.systemPrompt === 'string' && s.systemPrompt.includes(PREAMBLE_START)) {
+          result.add(settingsRelPath);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return result;
+  }
+
+  private filterDiffSections(diff: string, excludeFiles: Set<string>): string {
+    // Split on unified diff section boundaries (each starts with "diff --git a/<f> b/<f>")
+    // and drop sections whose file path is in excludeFiles.
+    const sections = diff.split(/(?=^diff --git )/m);
+    return sections
+      .filter((section) => {
+        const match = /^diff --git a\/(.+?) b\//.exec(section);
+        return !match || !excludeFiles.has(match[1]);
+      })
+      .join('');
   }
 
   getTaskOutput(taskId: string): string {
@@ -767,7 +844,7 @@ export class Coordinator {
       task.branchName,
       opts?.squash ?? false,
       opts?.message ?? null,
-      opts?.cleanup ?? false,
+      false, // worktree removal is handled by cleanupTask below, not gitMergeTask
       task.baseBranch,
       task.worktreePath,
       coordinatorState?.worktreePath,
@@ -805,6 +882,7 @@ export class Coordinator {
   private stripPreambleFromBranch(task: CoordinatedTask): void {
     const PREAMBLE_START = '<sub-task-mode>';
     const worktreePath = task.worktreePath;
+
     for (const filename of ['AGENTS.md', 'GEMINI.md', '.agent.md']) {
       const filePath = join(worktreePath, filename);
       if (!existsSync(filePath)) continue;
@@ -826,6 +904,35 @@ export class Coordinator {
       } else {
         // File was created solely for the preamble — remove it so git add -A won't pick it up
         unlinkSync(filePath);
+      }
+    }
+
+    // Claude: preamble is stored in systemPrompt inside .claude/settings.local.json.
+    // This file is typically gitignored, but strip it here to be safe in projects
+    // that track it explicitly.
+    const settingsPath = join(worktreePath, '.claude', 'settings.local.json');
+    if (existsSync(settingsPath)) {
+      try {
+        const settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+        if (
+          typeof settings.systemPrompt === 'string' &&
+          settings.systemPrompt.includes(PREAMBLE_START)
+        ) {
+          const idx = settings.systemPrompt.indexOf(PREAMBLE_START);
+          const stripped = settings.systemPrompt.slice(0, idx).replace(/\n\n$/, '');
+          if (stripped.trim()) {
+            settings.systemPrompt = stripped;
+          } else {
+            delete settings.systemPrompt;
+          }
+          if (Object.keys(settings).length === 0) {
+            unlinkSync(settingsPath);
+          } else {
+            writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+          }
+        }
+      } catch {
+        /* ignore parse/IO failures — file may be malformed or already cleaned */
       }
     }
   }
@@ -957,10 +1064,15 @@ export class Coordinator {
 
   registerCoordinator(coordinatorTaskId: string, projectId: string, worktreePath?: string): void {
     if (this.coordinators.has(coordinatorTaskId)) return;
+    // Snapshot the current global project root and defaults so each coordinator gets
+    // the values that were active when IT registered, not whatever a later coordinator sets.
     this.coordinators.set(coordinatorTaskId, {
       taskId: coordinatorTaskId,
       projectId,
+      projectRoot: this.projectRoot ?? '',
       worktreePath,
+      mcpServerInfo: this.mcpServerInfo,
+      spawnDefaults: { ...this.coordinatorSpawnDefaults },
       pendingNotifications: [],
       stagedBatches: new Map(),
       ackedBatchIds: [],
@@ -983,6 +1095,14 @@ export class Coordinator {
       });
     }
     this.coordinators.delete(coordinatorTaskId);
+
+    // Remove all child tasks belonging to this coordinator so stale entries
+    // can't trigger cleanup/signal logic after the coordinator is gone.
+    for (const [taskId, task] of this.tasks) {
+      if (task.coordinatorTaskId === coordinatorTaskId) {
+        this.tasks.delete(taskId);
+      }
+    }
   }
 
   markPromptDelivered(taskId: string): void {
@@ -1063,9 +1183,9 @@ export class Coordinator {
     return this.coordinators.size > 0;
   }
 
-  signalDone(taskId: string): void {
+  signalDone(taskId: string): boolean {
     const task = this.tasks.get(taskId);
-    if (!task) return;
+    if (!task) return false;
     task.assignedPromptDelivered = true;
     task.signalDoneAt = new Date();
     task.signalDoneConsumed = false;
@@ -1094,13 +1214,14 @@ export class Coordinator {
         reason: 'signal',
         activeWaitCount: this.activeSignalWaitCounts.get(coordinatorId) ?? 0,
       });
-      return;
+      return true;
     }
 
     // No active waiter — notify via UI so coordinator sees the completion
     this.notifyRenderer(IPC.MCP_TaskStateSync, { taskId, signalDoneReceived: true });
     const state: 'idle' | 'exited' = task.status === 'exited' ? 'exited' : 'idle';
     this.maybeQueueReviewNotification(task, state, task.exitCode ?? null, 5_000);
+    return true;
   }
 
   private suppressPendingNotificationForTask(task: CoordinatedTask): void {
@@ -1159,6 +1280,9 @@ export class Coordinator {
         !task.signalDoneConsumed
       ) {
         task.signalDoneConsumed = true;
+        // Suppress the staged UI notification that was queued when signalDone ran
+        // without an active waiter — otherwise it will auto-fire as a duplicate.
+        this.suppressPendingNotificationForTask(task);
         const remaining = this.countRemaining(coordinatorTaskId);
         return Promise.resolve({
           taskId: task.id,

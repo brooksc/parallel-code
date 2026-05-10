@@ -43,7 +43,14 @@ export interface PendingNotification {
 export interface CoordinatorState {
   taskId: string;
   projectId: string;
+  projectRoot: string;
   worktreePath?: string;
+  /** Docker container name for this coordinator, used to spawn sub-tasks via `docker exec`. */
+  dockerContainerName?: string | null;
+  /** Per-coordinator MCP server info; set after the remote server starts. */
+  mcpServerInfo: { serverUrl: string; token: string; serverPath: string } | null;
+  /** Per-coordinator agent spawn defaults; set when the coordinator registers. */
+  spawnDefaults: { command: string; args: string[] };
   pendingNotifications: PendingNotification[];
   /** batchId → array of pendingNotification IDs included in that batch */
   stagedBatches: Map<string, string[]>;

@@ -52,6 +52,12 @@ function persistedSnapshot(): string {
               externalWorktree: t.externalWorktree,
               savedInitialPrompt: t.savedInitialPrompt,
               collapsed: t.collapsed,
+              coordinatedBy: t.coordinatedBy,
+              coordinatorMode: t.coordinatorMode,
+              mcpConfigPath: t.mcpConfigPath,
+              signalDoneReceived: t.signalDoneReceived,
+              needsReview: t.needsReview,
+              controlledBy: t.controlledBy,
             },
           ];
         }),

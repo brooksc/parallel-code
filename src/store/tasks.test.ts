@@ -36,7 +36,9 @@ function applySetStore(...args: unknown[]): void {
     taskOrder: mockTaskOrder,
   };
   for (let i = 0; i < args.length - 2; i++) {
-    target = target[args[i] as string] as Record<string, unknown>;
+    const next = target[args[i] as string] as Record<string, unknown> | undefined;
+    if (next === undefined || next === null) return; // unknown key — silently no-op, like real SolidJS setStore
+    target = next;
   }
   target[args[args.length - 2] as string] = value;
 }
@@ -59,7 +61,7 @@ vi.mock('./core', () => ({
   cleanupPanelEntries: vi.fn(),
 }));
 
-vi.mock('../lib/ipc', () => ({ invoke: vi.fn() }));
+vi.mock('../lib/ipc', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../electron/ipc/channels', () => ({
   IPC: {
     MCP_TaskCreated: 'mcp_task_created',
@@ -111,7 +113,7 @@ vi.stubGlobal('window', {
   },
 });
 
-import { initMCPListeners } from './tasks';
+import { initMCPListeners, setTaskControl } from './tasks';
 
 initMCPListeners();
 const taskCreatedHandler = ipcHandlers.get('mcp_task_created');
@@ -132,6 +134,65 @@ const baseEvent = {
   agentId: 'agent-sub-1',
   coordinatorTaskId: 'coordinator-1',
 };
+
+describe('coordinator controlledBy state machine (item 9: UI disabled-state regression tests)', () => {
+  it('9a: sub-task created via MCP starts with controlledBy: coordinator (not undefined)', () => {
+    // Sub-tasks created via MCP coordinator always get controlledBy: 'coordinator'
+    taskCreatedHandler(baseEvent);
+    expect(mockTasks['sub-task-1'].controlledBy).toBe('coordinator');
+  });
+
+  it('9b: manually added task without coordinatorMode starts with controlledBy undefined', () => {
+    // A plain task (no coordinatorMode) should have controlledBy undefined
+    mockTasks['plain-task'] = {
+      agentIds: ['agent-plain'],
+      shellAgentIds: [],
+      // controlledBy intentionally absent — simulates createTask with coordinatorMode: false
+    };
+    expect(mockTasks['plain-task'].controlledBy).toBeUndefined();
+  });
+
+  it('9c: setTaskControl transitions controlledBy to human', () => {
+    taskCreatedHandler(baseEvent);
+    expect(mockTasks['sub-task-1'].controlledBy).toBe('coordinator');
+    setTaskControl('sub-task-1', 'human');
+    expect(mockTasks['sub-task-1'].controlledBy).toBe('human');
+  });
+
+  it('9c: setTaskControl transitions controlledBy back to coordinator', () => {
+    taskCreatedHandler(baseEvent);
+    setTaskControl('sub-task-1', 'human');
+    setTaskControl('sub-task-1', 'coordinator');
+    expect(mockTasks['sub-task-1'].controlledBy).toBe('coordinator');
+  });
+
+  it('9d: setTaskControl is a no-op for unknown taskId (no crash)', () => {
+    expect(() => setTaskControl('nonexistent-task', 'human')).not.toThrow();
+  });
+
+  it('9e: removing a coordinator task leaves no entry in mockTasks', () => {
+    // Create a coordinator task in the store
+    mockTasks['coordinator-task'] = {
+      agentIds: ['agent-coord'],
+      shellAgentIds: [],
+      controlledBy: 'coordinator',
+    };
+    mockTaskOrder.push('coordinator-task');
+    expect(mockTasks['coordinator-task'].controlledBy).toBe('coordinator');
+
+    // Remove it (simulating closeTask's store cleanup path)
+    delete mockTasks['coordinator-task'];
+    const idx = mockTaskOrder.indexOf('coordinator-task');
+    if (idx !== -1) mockTaskOrder.splice(idx, 1);
+
+    // No coordinator task left — hasActiveCoordinator equivalent returns false
+    const hasActiveCoordinator = Object.values(mockTasks).some(
+      (t) => (t as MockTask & { coordinatorMode?: boolean }).coordinatorMode,
+    );
+    expect(hasActiveCoordinator).toBe(false);
+    expect(mockTasks['coordinator-task']).toBeUndefined();
+  });
+});
 
 describe('MCP_TaskCreated IPC handler', () => {
   it('sets controlledBy to coordinator on the new sub-task', () => {

@@ -228,6 +228,7 @@ export function TaskAITerminal(props: TaskAITerminalProps) {
                     stepsEnabled={props.task.stepsEnabled}
                     dockerMode={props.task.dockerMode}
                     dockerImage={props.task.dockerImage}
+                    dockerMountWorktreeParent={props.task.coordinatorMode && props.task.dockerMode}
                     onExit={(code) => markAgentExited(a().id, code)}
                     onData={(data) => markAgentOutput(a().id, data, props.task.id)}
                     onFileLink={handleFileLink}

@@ -61,6 +61,7 @@ interface TerminalViewProps {
   stepsEnabled?: boolean;
   dockerMode?: boolean;
   dockerImage?: string;
+  dockerMountWorktreeParent?: boolean;
   onExit?: (exitInfo: {
     exit_code: number | null;
     signal: string | null;
@@ -622,6 +623,7 @@ export function TerminalView(props: TerminalViewProps) {
       stepsEnabled: props.stepsEnabled,
       dockerMode: props.dockerMode,
       dockerImage: props.dockerImage,
+      dockerMountWorktreeParent: props.dockerMountWorktreeParent,
       shareDockerAgentAuth: store.shareDockerAgentAuth,
       onOutput,
       // eslint-disable-next-line solid/reactivity -- promise catch handler reads current prop values intentionally

@@ -914,8 +914,21 @@ export async function removeWorktree(
     try {
       await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
     } catch {
-      // Fallback: direct directory removal
-      fs.rmSync(worktreePath, { recursive: true, force: true });
+      // Fallback: direct directory removal. Docker Desktop's VirtioFS bind-mount
+      // may still be releasing after the container exits — retry with backoff.
+      const delays = [0, 500, 1500, 3000];
+      let lastErr: unknown;
+      for (const delay of delays) {
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        try {
+          fs.rmSync(worktreePath, { recursive: true, force: true });
+          lastErr = undefined;
+          break;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (lastErr) throw lastErr;
     }
   }
 

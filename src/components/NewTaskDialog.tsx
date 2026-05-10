@@ -64,6 +64,7 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
   } | null>(null);
   const [coordinatorMode, setCoordinatorMode] = createSignal(false);
   const [propagateSkipPermissions, setPropagateSkipPermissions] = createSignal(false);
+  const [maxConcurrentTasks, setMaxConcurrentTasks] = createSignal(3);
   const hasActiveCoordinator = () =>
     Object.values(store.tasks).some(
       (t) => t.coordinatorMode && !t.closingStatus && t.projectId === selectedProjectId(),
@@ -541,6 +542,7 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
           : undefined,
         coordinatorMode: coordinatorMode() || undefined,
         propagateSkipPermissions: coordinatorMode() ? propagateSkipPermissions() : undefined,
+        maxConcurrentTasks: coordinatorMode() ? maxConcurrentTasks() : undefined,
       });
       // Drop flow: prefill prompt without auto-sending
       if (isFromDrop && p) {
@@ -1104,6 +1106,37 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
                   This agent will be able to create tasks, send prompts, and merge branches
                   automatically via MCP tools. The remote server will be started automatically.
                 </div>
+                <label
+                  style={{
+                    display: 'flex',
+                    'align-items': 'center',
+                    gap: '8px',
+                    'font-size': '13px',
+                    color: theme.fg,
+                    'padding-left': '4px',
+                  }}
+                >
+                  Max concurrent sub-tasks:
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={maxConcurrentTasks()}
+                    onInput={(e) => {
+                      const v = parseInt(e.currentTarget.value, 10);
+                      if (!isNaN(v) && v >= 1) setMaxConcurrentTasks(v);
+                    }}
+                    style={{
+                      width: '60px',
+                      background: theme.bgInput,
+                      color: theme.fg,
+                      border: `1px solid ${theme.border}`,
+                      'border-radius': '6px',
+                      padding: '4px 8px',
+                      'font-size': '13px',
+                    }}
+                  />
+                </label>
                 <Show when={agentSupportsSkipPermissions() && skipPermissions()}>
                   <label
                     style={{

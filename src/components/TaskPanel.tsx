@@ -81,10 +81,8 @@ export function TaskPanel(props: TaskPanelProps) {
   function maybeShowControlHint() {
     if (!props.task.coordinatorMode) return;
     if (props.task.controlledBy === 'human') return;
-    if (store.coordinatorControlHintCount >= 3) return;
+    if (store.coordinatorControlHintDismissed) return;
     setShowControlHint(true);
-    setStore('coordinatorControlHintCount', (c) => c + 1);
-    void saveState();
     clearTimeout(controlHintTimer);
     controlHintTimer = setTimeout(() => setShowControlHint(false), 4_000);
   }
@@ -313,6 +311,7 @@ export function TaskPanel(props: TaskPanelProps) {
         taskId={props.task.id}
         agentId={firstAgentId()}
         coordinatedBy={props.task.coordinatedBy}
+        coordinatorMode={props.task.coordinatorMode}
         controlledBy={props.task.controlledBy}
         stagedNotification={props.task.stagedNotification}
         initialPrompt={props.task.initialPrompt}
@@ -453,7 +452,10 @@ export function TaskPanel(props: TaskPanelProps) {
                   'font-size': '12px',
                   color: theme.accent,
                 }}
-                onClick={() => setTaskControl(props.task.id, 'human')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setTaskControl(props.task.id, 'human');
+                }}
               >
                 Take Control
               </button>
@@ -480,7 +482,10 @@ export function TaskPanel(props: TaskPanelProps) {
                 'font-size': '12px',
                 color: 'rgba(0,0,0,0.75)',
               }}
-              onClick={() => setTaskControl(props.task.id, 'coordinator')}
+              onClick={(e) => {
+                e.stopPropagation();
+                setTaskControl(props.task.id, 'coordinator');
+              }}
             >
               Release Control
             </button>
@@ -522,7 +527,7 @@ export function TaskPanel(props: TaskPanelProps) {
                 type="checkbox"
                 onChange={(e) => {
                   if (e.currentTarget.checked) {
-                    setStore('coordinatorControlHintCount', 999);
+                    setStore('coordinatorControlHintDismissed', true);
                     void saveState();
                     setShowControlHint(false);
                   }

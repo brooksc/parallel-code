@@ -10,7 +10,7 @@ vi.mock('../lib/ipc', () => ({
   invoke: mockInvoke,
 }));
 
-import { loadState, resolveIncomingPanelUserSize } from './persistence';
+import { loadState, resolveIncomingPanelUserSize, saveState } from './persistence';
 import { setStore, store } from './core';
 
 function agentDef(overrides: Partial<AgentDef> = {}): AgentDef {
@@ -77,6 +77,7 @@ beforeEach(() => {
   setStore('activeAgentId', null);
   setStore('availableAgents', []);
   setStore('customAgents', []);
+  setStore('coordinatorControlHintDismissed', false);
 });
 
 describe('resolveIncomingPanelUserSize', () => {
@@ -191,5 +192,58 @@ describe('loadState agent definition migrations', () => {
     );
 
     expect(restored.skip_permissions_args).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
+  });
+});
+
+describe('coordinator control hint persistence', () => {
+  it('does not persist dismissed=false', async () => {
+    setStore('coordinatorControlHintDismissed', false);
+    mockInvoke.mockResolvedValueOnce(undefined);
+
+    await saveState();
+
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.coordinatorControlHintDismissed).toBeUndefined();
+  });
+
+  it('persists dismissed=true', async () => {
+    setStore('coordinatorControlHintDismissed', true);
+    mockInvoke.mockResolvedValueOnce(undefined);
+
+    await saveState();
+
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.coordinatorControlHintDismissed).toBe(true);
+  });
+
+  it('restores dismissed=true from saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+        coordinatorControlHintDismissed: true,
+      }),
+    );
+
+    await loadState();
+
+    expect(store.coordinatorControlHintDismissed).toBe(true);
+  });
+
+  it('defaults to false when not in saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+      }),
+    );
+
+    await loadState();
+
+    expect(store.coordinatorControlHintDismissed).toBe(false);
   });
 });

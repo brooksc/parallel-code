@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show, onMount, onCleanup, untrack } from 'solid-js';
+import { createSignal, createEffect, on, Show, onMount, onCleanup, untrack } from 'solid-js';
 import { fireAndForget, invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import {
@@ -21,9 +21,12 @@ import {
   setTaskFocusedPanel,
   setTaskLastInputAt,
   isPanelFocused,
+  setTaskControl,
+  showNotification,
 } from '../store/store';
 import { clearStagedNotification, setStagedNotificationUserEdited } from '../store/tasks';
 import { processAutoFireTick } from './autofire-tick';
+import { shouldHandoffCoordinatorQuestion } from './prompt-control';
 import type { StagedNotification } from '../store/types';
 import { debug, warn as logWarn } from '../lib/log';
 import { theme } from '../lib/theme';
@@ -38,6 +41,7 @@ interface PromptInputProps {
   taskId: string;
   agentId: string;
   coordinatedBy?: string;
+  coordinatorMode?: boolean;
   controlledBy?: 'human' | 'coordinator';
   stagedNotification?: StagedNotification;
   initialPrompt?: string;
@@ -99,7 +103,8 @@ export function PromptInput(props: PromptInputProps) {
       setTimeout(() => {
         if (textareaRef) {
           const domDisabled = textareaRef.disabled;
-          const expected = cb === 'coordinator';
+          // Match the actual disabled expression: coordinator-controlled OR question active
+          const expected = cb === 'coordinator' || questionActive();
           if (domDisabled !== expected) {
             logWarn('ctrl', 'textarea disabled mismatch — DOM vs expected', {
               domDisabled,
@@ -411,6 +416,7 @@ export function PromptInput(props: PromptInputProps) {
         staged,
         now: Date.now(),
         controlledBy: untrack(() => store.tasks[props.taskId]?.controlledBy),
+        questionActive: untrack(() => questionActive()),
         tail: stripAnsi(untrack(() => getAgentOutputTail(props.agentId))),
         currentMissCount: autoFirePromptMissCount,
       });
@@ -520,6 +526,28 @@ export function PromptInput(props: PromptInputProps) {
       setTaskFocusedPanel(props.taskId, 'ai-terminal');
     }
   });
+  createEffect(
+    on(
+      // eslint-disable-next-line solid/reactivity
+      [questionActive, () => props.controlledBy] as const,
+      ([active, controlledBy], prev) => {
+        const prevActive = prev?.[0] ?? false;
+        // Trigger only when the question becomes newly active (false→true).
+        // Do NOT re-take control when coordinator regains it while questionActive
+        // is still true — that fires when the user explicitly clicks Release Control
+        // but the tail buffer hasn't cleared yet, which immediately overrides them.
+        const questionJustActivated = active && !prevActive;
+        if (
+          questionJustActivated &&
+          shouldHandoffCoordinatorQuestion({ controlledBy, questionActive: active })
+        ) {
+          setTaskControl(props.taskId, 'human');
+          setTaskFocusedPanel(props.taskId, 'ai-terminal');
+          showNotification('Claude needs input. Answer in the terminal, then Release Control.');
+        }
+      },
+    ),
+  );
 
   let textareaRef: HTMLTextAreaElement | undefined;
 
