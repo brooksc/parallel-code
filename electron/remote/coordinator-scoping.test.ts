@@ -166,6 +166,77 @@ const del = (path: string, coordinatorId?: string) =>
 
 // --- Tests ---
 
+describe('lazy coordinator lookup — server started before coordinator exists', () => {
+  let stop: () => Promise<void>;
+  let token = '';
+  let port = 0;
+
+  afterEach(async () => {
+    await stop();
+  });
+
+  it('returns 503 when coordinator is null at request time, then works after coordinator is set', async () => {
+    let coord: Coordinator | null = null;
+
+    const srv = await startRemoteServer({
+      port: 0,
+      host: '0.0.0.0',
+      staticDir: '/nonexistent',
+      getTaskName: (id) => id,
+      getAgentStatus: () => ({ status: 'exited', exitCode: null, lastLine: '' }),
+      getCoordinator: () => coord,
+    });
+    token = srv.token;
+    port = srv.port;
+    stop = srv.stop;
+
+    const req = (method: string, path: string, body?: unknown) =>
+      new Promise<{ status: number; json: () => Promise<unknown> }>((resolve, reject) => {
+        const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        };
+        if (bodyStr) headers['Content-Length'] = String(Buffer.byteLength(bodyStr));
+        const r = http.request({ hostname: '127.0.0.1', port, path, method, headers }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => {
+            const raw = Buffer.concat(chunks).toString();
+            resolve({ status: res.statusCode ?? 0, json: () => Promise.resolve(JSON.parse(raw)) });
+          });
+        });
+        r.on('error', reject);
+        if (bodyStr) r.write(bodyStr);
+        r.end();
+      });
+
+    // Coordinator routes should return 503 when no coordinator is present
+    const before = await req('GET', '/api/tasks');
+    expect(before.status).toBe(503);
+    expect(await before.json()).toMatchObject({ error: 'coordinator not available' });
+
+    // POST /api/tasks should also return 503
+    const beforePost = await req('POST', '/api/tasks', { name: 'test' });
+    expect(beforePost.status).toBe(503);
+
+    // Non-coordinator routes (agents list) should still work
+    const agents = await req('GET', '/api/agents');
+    expect(agents.status).toBe(200);
+
+    // Set coordinator
+    coord = makeMockCoordinator();
+
+    // Now coordinator routes should work
+    const after = await req('GET', '/api/tasks');
+    expect(after.status).toBe(200);
+
+    // signal_done should work too
+    const done = await req('POST', `/api/tasks/${taskA.id}/done`, {});
+    expect(done.status).toBe(200);
+  });
+});
+
 describe('coordinator scoping', () => {
   let mockCoord: Coordinator;
 
