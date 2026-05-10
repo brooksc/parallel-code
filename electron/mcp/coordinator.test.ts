@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import os from 'os';
+import { join, dirname } from 'path';
 
 // --- fs / child_process mocks (must come before dynamic import) ---
 const mockWriteFileSync = vi.fn();
@@ -2399,6 +2401,273 @@ describe('Coordinator removeCoordinatedTask', () => {
     coordinator.removeCoordinatedTask('task-1');
 
     expect(vi.mocked(mockDeleteTask)).not.toHaveBeenCalled();
+  });
+});
+
+// ─── #33: Post-restart coordinator flow integration test ─────────────────────
+
+describe('Coordinator restart round-trip integration', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+  });
+
+  it('hydrateTask rewrites config with new subtaskToken (not coordinator token) when server info is already set', () => {
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3002',
+      'new-coordinator-secret',
+      'new-subtask-secret',
+      '/path/server.js',
+    );
+
+    const taskId = 'hydrated-restart-1';
+    const configPath = join(os.tmpdir(), `parallel-code-subtask-${taskId}.json`);
+
+    mockWriteFileSync.mockClear();
+    coordinator.hydrateTask({
+      id: taskId,
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId: 'agent-restart-1',
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: configPath,
+    });
+
+    const rewrite = mockWriteFileSync.mock.calls.find((c) => c[0] === configPath);
+    expect(rewrite).toBeDefined();
+    if (!rewrite) throw new Error('expected config rewrite');
+    const config = JSON.parse(rewrite[1] as string) as {
+      mcpServers: { 'parallel-code': { env: Record<string, string> } };
+    };
+    const writtenToken = config.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN'];
+    expect(writtenToken).toBe('new-subtask-secret');
+    expect(writtenToken).not.toBe('new-coordinator-secret');
+  });
+
+  it('waitForIdle resolves after agent output fires post-hydration', async () => {
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3002',
+      'new-coordinator-secret',
+      'new-subtask-secret',
+      '/path/server.js',
+    );
+
+    const taskId = 'hydrated-restart-2';
+    const agentId = 'agent-restart-2';
+    const configPath = join(os.tmpdir(), `parallel-code-subtask-${taskId}.json`);
+
+    coordinator.hydrateTask({
+      id: taskId,
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId,
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: configPath,
+    });
+
+    // Simulate agent respawn: task transitions from exited → running
+    const task = coordinator.getTask(taskId);
+    expect(task).toBeDefined();
+    if (!task) throw new Error('task not found after hydration');
+    task.status = 'running';
+
+    // Get the output callback registered during hydrateTask
+    const hydratedCb = mockSubscribeToAgent.mock.calls.find((c) => c[0] === agentId)?.[1] as
+      | ((encoded: string) => void)
+      | undefined;
+    expect(hydratedCb).toBeDefined();
+    if (!hydratedCb) throw new Error('hydrateTask did not subscribe to agent');
+
+    const waitPromise = coordinator.waitForIdle(taskId);
+    hydratedCb(encode('Work done ❯ '));
+    await expect(waitPromise).resolves.toEqual({ reason: 'idle' });
+  });
+});
+
+// ─── #36: hydrateTask mcpConfigPath directory scoping ────────────────────────
+
+describe('Coordinator hydrateTask — mcpConfigPath directory scoping', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtok',
+      '/srv/app/.parallel-code/mcp-server.js',
+    );
+  });
+
+  it('path traversal (../../etc/passwd-style) is rejected — mcpConfigPath is undefined, no config write', () => {
+    coordinator.hydrateTask({
+      id: 'task-traversal',
+      name: 'evil',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/evil',
+      worktreePath: '/tmp/evil',
+      agentId: 'agent-evil',
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: '../../etc/passwd',
+    });
+
+    expect(coordinator.getTask('task-traversal')?.mcpConfigPath).toBeUndefined();
+    const evilWrite = mockWriteFileSync.mock.calls.find((c) =>
+      (c[0] as string).includes('etc/passwd'),
+    );
+    expect(evilWrite).toBeUndefined();
+  });
+
+  it('right filename in wrong dir is rejected — mcpConfigPath is undefined', () => {
+    const taskId = 'task-wrong-dir';
+    coordinator.hydrateTask({
+      id: taskId,
+      name: 'wrong-dir',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/wrong-dir',
+      worktreePath: '/tmp/wrong-dir',
+      agentId: 'agent-wrong-dir',
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: `/tmp/evil/parallel-code-subtask-${taskId}.json`,
+    });
+
+    expect(coordinator.getTask(taskId)?.mcpConfigPath).toBeUndefined();
+  });
+
+  it('correct host tmpdir path is accepted and config write occurs', () => {
+    const taskId = 'task-valid-host';
+    const validPath = join(os.tmpdir(), `parallel-code-subtask-${taskId}.json`);
+
+    mockWriteFileSync.mockClear();
+    coordinator.hydrateTask({
+      id: taskId,
+      name: 'valid-host',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/valid-host',
+      worktreePath: '/tmp/valid-host',
+      agentId: 'agent-valid-host',
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: validPath,
+    });
+
+    expect(coordinator.getTask(taskId)?.mcpConfigPath).toBe(validPath);
+    const configWrite = mockWriteFileSync.mock.calls.find((c) => c[0] === validPath);
+    expect(configWrite).toBeDefined();
+  });
+
+  it('Docker mode: dirname(serverPath)/subtask-{id}.json is accepted and config write occurs', () => {
+    const taskId = 'task-valid-docker';
+    const serverPath = '/srv/app/.parallel-code/mcp-server.js';
+    const dockerPath = join(dirname(serverPath), `subtask-${taskId}.json`);
+
+    mockWriteFileSync.mockClear();
+    coordinator.hydrateTask({
+      id: taskId,
+      name: 'valid-docker',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/valid-docker',
+      worktreePath: '/tmp/valid-docker',
+      agentId: 'agent-valid-docker',
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: dockerPath,
+    });
+
+    expect(coordinator.getTask(taskId)?.mcpConfigPath).toBe(dockerPath);
+    const configWrite = mockWriteFileSync.mock.calls.find((c) => c[0] === dockerPath);
+    expect(configWrite).toBeDefined();
+  });
+
+  it('Docker mode: path in wrong dir is rejected — mcpConfigPath is undefined', () => {
+    const taskId = 'task-evil-docker';
+    const wrongPath = `/some/other/dir/subtask-${taskId}.json`;
+
+    coordinator.hydrateTask({
+      id: taskId,
+      name: 'evil-docker',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/evil-docker',
+      worktreePath: '/tmp/evil-docker',
+      agentId: 'agent-evil-docker',
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: wrongPath,
+    });
+
+    expect(coordinator.getTask(taskId)?.mcpConfigPath).toBeUndefined();
+  });
+});
+
+// ─── #39: Docker coordinator child-close isolation ────────────────────────────
+
+describe('Coordinator closeTask — per-task config isolation (two sub-tasks)', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
+  });
+
+  it('closing task-1 deletes only its config; task-2 config and task-2 entry are untouched', async () => {
+    mockCreateBackendTask
+      .mockResolvedValueOnce({ id: 'task-1', branch_name: 'task/a', worktree_path: '/tmp/a' })
+      .mockResolvedValueOnce({ id: 'task-2', branch_name: 'task/b', worktree_path: '/tmp/b' });
+
+    await coordinator.createTask({ name: 'task-one', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    await coordinator.createTask({ name: 'task-two', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const config1 = coordinator.getTask('task-1')?.mcpConfigPath;
+    const config2 = coordinator.getTask('task-2')?.mcpConfigPath;
+    expect(config1).toBeDefined();
+    expect(config2).toBeDefined();
+    expect(config1).not.toBe(config2);
+
+    mockUnlinkSync.mockClear();
+    await coordinator.closeTask('task-1');
+
+    // task-1's config was deleted
+    expect(mockUnlinkSync).toHaveBeenCalledWith(config1);
+    // task-2's config was NOT deleted
+    expect(mockUnlinkSync).not.toHaveBeenCalledWith(config2);
+
+    // task-2 is still present, task-1 is gone
+    const tasks = coordinator.listTasks();
+    expect(tasks.some((t) => t.id === 'task-2')).toBe(true);
+    expect(tasks.some((t) => t.id === 'task-1')).toBe(false);
   });
 });
 
