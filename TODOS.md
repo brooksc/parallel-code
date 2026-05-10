@@ -67,12 +67,6 @@
 **What's wrong:** Sub-agents spawned via `docker exec` are not marked `dockerMode` with a `containerName`. Killing the PTY stops the host `docker exec` client but may leave the inner agent process running inside the coordinator container.
 **Done when:** Docker-exec PTY sessions are marked with the coordinator `containerName` and a `SIGTERM` is sent to the inner process via `docker exec <container> kill <pid>` on cleanup.
 
-### 20. Claude trust seeding (.claude.json) has a read-modify-write race
-
-**File:** `electron/ipc/pty.ts:642`
-**What's wrong:** Two concurrent agent spawns can each read `.claude.json` before the other writes, dropping one spawn's trusted project entry.
-**Done when:** Writes use an atomic rename pattern or a per-file advisory lock.
-
 ### 25. Remote server started without coordinator routes when remote access precedes coordinator
 
 **File:** `electron/ipc/register.ts` (`StartRemoteServer`, `StartMCPServer`)
