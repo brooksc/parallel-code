@@ -73,12 +73,6 @@
 **What's wrong:** If remote access was enabled before any coordinator task exists, `coordinator` is `null` at `startRemoteServer` time and coordinator routes (`/api/tasks`, `signal_done`) are never registered. `StartMCPServer` reuses the existing server without adding the missing routes.
 **Done when:** Route handlers receive a mutable `getCoordinator()` callback so they look up the coordinator at request time, OR the server is restarted with the coordinator attached when `StartMCPServer` is called.
 
-### 28. `setTaskControl` is optimistic with no rollback
-
-**File:** `src/store/tasks.ts` (`setTaskControl`, ~line 1063)
-**What's wrong:** Updates frontend `controlledBy` before the `MCP_ControlChanged` IPC call completes. If IPC fails, UI shows wrong control state.
-**Done when:** IPC is awaited before committing UI state for sub-tasks, or previous value is restored on failure.
-
 ### 30. MCP remote server bind address — WAITING FOR REPO OWNER INPUT — DO NOT FIX
 
 > ⚠️ **DO NOT IMPLEMENT A SOLUTION HERE.** This item is parked pending a decision from the repo owner. Do not touch `electron/remote/server.ts` or `electron/ipc/register.ts` bind address logic.

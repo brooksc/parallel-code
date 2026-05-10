@@ -737,7 +737,12 @@ function seedClaudeProjectTrust(hostFile: string, worktreePath: string): void {
   };
   config.projects = projects;
 
-  fs.writeFileSync(hostFile, JSON.stringify(config, null, 2), { mode: 0o600 });
+  // Atomic write: write to a temp file first, then rename over the original.
+  // rename() is atomic on POSIX filesystems, so concurrent spawns won't corrupt
+  // each other's data even if both read before either writes.
+  const tmpFile = `${hostFile}.tmp.${process.pid}.${Date.now()}`;
+  fs.writeFileSync(tmpFile, JSON.stringify(config, null, 2), { mode: 0o600 });
+  fs.renameSync(tmpFile, hostFile);
 }
 
 function buildDockerCredentialMounts(
