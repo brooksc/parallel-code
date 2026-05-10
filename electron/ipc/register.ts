@@ -1126,6 +1126,16 @@ export function registerAllHandlers(win: BrowserWindow): void {
       async (_e, args: { coordinatorTaskId: string }) => {
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
         coordinator?.deregisterCoordinator(args.coordinatorTaskId);
+        // Clean up the host-temp MCP config file written by StartMCPServer (non-Docker only).
+        const tempConfigPath = path.join(
+          app.getPath('temp'),
+          `parallel-code-mcp-${args.coordinatorTaskId}.json`,
+        );
+        try {
+          fs.unlinkSync(tempConfigPath);
+        } catch {
+          /* file may not exist in Docker mode or after prior cleanup */
+        }
         // Stop the remote server when the last coordinator exits if:
         // - MCP started the server and user hasn't separately requested manual access, OR
         // - the user explicitly requested stop while coordinator was active (pendingStop)

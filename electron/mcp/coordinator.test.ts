@@ -3082,8 +3082,13 @@ describe('Coordinator getTaskDiff — preamble-bearing files', () => {
     );
 
     // AGENTS.md contains only the injected preamble block
+    const preambleContent = '<sub-task-mode>\nrules here\n</sub-task-mode>';
+    mockFsReadFile.mockImplementation(async (p: unknown) => {
+      if (String(p).includes('AGENTS.md')) return preambleContent;
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
     mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('AGENTS.md'));
-    mockReadFileSync.mockReturnValue('<sub-task-mode>\nrules here\n</sub-task-mode>');
+    mockReadFileSync.mockReturnValue(preambleContent);
 
     // git show: base was empty; git diff --no-index: no diff (normalized == base).
     // Note: git diff --no-index is called WITHOUT opts, so promisify places the callback
@@ -3124,6 +3129,10 @@ describe('Coordinator getTaskDiff — preamble-bearing files', () => {
     // Worktree: preamble block + user content after it
     const worktreeContent =
       '<sub-task-mode>\nrules\n</sub-task-mode>\n\n# User section added by sub-agent\n';
+    mockFsReadFile.mockImplementation(async (p: unknown) => {
+      if (String(p).includes('AGENTS.md')) return worktreeContent;
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
     mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('AGENTS.md'));
     mockReadFileSync.mockReturnValue(worktreeContent);
 
@@ -3174,6 +3183,10 @@ describe('Coordinator getTaskDiff — preamble-bearing files', () => {
 
     // Worktree: user content before preamble
     const worktreeContent = '# My custom heading\n\n<sub-task-mode>\nrules\n</sub-task-mode>\n';
+    mockFsReadFile.mockImplementation(async (p: unknown) => {
+      if (String(p).includes('AGENTS.md')) return worktreeContent;
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
     mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('AGENTS.md'));
     mockReadFileSync.mockReturnValue(worktreeContent);
 
@@ -3229,6 +3242,10 @@ describe('Coordinator getTaskDiff — preamble-bearing files', () => {
       null,
       2,
     );
+    mockFsReadFile.mockImplementation(async (p: unknown) => {
+      if (String(p).includes('settings.local.json')) return settingsContent;
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
     mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('settings.local.json'));
     mockReadFileSync.mockReturnValue(settingsContent);
 

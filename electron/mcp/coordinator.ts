@@ -800,16 +800,19 @@ export class Coordinator {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
-    const [files, diff, baseSha] = await Promise.all([
+    // Compute baseSha first so detectDiffBase/pinHead results are cached.
+    // getChangedFiles and getAllFileDiffs internally call the same helpers;
+    // running all three concurrently causes three simultaneous cache misses.
+    const baseSha = await getDiffBaseSha(task.worktreePath, task.baseBranch);
+    const [files, diff] = await Promise.all([
       getChangedFiles(task.worktreePath, task.baseBranch),
       getAllFileDiffs(task.worktreePath, task.baseBranch),
-      getDiffBaseSha(task.worktreePath, task.baseBranch),
     ]);
 
     // For preamble-bearing files: strip the injected block and show only real sub-task edits.
     // Files with no real changes beyond the preamble are excluded entirely.
     // Files with real changes (before or after the preamble block) include a normalized diff.
-    const preambleFiles = this.detectPreambleFiles(task.worktreePath);
+    const preambleFiles = await this.detectPreambleFiles(task.worktreePath);
 
     let filteredFiles = files;
     let filteredDiff = diff;
@@ -845,31 +848,28 @@ export class Coordinator {
     return { files: filteredFiles, diff: filteredDiff };
   }
 
-  private detectPreambleFiles(worktreePath: string): Set<string> {
+  private async detectPreambleFiles(worktreePath: string): Promise<Set<string>> {
     const PREAMBLE_START = '<sub-task-mode>';
     const result = new Set<string>();
-    for (const filename of ['AGENTS.md', 'GEMINI.md', '.agent.md']) {
-      const filePath = join(worktreePath, filename);
-      if (!existsSync(filePath)) continue;
-      try {
-        if (readFileSync(filePath, 'utf8').includes(PREAMBLE_START)) result.add(filename);
-      } catch {
-        /* ignore */
-      }
-    }
-    // .claude/settings.local.json is usually gitignored and won't appear in diffs,
-    // but check it anyway for projects that track it explicitly.
-    const settingsRelPath = '.claude/settings.local.json';
-    const settingsPath = join(worktreePath, settingsRelPath);
-    if (existsSync(settingsPath)) {
-      try {
-        const s = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
-        if (typeof s.systemPrompt === 'string' && s.systemPrompt.includes(PREAMBLE_START)) {
-          result.add(settingsRelPath);
+    await Promise.all(
+      ['AGENTS.md', 'GEMINI.md', '.agent.md'].map(async (filename) => {
+        try {
+          const content = await fsReadFile(join(worktreePath, filename), 'utf8');
+          if (content.includes(PREAMBLE_START)) result.add(filename);
+        } catch {
+          /* file absent or unreadable */
         }
-      } catch {
-        /* ignore */
+      }),
+    );
+    const settingsRelPath = '.claude/settings.local.json';
+    try {
+      const raw = await fsReadFile(join(worktreePath, settingsRelPath), 'utf8');
+      const s = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof s.systemPrompt === 'string' && s.systemPrompt.includes(PREAMBLE_START)) {
+        result.add(settingsRelPath);
       }
+    } catch {
+      /* file absent, unreadable, or malformed */
     }
     return result;
   }
@@ -1021,7 +1021,7 @@ export class Coordinator {
     // Strip injected preamble files before staging so they don't land in history,
     // then auto-commit any uncommitted changes in the task worktree before merging.
     if (task.worktreePath) {
-      this.stripPreambleFromBranch(task);
+      await this.stripPreambleFromBranch(task);
       try {
         await execAsync('git', ['add', '-A'], { cwd: task.worktreePath });
         await execAsync('git', ['commit', '-m', 'WIP: auto-commit before merge'], {
@@ -1126,56 +1126,54 @@ export class Coordinator {
     this.controlMap.delete(taskId);
   }
 
-  private stripPreambleFromBranch(task: CoordinatedTask): void {
+  private async stripPreambleFromBranch(task: CoordinatedTask): Promise<void> {
     const PREAMBLE_START = '<sub-task-mode>';
     const worktreePath = task.worktreePath;
 
-    for (const filename of ['AGENTS.md', 'GEMINI.md', '.agent.md']) {
-      const filePath = join(worktreePath, filename);
-      if (!existsSync(filePath)) continue;
-      let content: string;
-      try {
-        content = readFileSync(filePath, 'utf8');
-      } catch {
-        continue;
-      }
-      if (!content.includes(PREAMBLE_START)) continue;
-      const stripped = this.removePreambleBlock(content);
-      if (stripped.trim()) {
-        writeFileSync(filePath, stripped);
-      } else if (task.preambleFileExistedBefore) {
-        writeFileSync(filePath, stripped);
-      } else {
-        unlinkSync(filePath);
-      }
-    }
+    await Promise.all(
+      ['AGENTS.md', 'GEMINI.md', '.agent.md'].map(async (filename) => {
+        const filePath = join(worktreePath, filename);
+        let content: string;
+        try {
+          content = await fsReadFile(filePath, 'utf8');
+        } catch {
+          return;
+        }
+        if (!content.includes(PREAMBLE_START)) return;
+        const stripped = this.removePreambleBlock(content);
+        if (stripped.trim() || task.preambleFileExistedBefore) {
+          await fsWriteFile(filePath, stripped);
+        } else {
+          await fsUnlink(filePath);
+        }
+      }),
+    );
 
     // Claude: preamble is stored in systemPrompt inside .claude/settings.local.json.
-    // This file is typically gitignored, but strip it here to be safe in projects
-    // that track it explicitly.
     const settingsPath = join(worktreePath, '.claude', 'settings.local.json');
-    if (existsSync(settingsPath)) {
-      try {
-        const settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
-        if (
-          typeof settings.systemPrompt === 'string' &&
-          settings.systemPrompt.includes(PREAMBLE_START)
-        ) {
-          const stripped = this.removePreambleBlock(settings.systemPrompt);
-          if (stripped.trim()) {
-            settings.systemPrompt = stripped;
-          } else {
-            delete settings.systemPrompt;
-          }
-          if (Object.keys(settings).length === 0) {
-            unlinkSync(settingsPath);
-          } else {
-            writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-          }
+    try {
+      const settings = JSON.parse(await fsReadFile(settingsPath, 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      if (
+        typeof settings.systemPrompt === 'string' &&
+        settings.systemPrompt.includes(PREAMBLE_START)
+      ) {
+        const stripped = this.removePreambleBlock(settings.systemPrompt);
+        if (stripped.trim()) {
+          settings.systemPrompt = stripped;
+        } else {
+          delete settings.systemPrompt;
         }
-      } catch {
-        /* ignore parse/IO failures — file may be malformed or already cleaned */
+        if (Object.keys(settings).length === 0) {
+          await fsUnlink(settingsPath);
+        } else {
+          await fsWriteFile(settingsPath, JSON.stringify(settings, null, 2));
+        }
       }
+    } catch {
+      /* file absent, unreadable, or malformed */
     }
   }
 
