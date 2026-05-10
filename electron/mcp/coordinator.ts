@@ -237,6 +237,13 @@ export class Coordinator {
     }
   }
 
+  setDockerImage(coordinatorTaskId: string, image: string | null): void {
+    const state = this.coordinators.get(coordinatorTaskId);
+    if (state) {
+      state.dockerImage = image;
+    }
+  }
+
   private maybeQueueReviewNotification(
     task: CoordinatedTask,
     state: 'idle' | 'exited',
@@ -587,37 +594,30 @@ export class Coordinator {
       const mcpArgs = subTaskMcpConfigPath ? ['--mcp-config', subTaskMcpConfigPath] : [];
       const agentFinalArgs = [...baseArgs, ...mcpArgs];
 
-      // When the coordinator runs in Docker, spawn sub-agents via `docker exec` into
-      // the same container so they share the mounted project filesystem.
-      let command: string;
-      let args: string[];
-      if (dockerContainerName) {
-        command = 'docker';
-        args = [
-          'exec',
-          '-it',
-          '-w',
-          result.worktree_path,
-          dockerContainerName,
-          agentCommand,
-          ...agentFinalArgs,
-        ];
-      } else {
-        command = agentCommand;
-        args = agentFinalArgs;
-      }
-
+      // In Docker coordinator mode, each sub-task gets its own `docker run` container
+      // so HOME directories are isolated and cleanup is clean (`docker stop` on the
+      // sub-task container, rather than killing processes inside the coordinator).
       const channelId = randomUUID();
 
       spawnAgent(this.win, {
         taskId: task.id,
         agentId,
-        command,
-        args,
+        command: agentCommand,
+        args: agentFinalArgs,
         cwd: result.worktree_path,
         env: {},
         cols: 120,
         rows: 40,
+        ...(dockerContainerName
+          ? {
+              dockerMode: true,
+              dockerImage: coordinatorState.dockerImage ?? undefined,
+              // Mount parent dir so the sub-task can reach the coordinator's
+              // .parallel-code/ dir (which holds the per-sub-task MCP config).
+              // resolveWorktreeGitDirMount adds the main .git dir mount.
+              dockerMountWorktreeParent: true,
+            }
+          : {}),
         onOutput: { __CHANNEL_ID__: channelId },
       });
 
@@ -979,24 +979,9 @@ export class Coordinator {
       }
     }
 
-    // Kill the inner agent process still running inside the coordinator container.
-    // Uses the same cwd-based approach as cleanupTask to avoid killing sibling agents.
-    if (task.dockerContainerName) {
-      execFile(
-        'docker',
-        [
-          'exec',
-          task.dockerContainerName,
-          'sh',
-          '-c',
-          'for p in /proc/[0-9]*/cwd; do [ "$(readlink "$p" 2>/dev/null)" = "$1" ] && kill -TERM "$(basename "$(dirname "$p")")" 2>/dev/null; done',
-          '--',
-          task.worktreePath,
-        ],
-        { timeout: 5000 },
-        () => {},
-      );
-    }
+    // For Docker sub-tasks, the UI calls killAgent before removeCoordinatedTask,
+    // which stops the sub-task's own container via stopDockerContainer in pty.ts.
+    // No additional docker cleanup needed here.
 
     this.tasks.delete(taskId);
     this.blockedByHumanControl.delete(taskId);
@@ -1074,36 +1059,13 @@ export class Coordinator {
       this.subscribers.delete(task.agentId);
     }
 
-    // Kill the agent
+    // Kill the agent. For Docker sub-tasks, killAgent also calls docker stop on the
+    // sub-task's own container (via stopDockerContainer in pty.ts), which cleanly
+    // terminates the entire container rather than just the PTY client process.
     try {
       killAgent(task.agentId);
     } catch {
       /* already dead */
-    }
-
-    // When spawned via `docker exec`, killing the host PTY only stops the exec
-    // client. Best-effort: kill the inner agent process still running inside the
-    // coordinator container. Target only this task's process by matching its cwd
-    // (each sub-task has a unique worktree path) rather than pkill -f claude,
-    // which would terminate sibling sub-tasks and the coordinator itself.
-    if (task.dockerContainerName) {
-      try {
-        await execAsync(
-          'docker',
-          [
-            'exec',
-            task.dockerContainerName,
-            'sh',
-            '-c',
-            'for p in /proc/[0-9]*/cwd; do [ "$(readlink "$p" 2>/dev/null)" = "$1" ] && kill -TERM "$(basename "$(dirname "$p")")" 2>/dev/null; done',
-            '--',
-            task.worktreePath,
-          ],
-          { timeout: 5000 },
-        );
-      } catch {
-        // Inner process may have already exited — failure is expected and harmless.
-      }
     }
 
     // Remove worktree. If this fails, keep all coordinator state so the caller

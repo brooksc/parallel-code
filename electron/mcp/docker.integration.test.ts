@@ -14,6 +14,7 @@ import {
   selectMcpJsonDir,
   getDockerMcpServerDestPath,
   buildCoordinatorMCPConfig,
+  validateStartMCPServerArgs,
 } from '../ipc/register.js';
 
 const RUN_DOCKER_MCP_TEST = process.env.RUN_DOCKER_MCP_TEST === '1';
@@ -545,6 +546,48 @@ describeDocker('Layer 4 — Production-path coordinator Docker scenario', () => 
       await client.close();
     }
   }, 120_000);
+});
+
+// ─── Layer 1: Docker per-container sub-task architecture (#31) ───────────────
+//
+// No Docker required. Verifies that StartMCPServer args accept `dockerImage`
+// and that `getSubTaskMcpConfigPath` still returns a path in the coordinator's
+// .parallel-code/ dir (the only dir that is a mounted volume in both coordinator
+// and per-sub-task containers).
+
+describe('Docker per-container sub-tasks — StartMCPServer arg validation', () => {
+  it('validateStartMCPServerArgs accepts a valid dockerImage', () => {
+    expect(() =>
+      validateStartMCPServerArgs({
+        coordinatorTaskId: 'coord-1',
+        projectId: 'proj-1',
+        projectRoot: '/tmp/project',
+        dockerContainerName: 'parallel-code-abc123',
+        dockerImage: 'parallel-code-agent:latest',
+      }),
+    ).not.toThrow();
+  });
+
+  it('validateStartMCPServerArgs rejects a blank dockerImage', () => {
+    expect(() =>
+      validateStartMCPServerArgs({
+        coordinatorTaskId: 'coord-1',
+        projectId: 'proj-1',
+        projectRoot: '/tmp/project',
+        dockerImage: '   ',
+      }),
+    ).toThrow('dockerImage must not be blank');
+  });
+
+  it('sub-task MCP config path is in coordinator .parallel-code/ dir (a Docker volume), not the sub-task worktree', () => {
+    const coordWorktree = '/tmp/project/.worktrees/task/coord-abc';
+    const mcpServerPath = `${coordWorktree}/.parallel-code/mcp-server.cjs`;
+    const configPath = getSubTaskMcpConfigPath('parallel-code-coord-abc', mcpServerPath, 'sub-1');
+    // Must be inside the coordinator's .parallel-code/ dir
+    expect(configPath.startsWith(`${coordWorktree}/.parallel-code/`)).toBe(true);
+    // Must NOT be in a sub-task worktree (which is not a Docker volume)
+    expect(configPath).not.toContain('.worktrees/task/sub-');
+  });
 });
 
 // ─── .mcp.json placement logic tests (no Docker required) ────────────────────

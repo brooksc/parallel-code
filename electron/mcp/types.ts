@@ -20,9 +20,9 @@ export interface CoordinatedTask {
   // Coordinator notification lifecycle flags
   assignedPromptDelivered?: boolean;
   reviewNotificationQueued?: boolean;
-  /** When the coordinator runs in Docker, sub-tasks are spawned via `docker exec`.
-   *  Storing the container name here lets cleanupTask kill the inner process even
-   *  after the coordinator state is gone. */
+  /** Coordinator Docker container name. Set when the coordinator runs in Docker mode.
+   *  Sub-tasks each get their own `docker run` container; this is not used for spawning
+   *  sub-tasks but helps identify whether this task is part of a Docker coordinator. */
   dockerContainerName?: string | null;
 }
 
@@ -49,8 +49,10 @@ export interface CoordinatorState {
   projectId: string;
   projectRoot: string;
   worktreePath?: string;
-  /** Docker container name for this coordinator, used to spawn sub-tasks via `docker exec`. */
+  /** Docker container name for this coordinator (used for identification/cleanup, not for spawning sub-tasks). */
   dockerContainerName?: string | null;
+  /** Docker image used by this coordinator. Sub-tasks spawn their own containers using this same image. */
+  dockerImage?: string | null;
   /** Per-coordinator MCP server info; set after the remote server starts. */
   mcpServerInfo: {
     serverUrl: string;

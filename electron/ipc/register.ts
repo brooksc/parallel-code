@@ -178,6 +178,12 @@ export function validateStartMCPServerArgs(args: Record<string, unknown>): void 
       throw new Error('dockerContainerName contains invalid characters');
     }
   }
+  if (args.dockerImage !== undefined) {
+    assertString(args.dockerImage, 'dockerImage');
+    if (!(args.dockerImage as string).trim()) {
+      throw new Error('dockerImage must not be blank');
+    }
+  }
 }
 
 /** Reject relative paths that attempt directory traversal or are absolute. */
@@ -1281,6 +1287,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         agentCommand?: string;
         agentArgs?: string[];
         dockerContainerName?: string;
+        dockerImage?: string;
       },
     ) => {
       validateStartMCPServerArgs(args as unknown as Record<string, unknown>);
@@ -1335,6 +1342,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         fs.copyFileSync(mcpServerPath, dockerMcpServerPath);
         mcpServerPath = dockerMcpServerPath;
         coordinator.setDockerContainerName(args.coordinatorTaskId, args.dockerContainerName);
+        coordinator.setDockerImage(args.coordinatorTaskId, args.dockerImage ?? null);
         console.warn('[MCP] Docker mode: copied MCP server to', dockerMcpServerPath);
         // Keep .parallel-code/ out of git status in the sub-task worktree.
         // Use .git/info/exclude (local-only, never committed) to avoid dirtying

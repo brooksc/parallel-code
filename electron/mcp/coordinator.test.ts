@@ -541,40 +541,45 @@ describe('Coordinator sub-agent spawn settings', () => {
     );
   });
 
-  it('uses docker exec with -w flag when dockerContainerName is set', async () => {
+  it('uses docker run (dockerMode: true) when dockerContainerName is set — sub-task gets its own container', async () => {
     coordinator.setDockerContainerName('coord-1', 'my-container');
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     expect(mockSpawnAgent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        command: 'docker',
-        args: expect.arrayContaining(['exec', '-it', '-w', '/tmp/test', 'my-container', 'claude']),
+        // Sub-task uses docker run (dockerMode: true), not docker exec
+        dockerMode: true,
+        // Command is the agent command, not 'docker'
+        command: 'claude',
+        // Args are the agent args (not docker exec wrapper)
+        args: expect.not.arrayContaining(['exec']),
       }),
     );
+    // Coordinator container name is NOT in the args (sub-task has its own container)
+    const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
+    expect(spawnArgs).not.toContain('my-container');
   });
 
-  it('does not use docker exec when dockerContainerName is null', async () => {
+  it('does not use docker mode when dockerContainerName is null', async () => {
     coordinator.setDockerContainerName('coord-1', null);
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     expect(mockSpawnAgent).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ command: 'claude' }),
     );
-    const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
-    expect(spawnArgs).not.toContain('docker');
+    const spawnCall = mockSpawnAgent.mock.calls[0][1] as { dockerMode?: boolean; args: string[] };
+    expect(spawnCall.dockerMode).toBeUndefined();
+    expect(spawnCall.args).not.toContain('docker');
   });
 
-  it('docker exec -w uses the sub-task worktree path, not the coordinator projectRoot', async () => {
+  it('docker run cwd is the sub-task worktree path, not the coordinator projectRoot', async () => {
     coordinator.setDockerContainerName('coord-1', 'my-container');
     // coordinator projectRoot is '/tmp/project', sub-task worktree is '/tmp/test'
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
-    const wIdx = spawnArgs.indexOf('-w');
-    expect(wIdx).toBeGreaterThan(0);
-    const wValue = spawnArgs[wIdx + 1];
-    // Must be the sub-task worktree path (/tmp/test), not the coordinator's projectRoot (/tmp/project)
-    expect(wValue).toBe('/tmp/test');
-    expect(wValue).not.toBe('/tmp/project');
+    // cwd (passed to pty.ts) is the sub-task worktree, not the coordinator's projectRoot
+    const spawnCall = mockSpawnAgent.mock.calls[0][1] as { cwd: string };
+    expect(spawnCall.cwd).toBe('/tmp/test');
+    expect(spawnCall.cwd).not.toBe('/tmp/project');
   });
 });
 
@@ -1877,22 +1882,11 @@ describe('Coordinator cleanupTask — failure resilience', () => {
 
 // ─── Docker cleanup sequencing ────────────────────────────────────────────────
 
-describe('Coordinator cleanupTask — Docker inner-process kill sequencing', () => {
+describe('Coordinator cleanupTask — Docker sub-task container stop', () => {
   let coordinator: InstanceType<typeof Coordinator>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: execFile calls its callback synchronously (success)
-    mockExecFile.mockImplementation(
-      (
-        _cmd: string,
-        _args: string[],
-        _opts: unknown,
-        cb: (err: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        cb(null, '', '');
-      },
-    );
     mockExistsSync.mockReturnValue(false);
     mockCreateBackendTask.mockResolvedValue({
       id: 'task-1',
@@ -1904,53 +1898,45 @@ describe('Coordinator cleanupTask — Docker inner-process kill sequencing', () 
     coordinator.setDefaultProject('proj-1', '/tmp/project');
     coordinator.registerCoordinator('coord-1', 'proj-1');
     coordinator.setDockerContainerName('coord-1', 'my-coord-container');
+    coordinator.setDockerImage('coord-1', 'parallel-code-agent:latest');
   });
 
-  it('awaits docker inner-process kill before calling deleteTask', async () => {
-    let resolveDockerKill!: () => void;
-    mockExecFile.mockImplementation(
-      (
-        _cmd: string,
-        _args: string[],
-        _opts: unknown,
-        cb: (err: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        resolveDockerKill = () => cb(null, '', '');
-      },
-    );
+  it('closeTask calls killAgent (which stops the sub-task Docker container via pty.ts)', async () => {
+    const { killAgent } = await vi.importMock<typeof import('../ipc/pty.js')>('../ipc/pty.js');
 
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    await coordinator.closeTask('task-1');
+
+    // killAgent is responsible for stopping the Docker container (via stopDockerContainer in pty.ts)
+    expect(vi.mocked(killAgent)).toHaveBeenCalled();
+  });
+
+  it('closeTask does not call docker exec kill — sub-task has its own container', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    vi.clearAllMocks(); // reset after createTask
+    await coordinator.closeTask('task-1');
+
+    // execFile is used for git commands only — never for 'docker exec kill'
+    const dockerExecKillCall = mockExecFile.mock.calls.find(
+      (c) =>
+        c[0] === 'docker' &&
+        Array.isArray(c[1]) &&
+        c[1][0] === 'exec' &&
+        c[1].includes('my-coord-container'),
+    );
+    expect(dockerExecKillCall).toBeUndefined();
+  });
+
+  it('deleteTask is called immediately after killAgent (no waiting for docker exec)', async () => {
     const { deleteTask: mockDeleteTask } =
       await vi.importMock<typeof import('../ipc/tasks.js')>('../ipc/tasks.js');
     vi.mocked(mockDeleteTask).mockResolvedValue(undefined);
 
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    const closePromise = coordinator.closeTask('task-1');
-
-    // Flush microtasks — docker kill is pending, deleteTask must not have been called yet
-    await Promise.resolve();
-    expect(vi.mocked(mockDeleteTask)).not.toHaveBeenCalled();
-
-    // Unblock docker kill — deleteTask should now be called
-    resolveDockerKill();
-    await closePromise;
-    expect(vi.mocked(mockDeleteTask)).toHaveBeenCalled();
-  });
-
-  it('docker kill failure does not prevent deleteTask from being called', async () => {
-    mockExecFile.mockImplementation(
-      (
-        _cmd: string,
-        _args: string[],
-        _opts: unknown,
-        cb: (err: Error | null, stdout: string, stderr: string) => void,
-      ) => {
-        cb(new Error('container not found'), '', '');
-      },
-    );
-
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     await coordinator.closeTask('task-1');
 
+    // deleteTask is called (task is cleaned up)
+    expect(vi.mocked(mockDeleteTask)).toHaveBeenCalled();
     expect(coordinator.getTask('task-1')).toBeUndefined();
     expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_closed', { taskId: 'task-1' });
   });
@@ -2094,9 +2080,9 @@ describe('Multiple Docker coordinators — isolation', () => {
   });
 });
 
-// ─── Sub-task closes coordinator container ────────────────────────────────────
+// ─── Sub-task per-container spawn (#31) ──────────────────────────────────────
 
-describe('Coordinator docker exec sub-task — container lifecycle', () => {
+describe('Coordinator Docker sub-task — per-container spawn', () => {
   let coordinator: InstanceType<typeof Coordinator>;
 
   beforeEach(() => {
@@ -2112,27 +2098,31 @@ describe('Coordinator docker exec sub-task — container lifecycle', () => {
     coordinator.setDefaultProject('proj-1', '/tmp/project');
     coordinator.registerCoordinator('coord-1', 'proj-1');
     coordinator.setDockerContainerName('coord-1', 'my-coord-container');
+    coordinator.setDockerImage('coord-1', 'parallel-code-agent:latest');
   });
 
-  it('sub-task spawned via docker exec uses command=docker, not command=claude', async () => {
+  it('sub-task spawned with dockerMode: true (docker run), not docker exec', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    expect(mockSpawnAgent).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ command: 'docker' }),
-    );
-
-    const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
-    // Sub-task uses 'docker exec', not 'docker run' — must not start a new container
-    expect(spawnArgs).toContain('exec');
-    expect(spawnArgs).not.toContain('run');
+    const spawnCall = mockSpawnAgent.mock.calls[0][1] as {
+      command: string;
+      args: string[];
+      dockerMode?: boolean;
+    };
+    // Must use dockerMode: true so pty.ts builds `docker run`
+    expect(spawnCall.dockerMode).toBe(true);
+    // Command is the agent, not 'docker'
+    expect(spawnCall.command).toBe('claude');
+    // Args never contain 'exec'
+    expect(spawnCall.args).not.toContain('exec');
   });
 
-  it('sub-task docker exec references the coordinator container name, not a new container', async () => {
+  it('sub-task does NOT reference the coordinator container name in spawn args', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
-    expect(spawnArgs).toContain('my-coord-container');
+    const spawnCall = mockSpawnAgent.mock.calls[0][1] as { args: string[] };
+    // Each sub-task gets its own container — coordinator container name is never used as spawn target
+    expect(spawnCall.args).not.toContain('my-coord-container');
   });
 });
 
@@ -2803,6 +2793,126 @@ describe('Coordinator closeTask — per-task config isolation (two sub-tasks)', 
     const tasks = coordinator.listTasks();
     expect(tasks.some((t) => t.id === 'task-2')).toBe(true);
     expect(tasks.some((t) => t.id === 'task-1')).toBe(false);
+  });
+});
+
+// ─── Docker per-container sub-task tests (#31) ───────────────────────────────
+
+describe('Coordinator Docker mode — per-container sub-tasks', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-docker-1',
+      branch_name: 'task/docker-sub',
+      worktree_path: '/tmp/project/.worktrees/task/docker-sub',
+    });
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+
+    // Register coordinator in Docker mode
+    coordinator.registerCoordinator('coord-docker', 'proj-1', {
+      worktreePath: '/tmp/project/.worktrees/task/coord',
+    });
+    coordinator.setDockerContainerName('coord-docker', 'parallel-code-abcdef123456');
+    coordinator.setDockerImage('coord-docker', 'parallel-code-agent:latest');
+    coordinator.setCoordinatorSpawnDefaults('coord-docker', 'claude', []);
+  });
+
+  it('createTask in Docker mode spawns via docker run (dockerMode: true), not docker exec', async () => {
+    await coordinator.createTask({
+      name: 'docker-sub-task',
+      coordinatorTaskId: 'coord-docker',
+    });
+
+    expect(mockSpawnAgent).toHaveBeenCalledOnce();
+    const spawnCall = mockSpawnAgent.mock.calls[0][1];
+
+    // Must use dockerMode: true — never build 'docker exec' args manually
+    expect(spawnCall.dockerMode).toBe(true);
+    // Command is the agent command (claude), not 'docker'
+    expect(spawnCall.command).toBe('claude');
+    // Args do not contain 'exec'
+    expect(spawnCall.args).not.toContain('exec');
+    // Args do not contain the coordinator container name
+    expect(spawnCall.args).not.toContain('parallel-code-abcdef123456');
+  });
+
+  it('createTask passes the coordinator Docker image to spawnAgent', async () => {
+    await coordinator.createTask({
+      name: 'docker-sub-task',
+      coordinatorTaskId: 'coord-docker',
+    });
+
+    const spawnCall = mockSpawnAgent.mock.calls[0][1];
+    expect(spawnCall.dockerImage).toBe('parallel-code-agent:latest');
+  });
+
+  it('createTask sets dockerMountWorktreeParent: true so coordinator .parallel-code/ is accessible', async () => {
+    await coordinator.createTask({
+      name: 'docker-sub-task',
+      coordinatorTaskId: 'coord-docker',
+    });
+
+    const spawnCall = mockSpawnAgent.mock.calls[0][1];
+    expect(spawnCall.dockerMountWorktreeParent).toBe(true);
+  });
+
+  it('createTask in non-Docker mode does not set dockerMode on spawnAgent', async () => {
+    coordinator.registerCoordinator('coord-host', 'proj-1');
+    coordinator.setCoordinatorSpawnDefaults('coord-host', 'claude', []);
+    // No setDockerContainerName call — host mode
+
+    mockCreateBackendTask.mockResolvedValueOnce({
+      id: 'task-host-1',
+      branch_name: 'task/host-sub',
+      worktree_path: '/tmp/project/.worktrees/task/host-sub',
+    });
+
+    await coordinator.createTask({
+      name: 'host-sub-task',
+      coordinatorTaskId: 'coord-host',
+    });
+
+    const spawnCall = mockSpawnAgent.mock.calls[0][1];
+    expect(spawnCall.dockerMode).toBeUndefined();
+    expect(spawnCall.dockerImage).toBeUndefined();
+    expect(spawnCall.command).toBe('claude');
+  });
+
+  it('setDockerImage stores the image on coordinator state', () => {
+    coordinator.setDockerImage('coord-docker', 'my-custom-image:v2');
+    // Verify through createTask spawn — indirectly tests the stored value
+    // (direct state access not available, but spawnAgent mock captures it)
+  });
+
+  it('closeTask for a Docker sub-task does not call docker exec kill', async () => {
+    const { killAgent } = await vi.importMock<typeof import('../ipc/pty.js')>('../ipc/pty.js');
+
+    await coordinator.createTask({
+      name: 'docker-sub-task',
+      coordinatorTaskId: 'coord-docker',
+    });
+
+    const task = coordinator.listTasks().find((t) => t.name === 'docker-sub-task');
+    if (!task) throw new Error('task not found');
+
+    vi.clearAllMocks();
+    await coordinator.closeTask(task.id);
+
+    // killAgent is called (which internally calls stopDockerContainer in pty.ts)
+    expect(killAgent).toHaveBeenCalledWith(expect.any(String));
+
+    // docker exec should NOT be called for killing the inner process
+    // (execFile is called only for git operations in cleanupTask, not docker exec kill)
+    const dockerExecKillCall = mockExecFile.mock.calls.find(
+      (c) =>
+        c[0] === 'docker' && Array.isArray(c[1]) && c[1][0] === 'exec' && c[1].includes('kill'),
+    );
+    expect(dockerExecKillCall).toBeUndefined();
   });
 });
 

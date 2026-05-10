@@ -360,6 +360,7 @@ function App() {
           agentCommand: agentDef?.command ?? 'claude',
           agentArgs: agentDef?.args ?? [],
           dockerContainerName,
+          dockerImage: task.dockerMode ? task.dockerImage : undefined,
         })
           .then(() => markTaskMcpReady(taskId))
           .catch((err) => {
