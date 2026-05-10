@@ -895,8 +895,9 @@ export class Coordinator {
     if (startIdx === -1) return content;
     const endIdx = content.indexOf(END, startIdx);
     if (endIdx === -1) {
-      // Malformed: no end marker — strip from start to EOF (safe fallback, preserves nothing after)
-      return content.slice(0, startIdx).replace(/\n\n$/, '');
+      // Malformed: end marker missing — return content unchanged to avoid data loss.
+      // A malformed block is a bug in the injector; don't silently delete content.
+      return content;
     }
     const blockEnd = endIdx + END.length;
     const before = content.slice(0, startIdx).replace(/\n\n$/, '');

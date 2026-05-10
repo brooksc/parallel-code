@@ -525,6 +525,10 @@ export async function loadState(): Promise<void> {
           coordinatedBy: pt.coordinatedBy,
           controlledBy:
             pt.controlledBy ?? (pt.coordinatorMode || pt.coordinatedBy ? 'coordinator' : undefined),
+          // Defer TerminalView spawn until StartMCPServer/hydrateTask complete —
+          // the config file has a stale token from the previous session until then.
+          mcpStartupStatus:
+            pt.coordinatorMode || pt.coordinatedBy ? ('pending' as const) : undefined,
           mcpConfigPath: pt.mcpConfigPath,
           signalDoneReceived: pt.signalDoneReceived,
           signalDoneAt: pt.signalDoneAt,
@@ -613,6 +617,8 @@ export async function loadState(): Promise<void> {
           coordinatedBy: pt.coordinatedBy,
           controlledBy:
             pt.controlledBy ?? (pt.coordinatorMode || pt.coordinatedBy ? 'coordinator' : undefined),
+          mcpStartupStatus:
+            pt.coordinatorMode || pt.coordinatedBy ? ('pending' as const) : undefined,
           mcpConfigPath: pt.mcpConfigPath,
           signalDoneReceived: pt.signalDoneReceived,
           signalDoneAt: pt.signalDoneAt,

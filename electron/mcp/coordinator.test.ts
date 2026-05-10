@@ -3040,9 +3040,9 @@ describe('Coordinator removePreambleBlock', () => {
     expect(result).toBe('');
   });
 
-  it('strips to EOF when end marker is absent (malformed, safe fallback)', () => {
-    const result = strip('before\n\n<sub-task-mode>\norphaned start');
-    expect(result).toBe('before');
+  it('returns content unchanged when end marker is absent (fail-safe, no data loss)', () => {
+    const content = 'before\n\n<sub-task-mode>\norphaned start';
+    expect(strip(content)).toBe(content);
   });
 
   it('returns content unchanged when no preamble marker present', () => {
