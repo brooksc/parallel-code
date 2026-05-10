@@ -82,6 +82,26 @@ export class Coordinator {
             for (const resolve of resolvers) resolve({ reason: 'exited' });
             this.idleResolvers.delete(task.id);
           }
+          // Resolve any signal waiters so wait_for_signal_done doesn't hang
+          // when the last sub-task exits without calling signal_done.
+          const coordinatorId = task.coordinatorTaskId;
+          const anyResolvers = this.anySignalResolvers.get(coordinatorId);
+          const firstAnyResolver = anyResolvers?.length ? anyResolvers.shift() : undefined;
+          if (firstAnyResolver) {
+            // Suppress the exit notification — the signal waiter receives the
+            // exit info as its return value (mirrors the signalDone path).
+            this.suppressPendingNotificationForTask(task);
+            task.reviewNotificationQueued = true;
+            const remaining = this.countRemaining(coordinatorId);
+            firstAnyResolver({
+              taskId: task.id,
+              name: task.name,
+              status: 'exited',
+              signalDoneAt: new Date().toISOString(),
+              remaining,
+            });
+            this.finishSignalWait(coordinatorId);
+          }
           if (this.closingTaskIds.has(task.id)) break;
           this.maybeQueueReviewNotification(task, 'exited', exitCode ?? null);
           break;
@@ -616,6 +636,7 @@ export class Coordinator {
         coordinatorTaskId: task.coordinatorTaskId,
         prompt: opts.prompt ? SUB_TASK_PREAMBLE + opts.prompt : opts.prompt,
         mcpConfigPath: subTaskMcpConfigPath,
+        preambleFileExistedBefore: task.preambleFileExistedBefore,
         agentCommand: command,
         agentArgs: notifyAgentArgs,
         skipPermissions: opts.skipPermissions ?? false,
@@ -830,7 +851,7 @@ export class Coordinator {
     if (task.worktreePath) {
       this.stripPreambleFromBranch(task);
       try {
-        await execAsync('git', ['add', '-A'], { cwd: task.worktreePath });
+        await execAsync('git', ['add', '-u'], { cwd: task.worktreePath });
         await execAsync('git', ['commit', '-m', 'WIP: auto-commit before merge'], {
           cwd: task.worktreePath,
         });
@@ -1106,6 +1127,7 @@ export class Coordinator {
     signalDoneAt?: string;
     signalDoneConsumed?: boolean;
     mcpConfigPath?: string;
+    preambleFileExistedBefore?: boolean;
   }): void {
     if (this.tasks.has(opts.id)) return;
     const task: CoordinatedTask = {
@@ -1123,6 +1145,7 @@ export class Coordinator {
       signalDoneAt: opts.signalDoneAt ? new Date(opts.signalDoneAt) : undefined,
       signalDoneConsumed: opts.signalDoneConsumed,
       mcpConfigPath: opts.mcpConfigPath,
+      preambleFileExistedBefore: opts.preambleFileExistedBefore,
     };
     this.tasks.set(task.id, task);
     if (opts.controlledBy === 'human') {
@@ -1190,6 +1213,13 @@ export class Coordinator {
       }
     };
     this.subscribers.set(agentId, outputCb);
+    // Subscribe immediately if the agent is already spawned (restart scenario where
+    // PTY existed before hydration). The spawn handler covers the deferred case.
+    try {
+      subscribeToAgent(agentId, outputCb);
+    } catch {
+      /* agent not yet spawned — onPtyEvent('spawn') will subscribe when it starts */
+    }
   }
 
   registerCoordinator(coordinatorTaskId: string, projectId: string, worktreePath?: string): void {

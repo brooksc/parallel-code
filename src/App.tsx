@@ -386,6 +386,7 @@ function App() {
         signalDoneAt: task.signalDoneAt,
         signalDoneConsumed: task.signalDoneConsumed,
         mcpConfigPath: task.mcpConfigPath,
+        preambleFileExistedBefore: task.preambleFileExistedBefore,
       }).catch((err) => {
         console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
       });

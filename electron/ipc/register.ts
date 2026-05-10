@@ -1150,6 +1150,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           signalDoneAt?: string;
           signalDoneConsumed?: boolean;
           mcpConfigPath?: string;
+          preambleFileExistedBefore?: boolean;
         },
       ) => {
         assertString(args.id, 'id');
@@ -1173,6 +1174,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           signalDoneAt: args.signalDoneAt,
           signalDoneConsumed: args.signalDoneConsumed,
           mcpConfigPath: args.mcpConfigPath,
+          preambleFileExistedBefore: args.preambleFileExistedBefore,
         });
       },
     );

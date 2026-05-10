@@ -965,6 +965,7 @@ interface MCPTaskCreatedEvent {
   coordinatorTaskId: string;
   prompt?: string;
   mcpConfigPath?: string;
+  preambleFileExistedBefore?: boolean;
   agentCommand?: string;
   agentArgs?: string[];
   skipPermissions?: boolean;
@@ -994,6 +995,7 @@ export function initMCPListeners(): () => void {
         // PromptInput auto-delivers it with stability checks + quiescence.
         initialPrompt: evt.prompt,
         mcpConfigPath: evt.mcpConfigPath,
+        preambleFileExistedBefore: evt.preambleFileExistedBefore,
         skipPermissions: evt.skipPermissions ?? false,
       };
 
