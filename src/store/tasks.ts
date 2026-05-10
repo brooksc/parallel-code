@@ -550,6 +550,14 @@ export async function mergeTask(
     await Promise.allSettled(
       [...agentIds, ...shellAgentIds].map((id) => invoke(IPC.KillAgent, { agentId: id })),
     );
+    // Notify backend coordinator to remove this task from its state map so MCP
+    // tools (list_tasks, send_prompt, etc.) don't operate on a phantom task.
+    if (task.coordinatedBy) {
+      invoke(IPC.MCP_CoordinatedTaskClosed, {
+        taskId,
+        coordinatorTaskId: task.coordinatedBy,
+      }).catch(() => {});
+    }
     removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
   }
 }

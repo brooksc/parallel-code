@@ -1274,18 +1274,30 @@ export function registerAllHandlers(win: BrowserWindow): void {
         mcpServerPath = dockerMcpServerPath;
         coordinator.setDockerContainerName(args.coordinatorTaskId, args.dockerContainerName);
         console.warn('[MCP] Docker mode: copied MCP server to', dockerMcpServerPath);
-        // Keep .parallel-code/ out of git status in the sub-task worktree
-        const wtRoot = args.worktreePath ?? args.projectRoot;
-        const gitignorePath = path.join(wtRoot, '.gitignore');
+        // Keep .parallel-code/ out of git status in the sub-task worktree.
+        // Use .git/info/exclude (local-only, never committed) to avoid dirtying
+        // a tracked .gitignore file on every Docker coordinator startup.
         try {
-          const existing = fs.existsSync(gitignorePath)
-            ? fs.readFileSync(gitignorePath, 'utf-8')
-            : '';
-          if (!existing.includes('.parallel-code/')) {
-            fs.appendFileSync(
-              gitignorePath,
-              `${existing.endsWith('\n') || existing === '' ? '' : '\n'}.parallel-code/\n`,
+          const wtRoot = args.worktreePath ?? args.projectRoot;
+          const gitPath = path.join(wtRoot, '.git');
+          let infoDir: string;
+          if (fs.statSync(gitPath).isFile()) {
+            const realGitDir = fs
+              .readFileSync(gitPath, 'utf-8')
+              .trim()
+              .replace(/^gitdir:\s*/, '');
+            infoDir = path.join(
+              path.isAbsolute(realGitDir) ? realGitDir : path.resolve(wtRoot, realGitDir),
+              'info',
             );
+          } else {
+            infoDir = path.join(gitPath, 'info');
+          }
+          fs.mkdirSync(infoDir, { recursive: true });
+          const excludePath = path.join(infoDir, 'exclude');
+          const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, 'utf-8') : '';
+          if (!existing.includes('.parallel-code/')) {
+            fs.appendFileSync(excludePath, '\n# Parallel Code Docker MCP dir\n.parallel-code/\n');
           }
         } catch {
           // best-effort — don't block MCP startup over a gitignore write

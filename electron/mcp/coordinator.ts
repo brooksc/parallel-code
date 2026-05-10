@@ -920,6 +920,25 @@ export class Coordinator {
       }
     }
 
+    // Kill the inner agent process still running inside the coordinator container.
+    // Uses the same cwd-based approach as cleanupTask to avoid killing sibling agents.
+    if (task.dockerContainerName) {
+      execFile(
+        'docker',
+        [
+          'exec',
+          task.dockerContainerName,
+          'sh',
+          '-c',
+          'for p in /proc/[0-9]*/cwd; do [ "$(readlink "$p" 2>/dev/null)" = "$1" ] && kill -TERM "$(basename "$(dirname "$p")")" 2>/dev/null; done',
+          '--',
+          task.worktreePath,
+        ],
+        { timeout: 5000 },
+        () => {},
+      );
+    }
+
     this.tasks.delete(taskId);
     this.blockedByHumanControl.delete(taskId);
     this.controlMap.delete(taskId);
@@ -1226,6 +1245,13 @@ export class Coordinator {
 
       this.controlMap.delete(taskId);
       this.blockedByHumanControl.delete(taskId);
+      if (task.mcpConfigPath) {
+        try {
+          unlinkSync(task.mcpConfigPath);
+        } catch {
+          /* already gone */
+        }
+      }
       this.tasks.delete(taskId);
     }
   }
