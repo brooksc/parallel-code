@@ -152,10 +152,17 @@ function resolveWorktreeGitDirMount(startPath: string): string[] {
         const content = fs.readFileSync(gitFile, 'utf8').trim();
         const match = content.match(/^gitdir:\s*(.+)$/m);
         if (!match) return [];
-        // gitdir points to e.g. /repo/.git/worktrees/name — go up two levels to get /repo/.git
-        const mainGitDir = path.resolve(match[1].trim(), '..', '..');
-        if (!fs.existsSync(mainGitDir)) return [];
-        return ['-v', `${mainGitDir}:${mainGitDir}`];
+        // Walk up from the gitdir pointer until we find the dir containing objects/
+        // (the main .git dir). Avoids hard-coding a fixed number of levels.
+        let candidate = path.resolve(match[1].trim());
+        while (true) {
+          if (fs.existsSync(path.join(candidate, 'objects'))) {
+            return ['-v', `${candidate}:${candidate}`];
+          }
+          const parent = path.dirname(candidate);
+          if (parent === candidate) return [];
+          candidate = parent;
+        }
       }
       const parent = path.dirname(dir);
       if (parent === dir) return []; // filesystem root

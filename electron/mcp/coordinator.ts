@@ -45,7 +45,7 @@ export class Coordinator {
   private tailBuffers = new Map<string, string>();
   private idleResolvers = new Map<
     string,
-    Array<(result: { reason: 'idle' | 'human_control' | 'exited' }) => void>
+    Array<(result: { reason: 'idle' | 'human_control' | 'exited' | 'removed' }) => void>
   >();
   private anySignalResolvers = new Map<string, Array<(result: WaitForSignalDoneResult) => void>>();
   private subscribers = new Map<string, (encoded: string) => void>();
@@ -58,7 +58,6 @@ export class Coordinator {
   private projectRoot: string | null = null;
   private projectId: string | null = null;
   private defaultCoordinatorTaskId: string | null = null;
-  private mcpServerInfo: { serverUrl: string; token: string; serverPath: string } | null = null;
   private coordinatorSpawnDefaults: { command: string; args: string[] } = {
     command: 'claude',
     args: [],
@@ -172,8 +171,6 @@ export class Coordinator {
     if (state) {
       state.mcpServerInfo = { serverUrl, token, serverPath };
     }
-    // Also update the global fallback so legacy callers still work.
-    this.mcpServerInfo = { serverUrl, token, serverPath };
     // Rewrite config files only for sub-tasks owned by this coordinator so a
     // second coordinator starting up does not overwrite the first's task configs.
     for (const task of this.tasks.values()) {
@@ -345,7 +342,12 @@ export class Coordinator {
     const coordinatorId =
       opts.coordinatorTaskId !== REST_COORDINATOR_SENTINEL
         ? opts.coordinatorTaskId
-        : (this.defaultCoordinatorTaskId ?? opts.coordinatorTaskId);
+        : this.defaultCoordinatorTaskId;
+    if (!coordinatorId) {
+      throw new Error(
+        'No coordinator task registered yet. Ensure the coordinator task is fully initialized before calling create_task.',
+      );
+    }
 
     const coordinatorState = this.coordinators.get(coordinatorId);
     if (!coordinatorState) {
@@ -503,7 +505,7 @@ export class Coordinator {
       // In Docker mode, write to the coordinator's .parallel-code/ dir (which IS the explicitly
       // mounted volume) rather than the sub-task worktree (which may not be in the container).
       // Always pass --mcp-config explicitly so Claude doesn't rely on auto-discovery.
-      const mcpServerInfoForTask = coordinatorState.mcpServerInfo ?? this.mcpServerInfo;
+      const mcpServerInfoForTask = coordinatorState.mcpServerInfo;
       if (mcpServerInfoForTask) {
         const { serverUrl, token, serverPath } = mcpServerInfoForTask;
         const mcpConfig = {
@@ -694,14 +696,14 @@ export class Coordinator {
   waitForIdle(
     taskId: string,
     timeoutMs?: number,
-  ): Promise<{ reason: 'idle' | 'human_control' | 'exited' }> {
+  ): Promise<{ reason: 'idle' | 'human_control' | 'exited' | 'removed' }> {
     return this.waitForIdleInternal(taskId, timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS);
   }
 
   private waitForIdleInternal(
     taskId: string,
     timeoutMs: number,
-  ): Promise<{ reason: 'idle' | 'human_control' | 'exited' }> {
+  ): Promise<{ reason: 'idle' | 'human_control' | 'exited' | 'removed' }> {
     const task = this.tasks.get(taskId);
     if (!task) return Promise.reject(new Error(`Task not found: ${taskId}`));
     if (this.controlMap.get(taskId) === 'human') {
@@ -713,7 +715,9 @@ export class Coordinator {
     return new Promise((resolve, reject) => {
       const timerRef = { value: undefined as ReturnType<typeof setTimeout> | undefined };
 
-      const wrappedResolve = (result: { reason: 'idle' | 'human_control' | 'exited' }) => {
+      const wrappedResolve = (result: {
+        reason: 'idle' | 'human_control' | 'exited' | 'removed';
+      }) => {
         if (timerRef.value !== undefined) clearTimeout(timerRef.value);
         resolve(result);
       };
@@ -904,7 +908,7 @@ export class Coordinator {
 
     const resolvers = this.idleResolvers.get(taskId);
     if (resolvers) {
-      for (const resolve of resolvers) resolve({ reason: 'exited' });
+      for (const resolve of resolvers) resolve({ reason: 'removed' });
       this.idleResolvers.delete(taskId);
     }
 
@@ -1137,7 +1141,7 @@ export class Coordinator {
       projectId,
       projectRoot: this.projectRoot ?? '',
       worktreePath,
-      mcpServerInfo: this.mcpServerInfo,
+      mcpServerInfo: null,
       spawnDefaults: { ...this.coordinatorSpawnDefaults },
       pendingNotifications: [],
       stagedBatches: new Map(),

@@ -2178,13 +2178,13 @@ describe('Coordinator removeCoordinatedTask', () => {
     expect(c.blockedByHumanControl.has('task-1')).toBe(false);
   });
 
-  it('resolves pending idle waiters with exited reason', async () => {
+  it('resolves pending idle waiters with removed reason', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const waitPromise = coordinator.waitForIdle('task-1');
 
     coordinator.removeCoordinatedTask('task-1');
 
-    await expect(waitPromise).resolves.toEqual({ reason: 'exited' });
+    await expect(waitPromise).resolves.toEqual({ reason: 'removed' });
   });
 
   it('deletes MCP config file when mcpConfigPath is set', async () => {
