@@ -59,7 +59,10 @@ export {
   initMCPListeners,
   getCoordinatorCloseWarning,
   setTaskControl,
+  markTaskMcpPending,
   markTaskMcpReady,
+  markTaskMcpError,
+  retryTaskMcpStartup,
 } from './tasks';
 export {
   setActiveTask,

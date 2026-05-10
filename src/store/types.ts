@@ -107,7 +107,9 @@ export interface Task {
   signalDoneAt?: string; // ISO timestamp from backend when signal_done was called
   signalDoneConsumed?: boolean; // true after wait_for_signal_done consumed this task's signal
   needsReview?: boolean; // set when sub-task is reviewable but coordinator is closed
-  mcpReady?: boolean; // true once hydrateTask has completed for this task (prevents auto-spawn race)
+  /** Runtime-only. 'pending': awaiting StartMCPServer/HydrateCoordinatedTask; 'ready': spawn allowed; 'error': show retry UI. */
+  mcpStartupStatus?: 'pending' | 'ready' | 'error';
+  mcpStartupError?: string;
 }
 
 export interface Terminal {

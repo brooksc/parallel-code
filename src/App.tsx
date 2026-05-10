@@ -49,7 +49,9 @@ import {
   setDockerAvailable,
   toggleTaskFocusMode,
   initMCPListeners,
+  markTaskMcpPending,
   markTaskMcpReady,
+  markTaskMcpError,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
@@ -346,6 +348,7 @@ function App() {
         task.dockerMode && task.agentIds[0]
           ? `parallel-code-${task.agentIds[0].slice(0, 12)}`
           : undefined;
+      markTaskMcpPending(taskId);
       mcpRestorePromises.push(
         invoke(IPC.StartMCPServer, {
           coordinatorTaskId: task.id,
@@ -358,10 +361,11 @@ function App() {
           agentArgs: agentDef?.args ?? [],
           dockerContainerName,
         })
+          .then(() => markTaskMcpReady(taskId))
           .catch((err) => {
             console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
-          })
-          .finally(() => markTaskMcpReady(taskId)),
+            markTaskMcpError(taskId, String(err));
+          }),
       );
     }
     // Wait for all coordinators to register before hydrating their children —
@@ -375,6 +379,7 @@ function App() {
       if (!task?.coordinatedBy) continue;
       const projectRoot = store.projects.find((p) => p.id === task.projectId)?.path;
       if (!projectRoot) continue;
+      markTaskMcpPending(task.id);
       invoke(IPC.MCP_HydrateCoordinatedTask, {
         id: task.id,
         name: task.name,
@@ -391,10 +396,11 @@ function App() {
         mcpConfigPath: task.mcpConfigPath,
         preambleFileExistedBefore: task.preambleFileExistedBefore,
       })
+        .then(() => markTaskMcpReady(task.id))
         .catch((err) => {
           console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
-        })
-        .finally(() => markTaskMcpReady(task.id));
+          markTaskMcpError(task.id, String(err));
+        });
     }
 
     // Restore plan content for tasks that had a plan file before restart

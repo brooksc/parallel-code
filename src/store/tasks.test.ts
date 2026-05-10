@@ -1,4 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { IPC } from '../../electron/ipc/channels';
+
+// Hoisted so these refs are available both in vi.mock() factories and in test bodies.
+const { mockInvoke, mockIsAgentBracketedPasteEnabled, mockSetStore } = vi.hoisted(() => ({
+  mockInvoke: vi.fn(),
+  mockIsAgentBracketedPasteEnabled: vi.fn(),
+  mockSetStore: vi.fn(),
+}));
+
+// ─── Coordinator test infrastructure ─────────────────────────────────────────
 
 type MockTask = {
   controlledBy?: 'coordinator' | 'human';
@@ -12,6 +22,7 @@ let mockTasks: Record<string, MockTask> = {};
 let mockAgents: Record<string, unknown> = {};
 let mockTaskOrder: string[] = [];
 let mockCollapsedTaskOrder: string[] = [];
+let mockProjects: { id: string; path: string }[] = [];
 const ipcHandlers = new Map<string, (data: unknown) => void>();
 
 function applySetStore(...args: unknown[]): void {
@@ -40,15 +51,19 @@ function applySetStore(...args: unknown[]): void {
   };
   for (let i = 0; i < args.length - 2; i++) {
     const next = target[args[i] as string] as Record<string, unknown> | undefined;
-    if (next === undefined || next === null) return; // unknown key — silently no-op, like real SolidJS setStore
+    if (next === undefined || next === null) return;
     target = next;
   }
   target[args[args.length - 2] as string] = value;
 }
 
-vi.mock('solid-js/store', () => ({
-  produce: (fn: (s: unknown) => void) => fn,
-}));
+// Wire up mockSetStore to apply mutations so coordinator tests can read back state.
+// Re-applied in sendPrompt's beforeEach after vi.clearAllMocks().
+mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
+
+// ─── Mocks ───────────────────────────────────────────────────────────────────
+
+vi.mock('../lib/ipc', () => ({ Channel: vi.fn(), invoke: mockInvoke }));
 
 vi.mock('./core', () => ({
   store: new Proxy({} as Record<string, unknown>, {
@@ -58,25 +73,15 @@ vi.mock('./core', () => ({
       if (prop === 'taskOrder') return mockTaskOrder;
       if (prop === 'collapsedTaskOrder') return mockCollapsedTaskOrder;
       if (prop === 'availableAgents') return [];
+      if (prop === 'projects') return mockProjects;
       return undefined;
     },
   }),
-  setStore: vi.fn((...args: unknown[]) => applySetStore(...args)),
+  setStore: mockSetStore,
   cleanupPanelEntries: vi.fn(),
 }));
 
-vi.mock('../lib/ipc', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('../../electron/ipc/channels', () => ({
-  IPC: {
-    MCP_TaskCreated: 'mcp_task_created',
-    MCP_TaskClosed: 'mcp_task_closed',
-    MCP_CoordinatorNotificationStaged: 'mcp_coordinator_notification_staged',
-    MCP_CoordinatorNotificationCleared: 'mcp_coordinator_notification_cleared',
-    MCP_CoordinatorOrphanedNotification: 'mcp_coordinator_orphaned_notification',
-    MCP_TaskStateSync: 'mcp_task_state_sync',
-    MCP_ControlChanged: 'mcp_control_changed',
-  },
-}));
+vi.mock('../lib/ipc', () => ({ Channel: vi.fn(), invoke: mockInvoke }));
 vi.mock('./persistence', () => ({ saveState: vi.fn() }));
 vi.mock('./focus', () => ({ setTaskFocusedPanel: vi.fn() }));
 vi.mock('./projects', () => ({
@@ -90,6 +95,8 @@ vi.mock('./taskStatus', () => ({
   markAgentSpawned: vi.fn(),
   markAgentBusy: vi.fn(),
   clearAgentActivity: vi.fn(),
+  clearTaskGitStatusTracking: vi.fn(),
+  isAgentBracketedPasteEnabled: mockIsAgentBracketedPasteEnabled,
   isAgentIdle: vi.fn(),
   rescheduleTaskStatusPolling: vi.fn(),
 }));
@@ -117,7 +124,18 @@ vi.stubGlobal('window', {
   },
 });
 
-import { initMCPListeners, setTaskControl, collapseTask } from './tasks';
+import {
+  initMCPListeners,
+  setTaskControl,
+  collapseTask,
+  sendPrompt,
+  markTaskMcpPending,
+  markTaskMcpReady,
+  markTaskMcpError,
+  retryTaskMcpStartup,
+} from './tasks';
+
+// ─── Coordinator listener setup ───────────────────────────────────────────────
 
 initMCPListeners();
 const taskCreatedHandler = ipcHandlers.get('mcp_task_created');
@@ -128,7 +146,11 @@ beforeEach(() => {
   mockAgents = {};
   mockTaskOrder = [];
   mockCollapsedTaskOrder = [];
+  mockProjects = [];
+  mockInvoke.mockResolvedValue(undefined);
 });
+
+// ─── Coordinator tests ────────────────────────────────────────────────────────
 
 const baseEvent = {
   taskId: 'sub-task-1',
@@ -142,17 +164,14 @@ const baseEvent = {
 
 describe('coordinator controlledBy state machine (item 9: UI disabled-state regression tests)', () => {
   it('9a: sub-task created via MCP starts with controlledBy: coordinator (not undefined)', () => {
-    // Sub-tasks created via MCP coordinator always get controlledBy: 'coordinator'
     taskCreatedHandler(baseEvent);
     expect(mockTasks['sub-task-1'].controlledBy).toBe('coordinator');
   });
 
   it('9b: manually added task without coordinatorMode starts with controlledBy undefined', () => {
-    // A plain task (no coordinatorMode) should have controlledBy undefined
     mockTasks['plain-task'] = {
       agentIds: ['agent-plain'],
       shellAgentIds: [],
-      // controlledBy intentionally absent — simulates createTask with coordinatorMode: false
     };
     expect(mockTasks['plain-task'].controlledBy).toBeUndefined();
   });
@@ -176,7 +195,6 @@ describe('coordinator controlledBy state machine (item 9: UI disabled-state regr
   });
 
   it('9e: removing a coordinator task leaves no entry in mockTasks', () => {
-    // Create a coordinator task in the store
     mockTasks['coordinator-task'] = {
       agentIds: ['agent-coord'],
       shellAgentIds: [],
@@ -185,12 +203,10 @@ describe('coordinator controlledBy state machine (item 9: UI disabled-state regr
     mockTaskOrder.push('coordinator-task');
     expect(mockTasks['coordinator-task'].controlledBy).toBe('coordinator');
 
-    // Remove it (simulating closeTask's store cleanup path)
     delete mockTasks['coordinator-task'];
     const idx = mockTaskOrder.indexOf('coordinator-task');
     if (idx !== -1) mockTaskOrder.splice(idx, 1);
 
-    // No coordinator task left — hasActiveCoordinator equivalent returns false
     const hasActiveCoordinator = Object.values(mockTasks).some(
       (t) => (t as MockTask & { coordinatorMode?: boolean }).coordinatorMode,
     );
@@ -228,7 +244,6 @@ describe('collapseTask — coordinated child guard (TODO #23)', () => {
 
     await collapseTask('sub-task-1');
 
-    // agentIds must be unchanged — backend coordinator still holds reference
     expect(mockTasks['sub-task-1'].agentIds).toEqual(['agent-1']);
     expect(mockTasks['sub-task-1'].collapsed).toBeFalsy();
     expect(mockTaskOrder).toContain('sub-task-1');
@@ -244,7 +259,6 @@ describe('collapseTask — coordinated child guard (TODO #23)', () => {
 
     await collapseTask('plain-task');
 
-    // Task should have been collapsed (agentIds cleared)
     expect(mockTasks['plain-task'].agentIds).toEqual([]);
     expect(mockTasks['plain-task'].collapsed).toBe(true);
   });
@@ -276,7 +290,6 @@ describe('hasActiveCoordinator condition — coordinator task removal', () => {
       agentIds: [],
       shellAgentIds: [],
     };
-    // Simulate task removal (what happens when close completes)
     delete mockTasks['coord-1'];
     const result = Object.values(mockTasks).some((t) => t.coordinatorMode && !t.closingStatus);
     expect(result).toBe(false);
@@ -292,5 +305,181 @@ describe('hasActiveCoordinator condition — coordinator task removal', () => {
     };
     const result = Object.values(mockTasks).some((t) => t.coordinatorMode && !t.closingStatus);
     expect(result).toBe(false);
+  });
+});
+
+// ─── MCP startup failure handling (TODO #43) ─────────────────────────────────
+
+describe('MCP startup status transitions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
+    mockInvoke.mockResolvedValue(undefined);
+    mockProjects = [{ id: 'proj-1', path: '/repo' }];
+  });
+
+  it('markTaskMcpPending sets status to pending', () => {
+    mockTasks['task-1'] = { agentIds: [], shellAgentIds: [] };
+    markTaskMcpPending('task-1');
+    expect(mockTasks['task-1'].mcpStartupStatus).toBe('pending');
+  });
+
+  it('markTaskMcpReady sets status to ready', () => {
+    mockTasks['task-1'] = { agentIds: [], shellAgentIds: [], mcpStartupStatus: 'pending' };
+    markTaskMcpReady('task-1');
+    expect(mockTasks['task-1'].mcpStartupStatus).toBe('ready');
+  });
+
+  it('markTaskMcpError sets status to error with control chars stripped', () => {
+    mockTasks['task-1'] = { agentIds: [], shellAgentIds: [], mcpStartupStatus: 'pending' };
+    // \x1b (ESC, 0x1b) is a control char and gets stripped; printable chars like '[31m' remain
+    markTaskMcpError('task-1', 'Connection refused\x1b[31m injected\x1b[0m');
+    expect(mockTasks['task-1'].mcpStartupStatus).toBe('error');
+    expect(mockTasks['task-1'].mcpStartupError).toBe('Connection refused[31m injected[0m');
+  });
+
+  it('failed StartMCPServer marks coordinator task with error instead of staying pending', async () => {
+    mockTasks['coord-1'] = {
+      agentIds: ['agent-coord'],
+      shellAgentIds: [],
+      coordinatorMode: true,
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      worktreePath: '/repo/.worktrees/coord',
+    };
+    mockAgents['agent-coord'] = { def: { command: 'claude', args: [] } };
+    mockInvoke.mockRejectedValueOnce(new Error('port in use'));
+
+    markTaskMcpPending('coord-1');
+    await retryTaskMcpStartup('coord-1');
+
+    expect(mockTasks['coord-1'].mcpStartupStatus).toBe('error');
+    expect(String(mockTasks['coord-1'].mcpStartupError)).toContain('port in use');
+  });
+
+  it('successful StartMCPServer marks coordinator task as ready', async () => {
+    mockTasks['coord-1'] = {
+      agentIds: ['agent-coord'],
+      shellAgentIds: [],
+      coordinatorMode: true,
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      worktreePath: '/repo/.worktrees/coord',
+    };
+    mockAgents['agent-coord'] = { def: { command: 'claude', args: [] } };
+    mockInvoke.mockResolvedValueOnce(undefined);
+
+    markTaskMcpPending('coord-1');
+    await retryTaskMcpStartup('coord-1');
+
+    expect(mockTasks['coord-1'].mcpStartupStatus).toBe('ready');
+  });
+
+  it('child hydration failure marks only that child as error, leaving sibling spawnable', async () => {
+    mockTasks['coord-1'] = {
+      agentIds: [],
+      shellAgentIds: [],
+      coordinatorMode: true,
+      projectId: 'proj-1',
+      mcpStartupStatus: 'ready',
+    };
+    mockTasks['child-a'] = {
+      agentIds: [],
+      shellAgentIds: [],
+      coordinatedBy: 'coord-1',
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      worktreePath: '/repo/.worktrees/child-a',
+      branchName: 'task/child-a',
+    };
+    mockTasks['child-b'] = {
+      agentIds: [],
+      shellAgentIds: [],
+      coordinatedBy: 'coord-1',
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      worktreePath: '/repo/.worktrees/child-b',
+      branchName: 'task/child-b',
+    };
+
+    // child-a fails, child-b succeeds
+    mockInvoke.mockRejectedValueOnce(new Error('hydrate failed')).mockResolvedValueOnce(undefined);
+
+    markTaskMcpPending('child-a');
+    await retryTaskMcpStartup('child-a');
+    markTaskMcpPending('child-b');
+    await retryTaskMcpStartup('child-b');
+
+    expect(mockTasks['child-a'].mcpStartupStatus).toBe('error');
+    expect(mockTasks['child-b'].mcpStartupStatus).toBe('ready');
+  });
+
+  it('retry of child when coordinator is in error surfaces dependency message', async () => {
+    mockTasks['coord-1'] = {
+      agentIds: [],
+      shellAgentIds: [],
+      coordinatorMode: true,
+      projectId: 'proj-1',
+      mcpStartupStatus: 'error',
+    };
+    mockTasks['child-1'] = {
+      agentIds: [],
+      shellAgentIds: [],
+      coordinatedBy: 'coord-1',
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      worktreePath: '/repo/.worktrees/child-1',
+      branchName: 'task/child-1',
+      mcpStartupStatus: 'error',
+    };
+
+    await retryTaskMcpStartup('child-1');
+
+    expect(mockTasks['child-1'].mcpStartupStatus).toBe('error');
+    expect(String(mockTasks['child-1'].mcpStartupError)).toContain('coordinator');
+    expect(mockInvoke).not.toHaveBeenCalledWith(IPC.MCP_HydrateCoordinatedTask, expect.anything());
+  });
+});
+
+// ─── sendPrompt tests ─────────────────────────────────────────────────────────
+
+function writePayloads(): string[] {
+  return mockInvoke.mock.calls
+    .filter(([channel]) => channel === IPC.WriteToAgent)
+    .map(([, payload]) => (payload as { data: string }).data);
+}
+
+describe('sendPrompt', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Re-apply after clearAllMocks() so coordinator store mutations still work.
+    mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
+    mockInvoke.mockResolvedValue(undefined);
+    mockIsAgentBracketedPasteEnabled.mockReturnValue(false);
+    mockAgents = { 'agent-1': { status: 'running' } };
+    mockTasks = { 'task-1': { agentIds: [], shellAgentIds: [], lastPrompt: '' } };
+  });
+
+  it('wraps prompt text in bracketed paste when the agent enabled it', async () => {
+    mockIsAgentBracketedPasteEnabled.mockReturnValue(true);
+
+    await sendPrompt('task-1', 'agent-1', 'hello Codex');
+
+    expect(writePayloads()).toEqual(['\x1b[I', '\x1b[200~hello Codex\x1b[201~', '\r']);
+    expect(mockSetStore).toHaveBeenCalledWith('tasks', 'task-1', 'lastPrompt', 'hello Codex');
+  });
+
+  it('sends raw prompt text when bracketed paste is not enabled', async () => {
+    await sendPrompt('task-1', 'agent-1', 'hello Codex');
+
+    expect(writePayloads()).toEqual(['\x1b[I', 'hello Codex', '\r']);
+  });
+
+  it('keeps Enter outside the bracketed paste block', async () => {
+    mockIsAgentBracketedPasteEnabled.mockReturnValue(true);
+
+    await sendPrompt('task-1', 'agent-1', 'line 1\nline 2');
+
+    expect(writePayloads()).toEqual(['\x1b[I', '\x1b[200~line 1\nline 2\x1b[201~', '\r']);
   });
 });

@@ -259,7 +259,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     controlledBy: opts.coordinatorMode ? 'coordinator' : undefined,
     mcpConfigPath,
     // Coordinator tasks call StartMCPServer before entering the store, so MCP is ready immediately.
-    mcpReady: opts.coordinatorMode ? true : undefined,
+    mcpStartupStatus: opts.coordinatorMode ? ('ready' as const) : undefined,
   };
 
   const agent: Agent = {
@@ -1005,7 +1005,7 @@ export function initMCPListeners(): () => void {
         preambleFileExistedBefore: evt.preambleFileExistedBefore,
         skipPermissions: evt.skipPermissions ?? false,
         // MCP server is already running when the task is created mid-session.
-        mcpReady: true,
+        mcpStartupStatus: 'ready' as const,
       };
 
       const cmd = evt.agentCommand ?? 'claude';
@@ -1174,7 +1174,7 @@ export function initMCPListeners(): () => void {
     window.electron.ipcRenderer.on(IPC.MCP_TaskHydrated, (data: unknown) => {
       const evt = data as { taskId: string };
       if (store.tasks[evt.taskId]) {
-        setStore('tasks', evt.taskId, 'mcpReady', true);
+        setStore('tasks', evt.taskId, 'mcpStartupStatus', 'ready');
       }
     }),
   );
@@ -1184,8 +1184,79 @@ export function initMCPListeners(): () => void {
   };
 }
 
+export function markTaskMcpPending(taskId: string): void {
+  if (store.tasks[taskId]) setStore('tasks', taskId, 'mcpStartupStatus', 'pending');
+}
+
 export function markTaskMcpReady(taskId: string): void {
-  if (store.tasks[taskId]) setStore('tasks', taskId, 'mcpReady', true);
+  if (store.tasks[taskId]) setStore('tasks', taskId, 'mcpStartupStatus', 'ready');
+}
+
+export function markTaskMcpError(taskId: string, errorMsg: string): void {
+  if (!store.tasks[taskId]) return;
+  // eslint-disable-next-line no-control-regex -- strip escape chars to prevent injection
+  const safe = String(errorMsg).replace(/[\x00-\x1f\x7f]/g, '');
+  setStore('tasks', taskId, 'mcpStartupStatus', 'error');
+  setStore('tasks', taskId, 'mcpStartupError', safe);
+}
+
+export function retryTaskMcpStartup(taskId: string): Promise<void> {
+  const task = store.tasks[taskId];
+  if (!task) return Promise.resolve();
+  const projectRoot = store.projects.find((p) => p.id === task.projectId)?.path;
+  if (!projectRoot) {
+    markTaskMcpError(taskId, 'Project path not found');
+    return Promise.resolve();
+  }
+  markTaskMcpPending(taskId);
+
+  if (task.coordinatorMode) {
+    const agentDef = task.agentIds[0] ? store.agents[task.agentIds[0]]?.def : undefined;
+    const dockerContainerName =
+      task.dockerMode && task.agentIds[0]
+        ? `parallel-code-${task.agentIds[0].slice(0, 12)}`
+        : undefined;
+    return invoke(IPC.StartMCPServer, {
+      coordinatorTaskId: task.id,
+      projectId: task.projectId,
+      projectRoot,
+      worktreePath: task.gitIsolation === 'worktree' ? task.worktreePath : undefined,
+      skipPermissions: task.skipPermissions ?? false,
+      propagateSkipPermissions: task.propagateSkipPermissions ?? false,
+      agentCommand: agentDef?.command ?? 'claude',
+      agentArgs: agentDef?.args ?? [],
+      dockerContainerName,
+    })
+      .then(() => markTaskMcpReady(taskId))
+      .catch((err: unknown) => markTaskMcpError(taskId, String(err)));
+  }
+
+  if (task.coordinatedBy) {
+    const coordinator = store.tasks[task.coordinatedBy];
+    if (coordinator?.mcpStartupStatus === 'error') {
+      markTaskMcpError(taskId, 'Coordinator MCP failed — retry the coordinator task first');
+      return Promise.resolve();
+    }
+    return invoke(IPC.MCP_HydrateCoordinatedTask, {
+      id: task.id,
+      name: task.name,
+      projectId: task.projectId,
+      projectRoot,
+      branchName: task.branchName,
+      baseBranch: task.baseBranch,
+      worktreePath: task.worktreePath,
+      coordinatorTaskId: task.coordinatedBy,
+      controlledBy: task.controlledBy,
+      agentId: task.agentIds[0],
+      signalDoneAt: task.signalDoneAt,
+      signalDoneConsumed: task.signalDoneConsumed,
+      mcpConfigPath: task.mcpConfigPath,
+      preambleFileExistedBefore: task.preambleFileExistedBefore,
+    })
+      .then(() => markTaskMcpReady(taskId))
+      .catch((err: unknown) => markTaskMcpError(taskId, String(err)));
+  }
+  return Promise.resolve();
 }
 
 export function setTaskControl(taskId: string, who: 'coordinator' | 'human'): void {

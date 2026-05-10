@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createEffect } from 'solid-js';
+import { onMount, onCleanup, createEffect, Show } from 'solid-js';
 import { Terminal, type IMarker } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -12,7 +12,7 @@ import { matchesGlobalShortcut } from '../lib/shortcuts';
 import { isMac } from '../lib/platform';
 import { resolvedBindings } from '../store/keybindings';
 import { matchesKeyEvent } from '../lib/keybindings';
-import { store, setTaskLastInputAt } from '../store/store';
+import { store, setTaskLastInputAt, retryTaskMcpStartup } from '../store/store';
 import { warn as logWarn } from '../lib/log';
 import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
 import { dataTransferToShellArgs, escapePath } from '../lib/terminalDrop';
@@ -645,16 +645,18 @@ export function TerminalView(props: TerminalViewProps) {
     // For coordinator and coordinated sub-tasks, defer spawn until MCP is ready.
     // Coordinator tasks wait for StartMCPServer to complete; sub-tasks wait for hydrateTask.
     const task = store.tasks[taskId];
-    if ((task?.coordinatedBy || task?.coordinatorMode) && !task?.mcpReady) {
+    if (task?.mcpStartupStatus === 'pending') {
       let spawned = false;
       createEffect(() => {
         if (spawned) return;
-        if (store.tasks[taskId]?.mcpReady) {
+        const status = store.tasks[taskId]?.mcpStartupStatus;
+        if (status === 'ready') {
           spawned = true;
           spawnNow();
         }
+        // 'error' is handled by the overlay rendered outside onMount
       });
-    } else {
+    } else if (task?.mcpStartupStatus !== 'error') {
       spawnNow();
     }
 
@@ -695,16 +697,62 @@ export function TerminalView(props: TerminalViewProps) {
     markDirty(props.agentId);
   });
 
+  const mcpError = () => store.tasks[props.taskId]?.mcpStartupError;
+  const mcpStatus = () => store.tasks[props.taskId]?.mcpStartupStatus;
+
   return (
-    <div
-      ref={containerRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        overflow: 'hidden',
-        padding: '4px 0 0 4px',
-        contain: 'strict',
-      }}
-    />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div
+        ref={containerRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden',
+          padding: '4px 0 0 4px',
+          contain: 'strict',
+        }}
+      />
+      <Show when={mcpStatus() === 'error'}>
+        <div
+          style={{
+            position: 'absolute',
+            inset: '0',
+            display: 'flex',
+            'flex-direction': 'column',
+            'align-items': 'center',
+            'justify-content': 'center',
+            gap: '12px',
+            background: 'rgba(0,0,0,0.85)',
+            'font-family': 'var(--font-ui)',
+            'z-index': '10',
+          }}
+        >
+          <span
+            style={{
+              color: '#ff6b6b',
+              'font-size': '13px',
+              'text-align': 'center',
+              padding: '0 16px',
+            }}
+          >
+            MCP startup failed: {mcpError() ?? 'unknown error'}
+          </span>
+          <button
+            style={{
+              padding: '6px 16px',
+              background: '#3b82f6',
+              color: '#fff',
+              border: 'none',
+              'border-radius': '4px',
+              'font-size': '13px',
+              cursor: 'pointer',
+            }}
+            onClick={() => retryTaskMcpStartup(props.taskId)}
+          >
+            Retry
+          </button>
+        </div>
+      </Show>
+    </div>
   );
 }
