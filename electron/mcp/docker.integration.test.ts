@@ -56,7 +56,7 @@ async function findFreePort(): Promise<number> {
 
 describeDocker('Docker MCP integration', () => {
   let worktreePath: string | undefined;
-  let remoteServer: ReturnType<typeof startRemoteServer> | undefined;
+  let remoteServer: Awaited<ReturnType<typeof startRemoteServer>> | undefined;
   let createdTaskName: string | undefined;
 
   beforeAll(() => {
@@ -106,7 +106,7 @@ describeDocker('Docker MCP integration', () => {
     } as unknown as Coordinator;
 
     const port = await findFreePort();
-    remoteServer = startRemoteServer({
+    remoteServer = await startRemoteServer({
       port,
       staticDir: worktreePath,
       getTaskName: (taskId) => taskId,
@@ -209,7 +209,7 @@ describeDocker('Docker MCP integration', () => {
     } as unknown as Coordinator;
 
     const port2 = await findFreePort();
-    const subServer = startRemoteServer({
+    const subServer = await startRemoteServer({
       port: port2,
       staticDir: coordWorktree,
       getTaskName: (id) => id,
@@ -303,7 +303,7 @@ describeDocker('Docker MCP integration', () => {
 describeDocker('Layer 2 — Docker smoke tests', () => {
   let remotePort: number;
   let remoteToken: string;
-  let srv: ReturnType<typeof startRemoteServer> | undefined;
+  let srv: Awaited<ReturnType<typeof startRemoteServer>> | undefined;
   let coordWorktree: string | undefined;
 
   beforeAll(async () => {
@@ -312,7 +312,7 @@ describeDocker('Layer 2 — Docker smoke tests', () => {
     remotePort = await findFreePort();
 
     const mockCoordinator = { listTasks: () => [] } as unknown as Coordinator;
-    srv = startRemoteServer({
+    srv = await startRemoteServer({
       port: remotePort,
       staticDir: coordWorktree,
       getTaskName: (id) => id,
@@ -436,7 +436,7 @@ describeDocker('Layer 2 — Docker image capability check', () => {
 // the production wiring (not just the concept) works.
 
 describeDocker('Layer 4 — Production-path coordinator Docker scenario', () => {
-  let scenarioServer: ReturnType<typeof startRemoteServer> | undefined;
+  let scenarioServer: Awaited<ReturnType<typeof startRemoteServer>> | undefined;
   let scenarioWorktree: string | undefined;
   let createdTaskName: string | undefined;
 
@@ -473,7 +473,7 @@ describeDocker('Layer 4 — Production-path coordinator Docker scenario', () => 
       listTasks: () => [],
     } as unknown as Coordinator;
 
-    scenarioServer = startRemoteServer({
+    scenarioServer = await startRemoteServer({
       port,
       staticDir: scenarioWorktree,
       getTaskName: (id) => id,
@@ -714,7 +714,7 @@ describeDocker('Layer 9 — Project Dockerfile image MCP smoke test', () => {
     copyFileSync(mcpServerSrc, destPath);
 
     const port = await findFreePort();
-    const server = startRemoteServer({
+    const server = await startRemoteServer({
       port,
       staticDir: worktree,
       getTaskName: (id) => id,
@@ -810,7 +810,7 @@ describeDocker('Layer 2 — MCP tool schema drift between host and Docker', () =
 
     const mockCoordinator = { listTasks: () => [], createTask: async () => ({ id: 'test' }) };
     const port = await findFreePort();
-    const server = startRemoteServer({
+    const server = await startRemoteServer({
       port,
       staticDir: worktree,
       getTaskName: (id) => id,
@@ -915,7 +915,7 @@ describeDocker('Layer 2 — Large MCP response over Docker stdio', () => {
 
     const mockCoordinator = { listTasks: () => manyTasks };
     const port = await findFreePort();
-    const server = startRemoteServer({
+    const server = await startRemoteServer({
       port,
       staticDir: worktree,
       getTaskName: (id) => id,

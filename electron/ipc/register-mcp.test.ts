@@ -211,7 +211,7 @@ describe('Layer 5 — Failure modes', () => {
 
   it('remote server returns 401 for a missing auth token', async () => {
     const port = await findFreePort();
-    const srv = startRemoteServer({
+    const srv = await startRemoteServer({
       port,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
@@ -230,7 +230,7 @@ describe('Layer 5 — Failure modes', () => {
 
   it('remote server returns 401 for a wrong auth token', async () => {
     const port = await findFreePort();
-    const srv = startRemoteServer({
+    const srv = await startRemoteServer({
       port,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
@@ -252,7 +252,7 @@ describe('Layer 5 — Failure modes', () => {
     const mockCoordinator = {
       listTasks: () => [],
     };
-    const srv = startRemoteServer({
+    const srv = await startRemoteServer({
       port,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
@@ -298,7 +298,7 @@ describe('Layer 7 — Remote server bind address', () => {
   it('server bound to 127.0.0.1 is reachable via that address', async () => {
     const port = await findFreePort();
     const mockCoordinator = { listTasks: () => [] };
-    const srv = startRemoteServer({
+    const srv = await startRemoteServer({
       port,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
@@ -317,7 +317,7 @@ describe('Layer 7 — Remote server bind address', () => {
 
   it('server port is included in generated MCP URL', async () => {
     const port = await findFreePort();
-    const srv = startRemoteServer({
+    const srv = await startRemoteServer({
       port,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,

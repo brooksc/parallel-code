@@ -127,7 +127,7 @@ export function startRemoteServer(opts: {
     lastLine: string;
   };
   coordinator?: Coordinator;
-}): RemoteServer {
+}): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
 
@@ -687,14 +687,11 @@ export function startRemoteServer(opts: {
   server.on('error', (err) => {
     console.error('[remote] Server error:', err.message);
   });
-  server.listen(opts.port, opts.host ?? '127.0.0.1', () => {
-    /* bind confirmed */
-  });
 
   const primaryIp = ips.wifi ?? ips.tailscale ?? '127.0.0.1';
   const url = `http://${primaryIp}:${opts.port}?token=${token}`;
 
-  return {
+  const result: RemoteServer = {
     token,
     port: opts.port,
     url,
@@ -722,4 +719,13 @@ export function startRemoteServer(opts: {
         });
       }),
   };
+
+  return new Promise<RemoteServer>((resolve, reject) => {
+    const onError = (err: Error) => reject(err);
+    server.once('error', onError);
+    server.listen(opts.port, opts.host ?? '127.0.0.1', () => {
+      server.removeListener('error', onError);
+      resolve(result);
+    });
+  });
 }

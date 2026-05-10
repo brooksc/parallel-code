@@ -294,7 +294,7 @@ function createThrottledForwarder(
 
 export function registerAllHandlers(win: BrowserWindow): void {
   // --- Remote access state ---
-  let remoteServer: ReturnType<typeof startRemoteServer> | null = null;
+  let remoteServer: Awaited<ReturnType<typeof startRemoteServer>> | null = null;
   const taskNames = new Map<string, string>();
 
   // --- MCP coordinator (lazy — only loaded when coordinator mode is enabled) ---
@@ -992,7 +992,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   });
 
   // --- Remote access ---
-  ipcMain.handle(IPC.StartRemoteServer, (_e, args: { port?: number }) => {
+  ipcMain.handle(IPC.StartRemoteServer, async (_e, args: { port?: number }) => {
     if (remoteServer)
       return {
         url: remoteServer.url,
@@ -1004,7 +1004,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
     const thisDir = path.dirname(fileURLToPath(import.meta.url));
     const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
-    remoteServer = startRemoteServer({
+    remoteServer = await startRemoteServer({
       port: args.port ?? 7777,
       host: '0.0.0.0',
       staticDir: distRemote,
@@ -1225,7 +1225,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         const thisDir = path.dirname(fileURLToPath(import.meta.url));
         const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
         const port = await findFreePort(7777, 7800);
-        remoteServer = startRemoteServer({
+        remoteServer = await startRemoteServer({
           port,
           host: '0.0.0.0',
           staticDir: distRemote,
