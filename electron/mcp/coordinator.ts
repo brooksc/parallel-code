@@ -5,7 +5,14 @@
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { writeFileSync, unlinkSync, readFileSync, existsSync, mkdirSync } from 'fs';
+import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'fs';
+import {
+  readFile as fsReadFile,
+  writeFile as fsWriteFile,
+  unlink as fsUnlink,
+  access as fsAccess,
+  mkdir as fsMkdir,
+} from 'fs/promises';
 import { join, dirname } from 'path';
 import os from 'os';
 import { getSubTaskMcpConfigPath } from './config.js';
@@ -67,6 +74,8 @@ export class Coordinator {
   private notificationDelayMs = 30_000;
   private readonly COORDINATOR_RESTAMP_DELAY_MS = 5 * 60_000;
   private readonly MAX_ACKED_BATCH_IDS = 64;
+  // Serializes concurrent preamble writes to the same file path.
+  private preambleWriteQueue = new Map<string, Promise<void>>();
   constructor() {
     // Listen for PTY exits to update task status when agents are killed externally
     // (e.g., user closes a child task from the UI).
@@ -475,62 +484,75 @@ export class Coordinator {
     try {
       // Inject sub-task instructions via agent-specific mechanism.
       // Inside try so preamble-write failures are cleaned up by the catch block.
+      // Serialized per file path to prevent races when multiple tasks target the same path.
+      const injectPreamble = async (filePath: string): Promise<void> => {
+        const prior = this.preambleWriteQueue.get(filePath) ?? Promise.resolve();
+        const next = prior.then(async () => {
+          let existing = '';
+          try {
+            await fsAccess(filePath);
+            existing = await fsReadFile(filePath, 'utf8');
+            preambleFileOriginalContent = existing;
+          } catch {
+            /* file does not exist */
+          }
+          await fsWriteFile(filePath, existing ? `${existing}\n\n${preamble}` : preamble);
+        });
+        this.preambleWriteQueue.set(
+          filePath,
+          next
+            .catch(() => {})
+            .then(() => {
+              if (this.preambleWriteQueue.get(filePath) === next) {
+                this.preambleWriteQueue.delete(filePath);
+              }
+            }),
+        );
+        await next;
+      };
+
       if (agentCmd.includes('codex') || agentCmd.includes('opencode')) {
         const agentsPath = join(result.worktree_path, 'AGENTS.md');
         preambleFilePath = agentsPath;
-        let existing = '';
-        if (existsSync(agentsPath)) {
-          try {
-            existing = readFileSync(agentsPath, 'utf8');
-          } catch {
-            /* ignore */
-          }
-          preambleFileOriginalContent = existing;
-        }
-        writeFileSync(agentsPath, existing ? `${existing}\n\n${preamble}` : preamble);
+        await injectPreamble(agentsPath);
       } else if (agentCmd.includes('gemini')) {
         const geminiPath = join(result.worktree_path, 'GEMINI.md');
         preambleFilePath = geminiPath;
-        let existing = '';
-        if (existsSync(geminiPath)) {
-          try {
-            existing = readFileSync(geminiPath, 'utf8');
-          } catch {
-            /* ignore */
-          }
-          preambleFileOriginalContent = existing;
-        }
-        writeFileSync(geminiPath, existing ? `${existing}\n\n${preamble}` : preamble);
+        await injectPreamble(geminiPath);
       } else if (agentCmd.includes('copilot')) {
         const agentMdPath = join(result.worktree_path, '.agent.md');
         preambleFilePath = agentMdPath;
-        let existing = '';
-        if (existsSync(agentMdPath)) {
-          try {
-            existing = readFileSync(agentMdPath, 'utf8');
-          } catch {
-            /* ignore */
-          }
-          preambleFileOriginalContent = existing;
-        }
-        writeFileSync(agentMdPath, existing ? `${existing}\n\n${preamble}` : preamble);
+        await injectPreamble(agentMdPath);
       } else {
         // Claude and fallback: settings.local.json (gitignored, no restore needed)
         const settingsDir = join(result.worktree_path, '.claude');
         const settingsPath = join(settingsDir, 'settings.local.json');
-        mkdirSync(settingsDir, { recursive: true });
-        let existingSettings: Record<string, unknown> = {};
-        if (existsSync(settingsPath)) {
+        await fsMkdir(settingsDir, { recursive: true });
+        const prior = this.preambleWriteQueue.get(settingsPath) ?? Promise.resolve();
+        const next = prior.then(async () => {
+          let existingSettings: Record<string, unknown> = {};
           try {
-            existingSettings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+            await fsAccess(settingsPath);
+            existingSettings = JSON.parse(await fsReadFile(settingsPath, 'utf8'));
           } catch {
             /* ignore */
           }
-        }
-        existingSettings.systemPrompt = existingSettings.systemPrompt
-          ? `${existingSettings.systemPrompt}\n\n${preamble}`
-          : preamble;
-        writeFileSync(settingsPath, JSON.stringify(existingSettings, null, 2));
+          existingSettings.systemPrompt = existingSettings.systemPrompt
+            ? `${existingSettings.systemPrompt}\n\n${preamble}`
+            : preamble;
+          await fsWriteFile(settingsPath, JSON.stringify(existingSettings, null, 2));
+        });
+        this.preambleWriteQueue.set(
+          settingsPath,
+          next
+            .catch(() => {})
+            .then(() => {
+              if (this.preambleWriteQueue.get(settingsPath) === next) {
+                this.preambleWriteQueue.delete(settingsPath);
+              }
+            }),
+        );
+        await next;
       }
       task.preambleFileExistedBefore = preambleFileOriginalContent !== null;
       // Write a per-sub-task MCP config so the agent can call signal_done.
@@ -551,7 +573,7 @@ export class Coordinator {
           },
         };
         const configPath = getSubTaskMcpConfigPath(dockerContainerName, serverPath, task.id);
-        writeFileSync(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
+        await fsWriteFile(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
         subTaskMcpConfigPath = configPath;
         task.mcpConfigPath = configPath;
       }
@@ -645,25 +667,25 @@ export class Coordinator {
     } catch (err) {
       // Restore injected preamble file before cleaning up
       if (preambleFilePath !== undefined) {
-        try {
-          if (preambleFileOriginalContent !== null) {
-            writeFileSync(preambleFilePath, preambleFileOriginalContent);
-          } else {
-            unlinkSync(preambleFilePath);
+        const restorePath = preambleFilePath;
+        const restoreContent = preambleFileOriginalContent;
+        (async () => {
+          try {
+            if (restoreContent !== null) {
+              await fsWriteFile(restorePath, restoreContent);
+            } else {
+              await fsUnlink(restorePath);
+            }
+          } catch {
+            /* ignore */
           }
-        } catch {
-          /* ignore */
-        }
+        })();
       }
       // Best-effort cleanup: kill agent, remove worktree/branch, clear in-memory state.
       // cleanupTask handles all of this; the task is still in this.tasks so it can find it.
       // Also delete the MCP config if it was written but not yet stored on task.mcpConfigPath.
       if (subTaskMcpConfigPath && !task.mcpConfigPath) {
-        try {
-          unlinkSync(subTaskMcpConfigPath);
-        } catch {
-          /* ignore */
-        }
+        fsUnlink(subTaskMcpConfigPath).catch(() => {});
       }
       this.cleanupTask(task.id).catch(() => {});
       throw err;

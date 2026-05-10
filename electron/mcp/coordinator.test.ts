@@ -17,6 +17,23 @@ vi.mock('fs', () => ({
   mkdirSync: mockMkdirSync,
 }));
 
+// fs/promises mocks — mirror the sync mocks above
+const mockFsWriteFile = vi.fn().mockResolvedValue(undefined);
+const mockFsReadFile = vi.fn().mockResolvedValue('# existing\n');
+const mockFsAccess = vi
+  .fn()
+  .mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+const mockFsUnlink = vi.fn().mockResolvedValue(undefined);
+const mockFsMkdir = vi.fn().mockResolvedValue(undefined);
+
+vi.mock('fs/promises', () => ({
+  writeFile: mockFsWriteFile,
+  readFile: mockFsReadFile,
+  access: mockFsAccess,
+  unlink: mockFsUnlink,
+  mkdir: mockFsMkdir,
+}));
+
 // --- other mocks ---
 const mockNotifyRenderer = vi.fn();
 const mockOnPtyEvent = vi.fn();
@@ -564,10 +581,10 @@ describe('Coordinator settings.local.json sub-task injection', () => {
   });
 
   it('writes settings.local.json with systemPrompt when file does not exist', async () => {
-    mockExistsSync.mockReturnValue(false);
+    mockFsAccess.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    const settingsWrite = mockWriteFileSync.mock.calls.find((c) =>
+    const settingsWrite = mockFsWriteFile.mock.calls.find((c) =>
       (c[0] as string).endsWith('settings.local.json'),
     );
     expect(settingsWrite).toBeDefined();
@@ -577,11 +594,11 @@ describe('Coordinator settings.local.json sub-task injection', () => {
   });
 
   it('appends preamble to existing systemPrompt in settings.local.json', async () => {
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ systemPrompt: 'existing prompt' }));
+    mockFsAccess.mockResolvedValue(undefined);
+    mockFsReadFile.mockResolvedValue(JSON.stringify({ systemPrompt: 'existing prompt' }));
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    const settingsWrite = mockWriteFileSync.mock.calls.find((c) =>
+    const settingsWrite = mockFsWriteFile.mock.calls.find((c) =>
       (c[0] as string).endsWith('settings.local.json'),
     );
     expect(settingsWrite).toBeDefined();
@@ -591,11 +608,11 @@ describe('Coordinator settings.local.json sub-task injection', () => {
   });
 
   it('preserves other keys in existing settings.local.json', async () => {
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ permissions: { allow: ['Bash'] } }));
+    mockFsAccess.mockResolvedValue(undefined);
+    mockFsReadFile.mockResolvedValue(JSON.stringify({ permissions: { allow: ['Bash'] } }));
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    const settingsWrite = mockWriteFileSync.mock.calls.find((c) =>
+    const settingsWrite = mockFsWriteFile.mock.calls.find((c) =>
       (c[0] as string).endsWith('settings.local.json'),
     );
     expect(settingsWrite).toBeDefined();
@@ -605,14 +622,14 @@ describe('Coordinator settings.local.json sub-task injection', () => {
   });
 
   it('does not restore settings.local.json on idle (no restore needed)', async () => {
-    mockExistsSync.mockReturnValue(false);
+    mockFsAccess.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.markPromptDelivered('task-1');
 
     const outputCb = getOutputCb();
     outputCb(encode('Working ❯ '));
 
-    const settingsWriteCallsAfterIdle = mockWriteFileSync.mock.calls.filter((c) =>
+    const settingsWriteCallsAfterIdle = mockFsWriteFile.mock.calls.filter((c) =>
       (c[0] as string).endsWith('settings.local.json'),
     );
     // Only the initial write; no re-write on idle
@@ -620,10 +637,10 @@ describe('Coordinator settings.local.json sub-task injection', () => {
   });
 
   it('does not write to CLAUDE.md', async () => {
-    mockExistsSync.mockReturnValue(false);
+    mockFsAccess.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    const claudeWrite = mockWriteFileSync.mock.calls.find((c) =>
+    const claudeWrite = mockFsWriteFile.mock.calls.find((c) =>
       (c[0] as string).endsWith('CLAUDE.md'),
     );
     expect(claudeWrite).toBeUndefined();
@@ -1186,7 +1203,7 @@ describe('Coordinator sub-task MCP config isolation', () => {
     await coordinator.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-1' });
     await coordinator.createTask({ name: 'task-b', prompt: 'do b', coordinatorTaskId: 'coord-1' });
 
-    const configWrites = mockWriteFileSync.mock.calls.filter((c) =>
+    const configWrites = mockFsWriteFile.mock.calls.filter((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrites).toHaveLength(2);
@@ -1224,7 +1241,7 @@ describe('Coordinator sub-task MCP config isolation', () => {
     await coordinator.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-1' });
     await coordinator.createTask({ name: 'task-b', prompt: 'do b', coordinatorTaskId: 'coord-1' });
 
-    const configPaths = mockWriteFileSync.mock.calls
+    const configPaths = mockFsWriteFile.mock.calls
       .filter((c) => (c[0] as string).includes('parallel-code-subtask-'))
       .map((c) => c[0] as string);
 
@@ -1264,7 +1281,7 @@ describe('Coordinator MCP config restart rewrite', () => {
     const task = coordinator.getTask('task-1');
     expect(task?.mcpConfigPath).toBeDefined();
 
-    const initialWrite = mockWriteFileSync.mock.calls.find((c) =>
+    const initialWrite = mockFsWriteFile.mock.calls.find((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(initialWrite).toBeDefined();
@@ -1421,7 +1438,7 @@ describe('Coordinator two-class token — subtask configs use subtaskToken', () 
     );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    const configWrite = mockWriteFileSync.mock.calls.find((c) =>
+    const configWrite = mockFsWriteFile.mock.calls.find((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrite).toBeDefined();
@@ -1944,7 +1961,7 @@ describe('Multiple Docker coordinators — isolation', () => {
     );
     await coordA.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-a' });
 
-    const configWrites = mockWriteFileSync.mock.calls.filter((c) =>
+    const configWrites = mockFsWriteFile.mock.calls.filter((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrites).toHaveLength(1);
