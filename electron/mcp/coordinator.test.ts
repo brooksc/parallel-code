@@ -2981,6 +2981,26 @@ describe('Coordinator waitForSignalDone — requestId replay after transport fai
     const result = await coordinator.waitForSignalDone('coord-1', 100);
     expect(result.taskId).toBe('task-1');
   });
+
+  it('cached result for coord-A does not replay for coord-B with the same requestId', async () => {
+    coordinator.registerCoordinator('coord-2', 'proj-1');
+
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const task = coordinator.getTask('task-1');
+    if (!task) throw new Error('task not found');
+    task.signalDoneAt = new Date();
+    task.signalDoneConsumed = false;
+
+    const requestId = 'shared-id';
+    // coord-A consumes the signal and caches with key `coord-1:shared-id`
+    const result1 = await coordinator.waitForSignalDone('coord-1', 500, requestId);
+    expect(result1.taskId).toBe('task-1');
+
+    // coord-B with same requestId must not replay coord-A's cached result
+    await expect(coordinator.waitForSignalDone('coord-2', 50, requestId)).rejects.toThrow(
+      'Timed out',
+    );
+  });
 });
 
 // ─── removePreambleBlock unit tests ──────────────────────────────────────────

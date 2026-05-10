@@ -16,6 +16,7 @@ import {
 import { join, dirname } from 'path';
 import os from 'os';
 import { getSubTaskMcpConfigPath } from './config.js';
+import { validateBranchName } from './validation.js';
 
 const execAsync = promisify(execFile);
 import type { BrowserWindow } from 'electron';
@@ -410,9 +411,7 @@ export class Coordinator {
     }
 
     if (opts.baseBranch !== undefined) {
-      if (typeof opts.baseBranch !== 'string' || !opts.baseBranch)
-        throw new Error('baseBranch must be a non-empty string');
-      if (opts.baseBranch.startsWith('-')) throw new Error('baseBranch must not start with "-"');
+      validateBranchName(opts.baseBranch, 'baseBranch');
     }
 
     const root = opts.projectRoot ?? coordinatorState.projectRoot ?? this.projectRoot;
@@ -1684,12 +1683,19 @@ export class Coordinator {
     }
   }
 
-  private cacheDeliveredResult(requestId: string, result: WaitForSignalDoneResult): void {
+  private cacheDeliveredResult(
+    coordinatorTaskId: string,
+    requestId: string,
+    result: WaitForSignalDoneResult,
+  ): void {
     const now = Date.now();
     for (const [key, entry] of this.recentlyDelivered) {
       if (entry.expiresAt <= now) this.recentlyDelivered.delete(key);
     }
-    this.recentlyDelivered.set(requestId, { result, expiresAt: now + 120_000 });
+    this.recentlyDelivered.set(`${coordinatorTaskId}:${requestId}`, {
+      result,
+      expiresAt: now + 120_000,
+    });
   }
 
   waitForSignalDone(
@@ -1702,8 +1708,9 @@ export class Coordinator {
     }
     // Replay the cached result if this requestId already delivered — handles retry
     // after the HTTP response was lost before the client received it.
+    // Key includes coordinatorTaskId to prevent cross-coordinator replay.
     if (requestId) {
-      const cached = this.recentlyDelivered.get(requestId);
+      const cached = this.recentlyDelivered.get(`${coordinatorTaskId}:${requestId}`);
       if (cached && Date.now() < cached.expiresAt) return Promise.resolve(cached.result);
     }
     // Return immediately if there's an unconsumed signal
@@ -1729,7 +1736,7 @@ export class Coordinator {
           signalDoneAt: task.signalDoneAt.toISOString(),
           remaining,
         };
-        if (requestId) this.cacheDeliveredResult(requestId, result);
+        if (requestId) this.cacheDeliveredResult(coordinatorTaskId, requestId, result);
         return Promise.resolve(result);
       }
     }
@@ -1746,7 +1753,7 @@ export class Coordinator {
 
       const wrapped = (result: WaitForSignalDoneResult) => {
         if (timerRef.value !== undefined) clearTimeout(timerRef.value);
-        if (requestId) this.cacheDeliveredResult(requestId, result);
+        if (requestId) this.cacheDeliveredResult(coordinatorTaskId, requestId, result);
         resolve(result);
       };
 

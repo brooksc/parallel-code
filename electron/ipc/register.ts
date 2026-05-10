@@ -79,6 +79,7 @@ import {
 } from './validate.js';
 import { warn as logWarn } from '../log.js';
 import { getMCPRemoteServerUrl, detectStaleDockerMCPUrl } from '../mcp/config.js';
+import { validateBranchName as sharedValidateBranchName } from '../mcp/validation.js';
 
 export function selectMcpJsonDir(worktreePath: string | undefined, projectRoot: string): string {
   return worktreePath ?? projectRoot;
@@ -193,11 +194,7 @@ function validateRelativePath(p: unknown, label: string): void {
   if (p.includes('..')) throw new Error(`${label} must not contain ".."`);
 }
 
-/** Reject branch names that could be misinterpreted as git flags. */
-function validateBranchName(name: unknown, label: string): void {
-  if (typeof name !== 'string' || !name) throw new Error(`${label} must be a non-empty string`);
-  if (name.startsWith('-')) throw new Error(`${label} must not start with "-"`);
-}
+const validateBranchName = sharedValidateBranchName;
 
 /** Reject commit hashes that are not valid hex strings. */
 function validateCommitHash(hash: unknown, label: string): void {
@@ -1292,6 +1289,32 @@ export function registerAllHandlers(win: BrowserWindow): void {
     ) => {
       validateStartMCPServerArgs(args as unknown as Record<string, unknown>);
 
+      // Fail fast on malformed .mcp.json BEFORE any coordinator state mutations.
+      // Only the read/parse happens here; the merge step (which needs mcpConfig) runs later.
+      const mcpJsonDir = selectMcpJsonDir(args.worktreePath, args.projectRoot);
+      let worktreeMcpPath: string | undefined;
+      let mcpFileExistedBefore = false;
+      let existingMcpContent: Record<string, unknown> = {};
+      if (mcpJsonDir) {
+        worktreeMcpPath = path.join(mcpJsonDir, '.mcp.json');
+        mcpFileExistedBefore = fs.existsSync(worktreeMcpPath);
+        if (mcpFileExistedBefore) {
+          let rawContent: string;
+          try {
+            rawContent = fs.readFileSync(worktreeMcpPath, 'utf-8');
+          } catch (e) {
+            throw new Error(`Failed to read ${worktreeMcpPath}: ${String(e)}`);
+          }
+          try {
+            existingMcpContent = JSON.parse(rawContent) as Record<string, unknown>;
+          } catch {
+            throw new Error(
+              `${worktreeMcpPath} contains invalid JSON — fix or remove it before starting the coordinator`,
+            );
+          }
+        }
+      }
+
       await enableCoordinatorMode();
       if (!coordinator) return;
 
@@ -1411,35 +1434,14 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
       const configJson = JSON.stringify(mcpConfig, null, 2);
 
-      // Validate .mcp.json parse BEFORE writing any files so a malformed file
-      // fails closed without leaving a stale temp config behind.
-      const mcpJsonDir = selectMcpJsonDir(args.worktreePath, args.projectRoot);
+      // Merge mcpConfig into the pre-validated existingMcpContent (parsed above,
+      // before any coordinator state was mutated).
       let mergedMcpJson: string | undefined;
-      let worktreeMcpPath: string | undefined;
-      let mcpFileExistedBefore = false;
-      if (mcpJsonDir) {
-        worktreeMcpPath = path.join(mcpJsonDir, '.mcp.json');
-        mcpFileExistedBefore = fs.existsSync(worktreeMcpPath);
-        let existingContent: Record<string, unknown> = {};
-        if (mcpFileExistedBefore) {
-          let rawContent: string;
-          try {
-            rawContent = fs.readFileSync(worktreeMcpPath, 'utf-8');
-          } catch (e) {
-            throw new Error(`Failed to read ${worktreeMcpPath}: ${String(e)}`);
-          }
-          try {
-            existingContent = JSON.parse(rawContent) as Record<string, unknown>;
-          } catch {
-            throw new Error(
-              `${worktreeMcpPath} contains invalid JSON — fix or remove it before starting the coordinator`,
-            );
-          }
-        }
+      if (mcpJsonDir && worktreeMcpPath) {
         const existingServers =
-          (existingContent.mcpServers as Record<string, unknown> | undefined) ?? {};
-        existingContent.mcpServers = { ...existingServers, ...mcpConfig.mcpServers };
-        mergedMcpJson = JSON.stringify(existingContent, null, 2);
+          (existingMcpContent.mcpServers as Record<string, unknown> | undefined) ?? {};
+        existingMcpContent.mcpServers = { ...existingServers, ...mcpConfig.mcpServers };
+        mergedMcpJson = JSON.stringify(existingMcpContent, null, 2);
       }
 
       // In docker mode the coordinator agent auto-discovers .mcp.json in the project root.
