@@ -68,6 +68,10 @@ export const [store, setStore] = createStore<AppStore>({
   mcpStatus: {
     mcpRunning: false,
     remoteRunning: false,
+    coordinatorRoutesAttached: false,
+    coordinatorRegistered: false,
+    serverUrl: null,
+    mcpConfigPath: null,
   },
   showArena: false,
   keybindingPreset: 'default',

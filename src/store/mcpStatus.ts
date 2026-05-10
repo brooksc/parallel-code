@@ -12,12 +12,21 @@ export function hasAnyCoordinatorTask(): boolean {
   return false;
 }
 
+const MCP_STATUS_OFFLINE = {
+  mcpRunning: false,
+  remoteRunning: false,
+  coordinatorRoutesAttached: false,
+  coordinatorRegistered: false,
+  serverUrl: null,
+  mcpConfigPath: null,
+} as const;
+
 export async function refreshMCPStatus(): Promise<void> {
   try {
-    const result = await invoke<{ mcpRunning: boolean; remoteRunning: boolean }>(IPC.GetMCPStatus);
+    const result = await invoke<import('./types').MCPStatus>(IPC.GetMCPStatus);
     setStore('mcpStatus', result);
   } catch {
-    setStore('mcpStatus', { mcpRunning: false, remoteRunning: false });
+    setStore('mcpStatus', MCP_STATUS_OFFLINE);
   }
 }
 
@@ -32,5 +41,5 @@ export function stopMCPStatusPolling(): void {
     clearInterval(pollTimer);
     pollTimer = null;
   }
-  setStore('mcpStatus', { mcpRunning: false, remoteRunning: false });
+  setStore('mcpStatus', MCP_STATUS_OFFLINE);
 }

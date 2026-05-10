@@ -229,6 +229,10 @@ export interface RemoteAccess {
 export interface MCPStatus {
   mcpRunning: boolean;
   remoteRunning: boolean;
+  coordinatorRoutesAttached: boolean;
+  coordinatorRegistered: boolean;
+  serverUrl: string | null;
+  mcpConfigPath: string | null;
 }
 
 export interface AppStore {

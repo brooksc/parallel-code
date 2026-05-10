@@ -301,6 +301,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   type CoordinatorType = import('../mcp/coordinator.js').Coordinator;
   let coordinator: CoordinatorType | null = null;
   let coordinatorHandlersRegistered = false;
+  let lastMcpConfigPath: string | null = null;
 
   // --- PTY commands ---
   ipcMain.handle(IPC.SpawnAgent, (_e, args) => {
@@ -1364,7 +1365,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
         console.warn('[MCP] .mcp.json written to:', worktreeMcpPath);
       }
 
-      if (configPath) console.warn('[MCP] Config written to:', configPath);
+      if (configPath) {
+        lastMcpConfigPath = configPath;
+        console.warn('[MCP] Config written to:', configPath);
+      }
       console.warn('[MCP] Server path:', mcpServerPath);
       console.warn('[MCP] Remote URL:', serverUrl);
 
@@ -1386,9 +1390,14 @@ export function registerAllHandlers(win: BrowserWindow): void {
     // The MCP server process is spawned by Claude Code (via --mcp-config),
     // not by us. We report whether the remote HTTP server that the MCP
     // server connects to is running — if it's up, MCP tools should work.
+    const remoteRunning = remoteServer !== null;
     return {
-      mcpRunning: remoteServer !== null,
-      remoteRunning: remoteServer !== null,
+      mcpRunning: remoteRunning,
+      remoteRunning,
+      coordinatorRoutesAttached: coordinator !== null,
+      coordinatorRegistered: coordinator?.hasActiveCoordinator() ?? false,
+      serverUrl: remoteServer?.url ?? null,
+      mcpConfigPath: lastMcpConfigPath,
     };
   });
 
