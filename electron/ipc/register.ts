@@ -164,6 +164,22 @@ function validatePath(p: unknown, label: string): void {
   if (p.includes('..')) throw new Error(`${label} must not contain ".."`);
 }
 
+/** Validates renderer-supplied args for StartMCPServer before any file I/O. Exported for testing. */
+export function validateStartMCPServerArgs(args: Record<string, unknown>): void {
+  assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+  assertString(args.projectId, 'projectId');
+  validatePath(args.projectRoot, 'projectRoot');
+  if (args.worktreePath !== undefined) validatePath(args.worktreePath, 'worktreePath');
+  if (args.agentCommand !== undefined) assertString(args.agentCommand, 'agentCommand');
+  if (args.agentArgs !== undefined) assertStringArray(args.agentArgs, 'agentArgs');
+  if (args.dockerContainerName !== undefined) {
+    assertString(args.dockerContainerName, 'dockerContainerName');
+    if (!/^[a-zA-Z0-9_.-]+$/.test(args.dockerContainerName as string)) {
+      throw new Error('dockerContainerName contains invalid characters');
+    }
+  }
+}
+
 /** Reject relative paths that attempt directory traversal or are absolute. */
 function validateRelativePath(p: unknown, label: string): void {
   if (typeof p !== 'string') throw new Error(`${label} must be a string`);
@@ -1267,18 +1283,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         dockerContainerName?: string;
       },
     ) => {
-      assertString(args.coordinatorTaskId, 'coordinatorTaskId');
-      assertString(args.projectId, 'projectId');
-      validatePath(args.projectRoot, 'projectRoot');
-      if (args.worktreePath !== undefined) validatePath(args.worktreePath, 'worktreePath');
-      if (args.agentCommand !== undefined) assertString(args.agentCommand, 'agentCommand');
-      if (args.agentArgs !== undefined) assertStringArray(args.agentArgs, 'agentArgs');
-      if (args.dockerContainerName !== undefined) {
-        assertString(args.dockerContainerName, 'dockerContainerName');
-        if (!/^[a-zA-Z0-9_.-]+$/.test(args.dockerContainerName)) {
-          throw new Error('dockerContainerName contains invalid characters');
-        }
-      }
+      validateStartMCPServerArgs(args as unknown as Record<string, unknown>);
 
       await enableCoordinatorMode();
       if (!coordinator) return;

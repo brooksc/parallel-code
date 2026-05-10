@@ -19,6 +19,7 @@ import {
   buildCoordinatorMCPConfig,
   getDockerMcpServerDestPath,
   selectMcpJsonDir,
+  validateStartMCPServerArgs,
 } from './register.js';
 import { getMCPRemoteServerUrl } from '../mcp/config.js';
 import { startRemoteServer } from '../remote/server.js';
@@ -190,6 +191,95 @@ describe('Layer 3 — MCP startup pipeline (no Electron, real FS)', () => {
     expect(args[urlIdx + 1]).toBe('http://127.0.0.1:3001');
     // Server path is the host path (no copy)
     expect(args[0]).toBe(origServerPath);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layer 4: StartMCPServer input validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VALID_ARGS = {
+  coordinatorTaskId: 'coord-1',
+  projectId: 'proj-1',
+  projectRoot: '/absolute/project',
+  worktreePath: '/absolute/worktree',
+  agentArgs: ['--flag', 'value'],
+  dockerContainerName: 'my-container',
+};
+
+describe('Layer 4 — StartMCPServer input validation', () => {
+  it('accepts valid args without throwing', () => {
+    expect(() => validateStartMCPServerArgs(VALID_ARGS)).not.toThrow();
+  });
+
+  it('rejects non-absolute projectRoot', () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    const copyFileSpy = vi.spyOn(fs, 'copyFileSync');
+
+    expect(() =>
+      validateStartMCPServerArgs({ ...VALID_ARGS, projectRoot: 'relative/path' }),
+    ).toThrow('projectRoot must be absolute');
+
+    expect(writeFileSpy).not.toHaveBeenCalled();
+    expect(copyFileSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects projectRoot containing ".."', () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    const copyFileSpy = vi.spyOn(fs, 'copyFileSync');
+
+    expect(() => validateStartMCPServerArgs({ ...VALID_ARGS, projectRoot: '/tmp/../etc' })).toThrow(
+      'projectRoot must not contain ".."',
+    );
+
+    expect(writeFileSpy).not.toHaveBeenCalled();
+    expect(copyFileSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-absolute worktreePath', () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    const copyFileSpy = vi.spyOn(fs, 'copyFileSync');
+
+    expect(() =>
+      validateStartMCPServerArgs({ ...VALID_ARGS, worktreePath: 'relative/worktree' }),
+    ).toThrow('worktreePath must be absolute');
+
+    expect(writeFileSpy).not.toHaveBeenCalled();
+    expect(copyFileSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects agentArgs containing a non-string element', () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    const copyFileSpy = vi.spyOn(fs, 'copyFileSync');
+
+    expect(() => validateStartMCPServerArgs({ ...VALID_ARGS, agentArgs: [1, 'foo'] })).toThrow(
+      'agentArgs must be a string array',
+    );
+
+    expect(writeFileSpy).not.toHaveBeenCalled();
+    expect(copyFileSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects dockerContainerName with shell-special characters', () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    const copyFileSpy = vi.spyOn(fs, 'copyFileSync');
+
+    expect(() =>
+      validateStartMCPServerArgs({ ...VALID_ARGS, dockerContainerName: '; rm -rf /' }),
+    ).toThrow('dockerContainerName contains invalid characters');
+
+    expect(writeFileSpy).not.toHaveBeenCalled();
+    expect(copyFileSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts worktreePath undefined (optional field)', () => {
+    const { worktreePath: _, ...argsWithoutWorktree } = VALID_ARGS;
+    expect(() => validateStartMCPServerArgs(argsWithoutWorktree)).not.toThrow();
+  });
+
+  it('accepts dockerContainerName undefined (optional field)', () => {
+    const { dockerContainerName: _, ...argsWithoutDocker } = VALID_ARGS;
+    expect(() => validateStartMCPServerArgs(argsWithoutDocker)).not.toThrow();
   });
 });
 
