@@ -128,12 +128,14 @@ import {
   initMCPListeners,
   setTaskControl,
   collapseTask,
+  closeTask,
   sendPrompt,
   markTaskMcpPending,
   markTaskMcpReady,
   markTaskMcpError,
   retryTaskMcpStartup,
 } from './tasks';
+import { getCoordinatorChildren } from './sidebar-order';
 
 // ─── Coordinator listener setup ───────────────────────────────────────────────
 
@@ -525,5 +527,91 @@ describe('MCP_TaskCleanupFailed IPC handler', () => {
       cleanupFailedHandler({ taskId: 'nonexistent', error: 'delete failed' }),
     ).not.toThrow();
     expect(mockTasks['task-1'].closingStatus).toBe('closing');
+  });
+});
+
+// ─── closeTask — IPC ordering (#37) ──────────────────────────────────────────
+
+describe('closeTask — IPC cleanup ordering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
+    mockInvoke.mockResolvedValue(undefined);
+  });
+
+  it('MCP_CoordinatedTaskClosed rejection is swallowed and task is still removed', async () => {
+    mockTasks['task-1'] = {
+      agentIds: ['agent-1'],
+      shellAgentIds: [],
+      coordinatedBy: 'coord-1',
+      gitIsolation: 'direct', // skip DeleteTask to keep invoke sequence simple
+      projectId: 'proj-1',
+    };
+    mockInvoke.mockImplementation((channel: string) => {
+      if (channel === IPC.MCP_CoordinatedTaskClosed) {
+        return Promise.reject(new Error('backend gone'));
+      }
+      return Promise.resolve(undefined);
+    });
+
+    await closeTask('task-1');
+
+    // removeTaskFromStore marks 'removing' synchronously; setTimeout deletion is not awaited
+    expect(mockTasks['task-1']?.closingStatus).toBe('removing');
+  });
+
+  it('MCP_CoordinatedTaskClosed resolves before removeTaskFromStore is called', async () => {
+    const order: string[] = [];
+    mockTasks['task-1'] = {
+      agentIds: [],
+      shellAgentIds: [],
+      coordinatedBy: 'coord-1',
+      gitIsolation: 'direct',
+      projectId: 'proj-1',
+    };
+    mockInvoke.mockImplementation((channel: string) => {
+      if (channel === IPC.MCP_CoordinatedTaskClosed) {
+        return Promise.resolve(undefined).then(() => {
+          order.push('ipc');
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    // Intercept setStore to detect when removeTaskFromStore marks task as 'removing'
+    const origImpl = mockSetStore.getMockImplementation();
+    mockSetStore.mockImplementation((...args: unknown[]) => {
+      if (origImpl) origImpl(...args);
+      // Phase-1 of removeTaskFromStore: setStore('tasks', id, 'closingStatus', 'removing')
+      if (args[2] === 'closingStatus' && args[3] === 'removing') order.push('remove');
+    });
+
+    await closeTask('task-1');
+
+    const ipcIdx = order.indexOf('ipc');
+    const removeIdx = order.indexOf('remove');
+    expect(ipcIdx).toBeGreaterThanOrEqual(0);
+    expect(removeIdx).toBeGreaterThan(ipcIdx);
+  });
+
+  it('MCP_CoordinatorDeregistered rejection is swallowed and coordinator is still removed', async () => {
+    vi.mocked(getCoordinatorChildren).mockReturnValue({ active: [], collapsed: [] });
+    mockTasks['coord-1'] = {
+      agentIds: ['agent-coord'],
+      shellAgentIds: [],
+      coordinatorMode: true,
+      gitIsolation: 'direct',
+      projectId: 'proj-1',
+    };
+    mockInvoke.mockImplementation((channel: string) => {
+      if (channel === IPC.MCP_CoordinatorDeregistered) {
+        return Promise.reject(new Error('deregister failed'));
+      }
+      return Promise.resolve(undefined);
+    });
+
+    await closeTask('coord-1');
+
+    // removeTaskFromStore marks 'removing' synchronously; setTimeout deletion is not awaited
+    expect(mockTasks['coord-1']?.closingStatus).toBe('removing');
   });
 });

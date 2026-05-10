@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'os';
 import { join, dirname } from 'path';
+import { getChangedFiles, getAllFileDiffs, getDiffBaseSha } from '../ipc/git.js';
 
 // --- fs / child_process mocks (must come before dynamic import) ---
 const mockExecFile = vi.fn(
@@ -79,6 +80,7 @@ vi.mock('../ipc/pty.js', () => ({
 vi.mock('../ipc/git.js', () => ({
   getChangedFiles: vi.fn().mockResolvedValue([]),
   getAllFileDiffs: vi.fn().mockResolvedValue(''),
+  getDiffBaseSha: vi.fn().mockResolvedValue('abc123sha'),
   mergeTask: vi.fn(),
 }));
 
@@ -3026,6 +3028,315 @@ describe('Coordinator removePreambleBlock', () => {
   it('returns content unchanged when no preamble marker present', () => {
     const content = 'just a normal file\nno preamble here';
     expect(strip(content)).toBe(content);
+  });
+});
+
+// ─── getTaskDiff — preamble-bearing files (#34) ───────────────────────────────
+
+describe('Coordinator getTaskDiff — preamble-bearing files', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/test',
+      worktree_path: '/tmp/worktree',
+    });
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+    vi.mocked(getDiffBaseSha).mockResolvedValue('base-sha-abc');
+  });
+
+  it('preamble-only AGENTS.md is excluded from file list and diff output', async () => {
+    await coordinator.createTask({ name: 'T', coordinatorTaskId: 'coord-1' });
+
+    vi.mocked(getChangedFiles).mockResolvedValue([
+      { path: 'AGENTS.md', status: 'M', lines_added: 5, lines_removed: 0, committed: true },
+    ]);
+    vi.mocked(getAllFileDiffs).mockResolvedValue(
+      'diff --git a/AGENTS.md b/AGENTS.md\n@@ -1 +1,3 @@\n+<sub-task-mode>\n+rules\n+</sub-task-mode>\n',
+    );
+
+    // AGENTS.md contains only the injected preamble block
+    mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('AGENTS.md'));
+    mockReadFileSync.mockReturnValue('<sub-task-mode>\nrules here\n</sub-task-mode>');
+
+    // git show: base was empty; git diff --no-index: no diff (normalized == base).
+    // Note: git diff --no-index is called WITHOUT opts, so promisify places the callback
+    // in position 3 (optsOrCb). We detect which arg is the callback by checking typeof.
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        _args: string[],
+        optsOrCb: unknown,
+        cbMaybe?: (e: Error | null, o: string, r: string) => void,
+      ) => {
+        const cb = (typeof optsOrCb === 'function' ? optsOrCb : cbMaybe) as (
+          e: Error | null,
+          o: string,
+          r: string,
+        ) => void;
+        cb(null, '', '');
+      },
+    );
+
+    const result = await coordinator.getTaskDiff('task-1');
+
+    expect(result.files).toHaveLength(0);
+    expect(result.diff).not.toContain('AGENTS.md');
+    expect(result.diff).not.toContain('sub-task-mode');
+  });
+
+  it('AGENTS.md with user edit after preamble block shows only the user edit', async () => {
+    await coordinator.createTask({ name: 'T', coordinatorTaskId: 'coord-1' });
+
+    vi.mocked(getChangedFiles).mockResolvedValue([
+      { path: 'AGENTS.md', status: 'M', lines_added: 8, lines_removed: 0, committed: true },
+    ]);
+    vi.mocked(getAllFileDiffs).mockResolvedValue(
+      'diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1,8 @@\n+preamble and user content\n',
+    );
+
+    // Worktree: preamble block + user content after it
+    const worktreeContent =
+      '<sub-task-mode>\nrules\n</sub-task-mode>\n\n# User section added by sub-agent\n';
+    mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('AGENTS.md'));
+    mockReadFileSync.mockReturnValue(worktreeContent);
+
+    const fakeDiff =
+      'diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -0,0 +1 @@\n+# User section added by sub-agent\n';
+
+    // git show has opts ({cwd}), git diff --no-index does not. Detect callback by type.
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        optsOrCb: unknown,
+        cbMaybe?: (e: Error | null, o: string, r: string) => void,
+      ) => {
+        const cb = (typeof optsOrCb === 'function' ? optsOrCb : cbMaybe) as (
+          e: Error | null,
+          o: string,
+          r: string,
+        ) => void;
+        if (args[0] === 'show') {
+          cb(null, '', ''); // base was empty
+        } else if (args[0] === 'diff') {
+          // git diff exits with code 1 when files differ
+          const err = Object.assign(new Error(''), { code: 1, stdout: fakeDiff });
+          cb(err, fakeDiff, '');
+        } else {
+          cb(null, '', '');
+        }
+      },
+    );
+
+    const result = await coordinator.getTaskDiff('task-1');
+
+    expect(result.files).toHaveLength(1);
+    expect(result.diff).toContain('User section added by sub-agent');
+    expect(result.diff).not.toContain('sub-task-mode');
+  });
+
+  it('AGENTS.md with user edit before preamble block also shows the user edit', async () => {
+    await coordinator.createTask({ name: 'T', coordinatorTaskId: 'coord-1' });
+
+    vi.mocked(getChangedFiles).mockResolvedValue([
+      { path: 'AGENTS.md', status: 'M', lines_added: 6, lines_removed: 0, committed: true },
+    ]);
+    vi.mocked(getAllFileDiffs).mockResolvedValue(
+      'diff --git a/AGENTS.md b/AGENTS.md\n@@ -1 +1,6 @@\n+mixed content\n',
+    );
+
+    // Worktree: user content before preamble
+    const worktreeContent = '# My custom heading\n\n<sub-task-mode>\nrules\n</sub-task-mode>\n';
+    mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('AGENTS.md'));
+    mockReadFileSync.mockReturnValue(worktreeContent);
+
+    const fakeDiff =
+      'diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -0,0 +1 @@\n+# My custom heading\n';
+
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        optsOrCb: unknown,
+        cbMaybe?: (e: Error | null, o: string, r: string) => void,
+      ) => {
+        const cb = (typeof optsOrCb === 'function' ? optsOrCb : cbMaybe) as (
+          e: Error | null,
+          o: string,
+          r: string,
+        ) => void;
+        if (args[0] === 'show') {
+          cb(null, '', '');
+        } else if (args[0] === 'diff') {
+          const err = Object.assign(new Error(''), { code: 1, stdout: fakeDiff });
+          cb(err, fakeDiff, '');
+        } else {
+          cb(null, '', '');
+        }
+      },
+    );
+
+    const result = await coordinator.getTaskDiff('task-1');
+
+    expect(result.files).toHaveLength(1);
+    expect(result.diff).toContain('My custom heading');
+    expect(result.diff).not.toContain('sub-task-mode');
+  });
+
+  it('settings.local.json preserves unrelated keys, shows only non-preamble changes', async () => {
+    await coordinator.createTask({ name: 'T', coordinatorTaskId: 'coord-1' });
+
+    const settingsRelPath = '.claude/settings.local.json';
+    vi.mocked(getChangedFiles).mockResolvedValue([
+      { path: settingsRelPath, status: 'M', lines_added: 4, lines_removed: 0, committed: true },
+    ]);
+    vi.mocked(getAllFileDiffs).mockResolvedValue(
+      `diff --git a/${settingsRelPath} b/${settingsRelPath}\n@@ -1 +1,5 @@\n+settings\n`,
+    );
+
+    const settingsContent = JSON.stringify(
+      {
+        model: 'claude-opus-4-7',
+        systemPrompt: '<sub-task-mode>\nrules\n</sub-task-mode>',
+      },
+      null,
+      2,
+    );
+    mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('settings.local.json'));
+    mockReadFileSync.mockReturnValue(settingsContent);
+
+    const fakeDiff = `diff --git a/${settingsRelPath} b/${settingsRelPath}\n--- a/${settingsRelPath}\n+++ b/${settingsRelPath}\n@@ -1,5 +1,3 @@\n {\n+  "model": "claude-opus-4-7"\n }\n`;
+
+    // git show has opts ({cwd}), git diff --no-index does not. Detect callback by type.
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        optsOrCb: unknown,
+        cbMaybe?: (e: Error | null, o: string, r: string) => void,
+      ) => {
+        const cb = (typeof optsOrCb === 'function' ? optsOrCb : cbMaybe) as (
+          e: Error | null,
+          o: string,
+          r: string,
+        ) => void;
+        if (args[0] === 'show') {
+          cb(null, '{}', ''); // base had empty settings
+        } else if (args[0] === 'diff') {
+          const err = Object.assign(new Error(''), { code: 1, stdout: fakeDiff });
+          cb(err, fakeDiff, '');
+        } else {
+          cb(null, '', '');
+        }
+      },
+    );
+
+    const result = await coordinator.getTaskDiff('task-1');
+
+    expect(result.files).toHaveLength(1); // file has real change (model key)
+    expect(result.diff).toContain('model');
+    expect(result.diff).not.toContain('sub-task-mode');
+    expect(result.diff).not.toContain('systemPrompt');
+  });
+});
+
+// ─── deregisterCoordinator .mcp.json cleanup (#40) ───────────────────────────
+
+describe('Coordinator deregisterCoordinator — .mcp.json cleanup', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/test',
+      worktree_path: '/tmp/test',
+    });
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+    coordinator.setMcpJsonInfo('coord-1', '/tmp/.mcp.json', false);
+  });
+
+  it('removes only the parallel-code key and preserves other servers', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        mcpServers: {
+          'my-server': { command: 'my-tool', args: [] },
+          'parallel-code': { command: 'node', args: ['server.js'] },
+        },
+      }),
+    );
+
+    coordinator.deregisterCoordinator('coord-1');
+
+    const writeCall = mockWriteFileSync.mock.calls.find(
+      (c: unknown[]) => c[0] === '/tmp/.mcp.json',
+    );
+    expect(writeCall).toBeDefined();
+    const written = JSON.parse(writeCall?.[1] as string) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(written.mcpServers['my-server']).toBeDefined();
+    expect(written.mcpServers['parallel-code']).toBeUndefined();
+    expect(mockUnlinkSync).not.toHaveBeenCalledWith('/tmp/.mcp.json');
+  });
+
+  it('deletes the file when parallel-code was the only entry', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        mcpServers: { 'parallel-code': { command: 'node', args: ['server.js'] } },
+      }),
+    );
+
+    coordinator.deregisterCoordinator('coord-1');
+
+    expect(mockUnlinkSync).toHaveBeenCalledWith('/tmp/.mcp.json');
+    const writeCall = mockWriteFileSync.mock.calls.find(
+      (c: unknown[]) => c[0] === '/tmp/.mcp.json',
+    );
+    expect(writeCall).toBeUndefined();
+  });
+
+  it('does not touch the filesystem when .mcp.json does not exist', () => {
+    mockExistsSync.mockReturnValue(false);
+
+    coordinator.deregisterCoordinator('coord-1');
+
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockUnlinkSync).not.toHaveBeenCalled();
+  });
+
+  it('preserves the file when it has additional top-level keys beyond mcpServers', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        mcpServers: { 'parallel-code': { command: 'node', args: [] } },
+        someOtherKey: 'kept',
+      }),
+    );
+
+    coordinator.deregisterCoordinator('coord-1');
+
+    // File should be rewritten (not deleted) because someOtherKey remains
+    const writeCall = mockWriteFileSync.mock.calls.find(
+      (c: unknown[]) => c[0] === '/tmp/.mcp.json',
+    );
+    expect(writeCall).toBeDefined();
+    const written = JSON.parse(writeCall?.[1] as string) as Record<string, unknown>;
+    expect(written['someOtherKey']).toBe('kept');
+    expect(mockUnlinkSync).not.toHaveBeenCalledWith('/tmp/.mcp.json');
   });
 });
 

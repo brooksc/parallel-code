@@ -53,6 +53,21 @@ export function TaskPanel(props: TaskPanelProps) {
   const [showCloseConfirm, setShowCloseConfirm] = createSignal(false);
   const [planFullscreen, setPlanFullscreen] = createSignal(false);
 
+  // Countdown clock for staged coordinator notifications shown while auto mode is active.
+  const [nowMs, setNowMs] = createSignal(Date.now());
+  createEffect(() => {
+    const n = props.task.stagedNotification;
+    if (!n || n.userEdited) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    onCleanup(() => clearInterval(id));
+  });
+  const stagedCountdown = () => {
+    const n = props.task.stagedNotification;
+    if (!n || n.userEdited) return null;
+    const remaining = Math.ceil((n.autoFireAt - nowMs()) / 1_000);
+    return remaining > 0 ? `Auto-sending in ${remaining}s` : 'Sending when ready…';
+  };
+
   const [showMergeConfirm, setShowMergeConfirm] = createSignal(false);
   const [showPushConfirm, setShowPushConfirm] = createSignal(false);
   const [pushSuccess, setPushSuccess] = createSignal(false);
@@ -435,30 +450,75 @@ export function TaskPanel(props: TaskPanelProps) {
               style={{
                 background: theme.bgElevated,
                 'border-bottom': `1px solid ${theme.border}`,
-                padding: '6px 12px',
                 'font-size': '12px',
-                display: 'flex',
-                'align-items': 'center',
-                'justify-content': 'space-between',
                 color: theme.fgMuted,
               }}
             >
-              <span>{props.task.coordinatorMode ? 'Auto mode' : 'Coordinator driving'}</span>
-              <button
+              <div
                 style={{
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  'font-size': '12px',
-                  color: theme.accent,
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setTaskControl(props.task.id, 'human');
+                  padding: '6px 12px',
+                  display: 'flex',
+                  'align-items': 'center',
+                  'justify-content': 'space-between',
                 }}
               >
-                Take Control
-              </button>
+                <span>{props.task.coordinatorMode ? 'Auto mode' : 'Coordinator driving'}</span>
+                <button
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    'font-size': '12px',
+                    color: theme.accent,
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTaskControl(props.task.id, 'human');
+                  }}
+                >
+                  Take Control
+                </button>
+              </div>
+              <Show
+                when={!!props.task.stagedNotification && !props.task.stagedNotification.userEdited}
+              >
+                <div
+                  style={{
+                    'border-top': `1px solid ${theme.border}`,
+                    padding: '6px 12px',
+                    background: `${theme.accent}11`,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      'align-items': 'center',
+                      'justify-content': 'space-between',
+                      'margin-bottom': '4px',
+                    }}
+                  >
+                    <span style={{ color: theme.accent, 'font-size': '11px' }}>
+                      Staged for auto-send
+                    </span>
+                    <span style={{ 'font-size': '11px', color: theme.fgSubtle }}>
+                      {stagedCountdown()}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      'white-space': 'pre-wrap',
+                      'word-break': 'break-word',
+                      'max-height': '80px',
+                      overflow: 'hidden',
+                      color: theme.fg,
+                      'font-size': '11px',
+                      opacity: '0.85',
+                    }}
+                  >
+                    {props.task.stagedNotification?.text}
+                  </div>
+                </div>
+              </Show>
             </div>
           }
         >

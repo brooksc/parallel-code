@@ -1411,6 +1411,37 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
       const configJson = JSON.stringify(mcpConfig, null, 2);
 
+      // Validate .mcp.json parse BEFORE writing any files so a malformed file
+      // fails closed without leaving a stale temp config behind.
+      const mcpJsonDir = selectMcpJsonDir(args.worktreePath, args.projectRoot);
+      let mergedMcpJson: string | undefined;
+      let worktreeMcpPath: string | undefined;
+      let mcpFileExistedBefore = false;
+      if (mcpJsonDir) {
+        worktreeMcpPath = path.join(mcpJsonDir, '.mcp.json');
+        mcpFileExistedBefore = fs.existsSync(worktreeMcpPath);
+        let existingContent: Record<string, unknown> = {};
+        if (mcpFileExistedBefore) {
+          let rawContent: string;
+          try {
+            rawContent = fs.readFileSync(worktreeMcpPath, 'utf-8');
+          } catch (e) {
+            throw new Error(`Failed to read ${worktreeMcpPath}: ${String(e)}`);
+          }
+          try {
+            existingContent = JSON.parse(rawContent) as Record<string, unknown>;
+          } catch {
+            throw new Error(
+              `${worktreeMcpPath} contains invalid JSON — fix or remove it before starting the coordinator`,
+            );
+          }
+        }
+        const existingServers =
+          (existingContent.mcpServers as Record<string, unknown> | undefined) ?? {};
+        existingContent.mcpServers = { ...existingServers, ...mcpConfig.mcpServers };
+        mergedMcpJson = JSON.stringify(existingContent, null, 2);
+      }
+
       // In docker mode the coordinator agent auto-discovers .mcp.json in the project root.
       // No host-temp configPath needed.
       let configPath: string | undefined;
@@ -1425,31 +1456,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
       // Write .mcp.json for auto-discovery. Read before writing — merge only the
       // parallel-code key so we don't destroy user-defined entries. Track whether
       // we created the file so deregisterCoordinator can clean up correctly.
-      const mcpJsonDir = selectMcpJsonDir(args.worktreePath, args.projectRoot);
-      if (mcpJsonDir) {
-        const worktreeMcpPath = path.join(mcpJsonDir, '.mcp.json');
-        const fileExists = fs.existsSync(worktreeMcpPath);
-        let existingContent: Record<string, unknown> = {};
-        if (fileExists) {
-          try {
-            existingContent = JSON.parse(fs.readFileSync(worktreeMcpPath, 'utf-8')) as Record<
-              string,
-              unknown
-            >;
-          } catch {
-            /* ignore — treat as empty */
-          }
-        }
-        const existingServers =
-          (existingContent.mcpServers as Record<string, unknown> | undefined) ?? {};
-        existingContent.mcpServers = {
-          ...existingServers,
-          ...mcpConfig.mcpServers,
-        };
-        const mergedJson = JSON.stringify(existingContent, null, 2);
-        fs.writeFileSync(worktreeMcpPath, mergedJson);
+      if (mcpJsonDir && worktreeMcpPath && mergedMcpJson !== undefined) {
+        fs.writeFileSync(worktreeMcpPath, mergedMcpJson);
         fs.chmodSync(worktreeMcpPath, 0o600);
-        coordinator.setMcpJsonInfo(args.coordinatorTaskId, worktreeMcpPath, !fileExists);
+        coordinator.setMcpJsonInfo(args.coordinatorTaskId, worktreeMcpPath, !mcpFileExistedBefore);
 
         // Append to .git/info/exclude (local-only gitignore, not committed)
         try {

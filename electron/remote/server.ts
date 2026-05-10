@@ -20,6 +20,7 @@ import {
 } from '../ipc/pty.js';
 import { parseClientMessage, type ServerMessage, type RemoteAgent } from './protocol.js';
 import type { Coordinator } from '../mcp/coordinator.js';
+import { validateBranchName } from '../mcp/validation.js';
 
 // --- MCP log ring buffer ---
 export interface MCPLogEntry {
@@ -293,16 +294,19 @@ export function startRemoteServer(opts: {
                 return jsonReply(400, { error: 'prompt must be a string' });
               if (body.projectId !== undefined && typeof body.projectId !== 'string')
                 return jsonReply(400, { error: 'projectId must be a string' });
-              if (body.baseBranch !== undefined && typeof body.baseBranch !== 'string')
-                return jsonReply(400, { error: 'baseBranch must be a string' });
               if (body.gitIsolation !== undefined)
                 return jsonReply(400, {
                   error: 'gitIsolation is not supported; only worktree isolation is implemented',
                 });
-              mcpLog(
-                'info',
-                `create_task name=${body.name} baseBranch=${body.baseBranch ?? 'default'}`,
-              );
+              let baseBranch: string | undefined;
+              if (body.baseBranch !== undefined) {
+                try {
+                  baseBranch = validateBranchName(body.baseBranch, 'baseBranch');
+                } catch (e) {
+                  return jsonReply(400, { error: String(e) });
+                }
+              }
+              mcpLog('info', `create_task name=${body.name} baseBranch=${baseBranch ?? 'default'}`);
               const result = await orch.createTask({
                 name: body.name,
                 prompt: body.prompt as string | undefined,
@@ -311,7 +315,7 @@ export function startRemoteServer(opts: {
                     ? body.coordinatorTaskId
                     : REST_COORDINATOR_SENTINEL,
                 projectId: body.projectId as string | undefined,
-                baseBranch: body.baseBranch as string | undefined,
+                baseBranch,
               });
               mcpLog('info', `create_task OK id=${result.id}`);
               jsonReply(201, orch.getTaskStatus(result.id));

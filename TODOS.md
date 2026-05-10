@@ -44,7 +44,7 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 
 ---
 
-### 31. Docker sub-tasks: one container per sub-task instead of docker exec
+### ~~31. Docker sub-tasks: one container per sub-task instead of docker exec~~ ✅ COMPLETE
 
 **Current approach:** The coordinator spawns one `docker run` container and all sub-tasks run inside it via `docker exec`. This causes two known problems: HOME collision (#19, partially mitigated) and shaky process cleanup (#18, partially mitigated).
 
@@ -64,7 +64,7 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 
 ---
 
-### 32. Preamble injection uses synchronous file I/O on the main thread
+### ~~32. Preamble injection uses synchronous file I/O on the main thread~~ ✅ COMPLETE
 
 **File:** `electron/mcp/coordinator.ts` (`createTask`, ~line 444–499)
 **What's wrong:** `createTask` uses `readFileSync`/`writeFileSync` for preamble injection into the sub-task worktree. This blocks the Electron main thread on every sub-task creation. With multiple concurrent sub-tasks, it can also race — two `create_task` calls reading the same file before either writes.
@@ -72,7 +72,7 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 
 ---
 
-### 34. Preamble stripping can hide or silently delete legitimate task changes — P1
+### ~~34. Preamble stripping can hide or silently delete legitimate task changes — P1~~ ✅ COMPLETE
 
 **Files:** `electron/mcp/coordinator.ts` (`getTaskDiff` ~line 760/777; `mergeTask` cleanup ~line 972)
 **What's wrong (two facets):**
@@ -102,7 +102,7 @@ Implementation constraints:
 
 ---
 
-### 33. No integration tests for post-restart coordinator flow
+### ~~33. No integration tests for post-restart coordinator flow~~ ✅ COMPLETE
 
 **Files:** `electron/mcp/coordinator.ts` (`hydrateTask`), `src/App.tsx` (restart restore path)
 **What's wrong:** `hydrateTask` restores output callbacks, `setMCPServerInfo` rewrites config files, and `StartMCPServer` is awaited before child hydration — but there are no tests exercising the full restart → re-subscribe → `wait_for_idle` / `wait_for_signal_done` round-trip. A regression in the restart path would be invisible.
@@ -111,7 +111,7 @@ Implementation constraints:
 
 ---
 
-### 35. Missing tests for `StartMCPServer` IPC input validation
+### ~~35. Missing tests for `StartMCPServer` IPC input validation~~ ✅ COMPLETE
 
 **File:** `electron/ipc/register-mcp.test.ts` (or new `electron/ipc/register.test.ts`)
 **What's wrong:** The `StartMCPServer` handler now validates renderer-supplied paths and IDs, but there are no tests exercising the rejection paths. A future refactor could accidentally remove or weaken the guards invisibly.
@@ -128,7 +128,7 @@ Implementation constraints:
 
 ---
 
-### 36. Missing tests for hydrated `mcpConfigPath` directory scoping
+### ~~36. Missing tests for hydrated `mcpConfigPath` directory scoping~~ ✅ COMPLETE
 
 **File:** `electron/mcp/coordinator.test.ts` (hydrateTask describe block)
 **What's wrong:** `hydrateTask` now validates `mcpConfigPath` against exact expected paths, but only the happy path is tested. Path-traversal and wrong-directory inputs could silently fall back to `undefined` and be mistaken for correct behavior.
@@ -143,7 +143,7 @@ Implementation constraints:
 
 ---
 
-### 37. Missing tests for awaited coordinator cleanup ordering
+### ~~37. Missing tests for awaited coordinator cleanup ordering~~ ✅ COMPLETE
 
 **File:** `src/store/tasks.test.ts`
 **What's wrong:** `MCP_CoordinatorDeregistered` and `MCP_CoordinatedTaskClosed` are now awaited before UI state is removed, but there are no tests asserting the order or handling a rejection.
@@ -157,7 +157,7 @@ Implementation constraints:
 
 ---
 
-### 38. MCP/REST `baseBranch` bypasses IPC branch-name guard — P2
+### ~~38. MCP/REST `baseBranch` bypasses IPC branch-name guard~~ ✅ COMPLETE
 
 **Files:** `electron/mcp/server.ts:69`, `electron/remote/server.ts:291`, `electron/ipc/git.ts:705`
 **What's wrong:** Normal IPC validates `baseBranch` before it reaches git. The MCP tool handler and REST `POST /api/tasks` only check that `baseBranch` is a string, then pass it into coordinator task creation and eventually git. `execFile` avoids shell injection, but git can interpret option-looking refs strangely, and this creates an inconsistency between UI-created tasks and coordinator-created tasks.
@@ -187,7 +187,7 @@ Implementation constraints:
 
 ---
 
-### 39. No Docker coordinator child-close isolation test
+### ~~39. No Docker coordinator child-close isolation test~~ ✅ COMPLETE
 
 **File:** `electron/mcp/coordinator.test.ts`
 **What's wrong:** When one of two running sub-tasks is closed, cleanup should target only that child's process/config. There is no test asserting that closing child A does not affect child B's config file or state.
@@ -196,7 +196,7 @@ Implementation constraints:
 
 ---
 
-### 40. No `.mcp.json` merge/cleanup test
+### ~~40. No `.mcp.json` merge/cleanup test~~ ✅ COMPLETE
 
 **File:** `electron/ipc/register-mcp.test.ts` (or `electron/mcp/coordinator.test.ts`)
 **What's wrong:** The `.mcp.json` read-before-write logic merges only the `parallel-code` key and preserves other servers, but this is untested. A regression could silently destroy user-configured MCP servers on coordinator startup.
@@ -214,7 +214,7 @@ Implementation constraints:
 
 ---
 
-### 41. Coordinator cleanup reports success even when worktree/branch deletion fails — P2
+### ~~41. Coordinator cleanup reports success even when worktree/branch deletion fails~~ ✅ COMPLETE
 
 **File:** `electron/mcp/coordinator.ts` (`cleanupTask` ~line 1030; Docker inner-process cleanup ~line 1074)
 **What's wrong:** `cleanupTask` catches `deleteTask` failure, logs a warning, then removes backend state and emits `MCP_TaskClosed`. Docker inner-process cleanup is also fire-and-forget, so worktree deletion can race an agent process that is still alive. The UI and backend believe the task is cleanly closed while the worktree, branch, or Docker process may still exist.
@@ -238,7 +238,7 @@ Implementation constraints:
 
 ---
 
-### 42. Malformed existing `.mcp.json` is silently overwritten — P3
+### ~~42. Malformed existing `.mcp.json` is silently overwritten~~ ✅ COMPLETE
 
 **File:** `electron/ipc/register.ts` (~line 1406)
 **What's wrong:** If `.mcp.json` exists but cannot be parsed (malformed JSON), the handler treats it as empty and writes a new file. This silently destroys a user's malformed-but-recoverable MCP config — other servers they have configured are gone.
@@ -257,7 +257,7 @@ Implementation constraints:
 
 ---
 
-### 43. Restore failure leaves coordinator tasks permanently unspawned — P2/P3
+### ~~43. Restore failure leaves coordinator tasks permanently unspawned~~ ✅ COMPLETE
 
 **Files:** `src/App.tsx` (~line 349), `src/components/TerminalView.tsx` (~line 637)
 **What's wrong:** On app restore, coordinator and coordinated task PTYs are gated on `mcpReady`. If `StartMCPServer` or `MCP_HydrateCoordinatedTask` fails (bad persisted path, config write error, Docker path issue, transient startup failure), the error is only logged and `mcpReady` is never set to `true`. `TerminalView` then waits indefinitely — the agent process is never spawned and there is no user-visible error or retry path. The task appears stuck/dead.
@@ -282,7 +282,7 @@ Implementation constraints:
 
 ---
 
-### 44. Staged coordinator prompt is not visible unless the user takes control — UX
+### ~~44. Staged coordinator prompt is not visible unless the user takes control~~ ✅ COMPLETE
 
 **Files:** Coordinator notification UI (staged notification section, `src/components/`)
 **What's wrong:** When the coordinator is driving, the staged-notification section collapses. If a prompt has been queued for autofire and the user wants to see it, they must click "Take Control" to expand the section — which is a heavyweight action taken only for visibility. The user shouldn't need to claim control just to read what's pending.
@@ -292,9 +292,67 @@ Implementation constraints:
 
 ---
 
-### 45. `wait_for_signal_done` network errors silently stall the coordinator — P1
+### ~~45. `wait_for_signal_done` network retry must be replay-safe~~ ✅ COMPLETE
 
-**Files:** `electron/mcp/coordinator.ts` (`waitForSignalDone`), `electron/remote/server.ts` (long-poll endpoint)
-**What's wrong:** `wait_for_signal_done` long-polls the local HTTP server. If the request fails with a network error (connection reset, transient local socket error), the MCP tool call rejects and the coordinator loses the completion signal — even though the sub-task already called `signal_done` successfully. The coordinator then stalls indefinitely, unaware the task is done, until a human intervenes.
-**Fix direction:** On network error, retry `wait_for_signal_done` automatically with a short backoff rather than propagating the rejection. Since `signal_done` writes durable state server-side (task status), a retry will immediately return the already-signaled result. Cap retries (e.g., 5 attempts over 30 s) and only surface a hard failure if the server is genuinely unreachable for an extended period. Alternatively, expose a `get_task` status poll as a fallback so the coordinator can recover by checking task state directly.
-**Done when:** A transient `fetch failed` on `wait_for_signal_done` is retried transparently and the coordinator receives the signal-done result without human intervention.
+**Files:** `electron/mcp/client.ts` (`waitForSignalDone`), `electron/mcp/coordinator.ts` (`signalDone`, `waitForSignalDone`), `electron/remote/server.ts` (`/api/wait-signal`)
+**What's wrong:** Retrying the MCP client call on a network `TypeError` is not enough by itself. If the first long-poll receives `signal_done`, the backend currently marks `task.signalDoneConsumed = true` before the HTTP response reaches the MCP process. If the connection drops after that consumption but before the client receives the body, the retry finds no unconsumed signal and can block until timeout. The signal was durable, but the delivery result was not replayable.
+
+Implementation constraints:
+
+- Make `wait_for_signal_done` consumption idempotent across transport failure. Either add a request/client id and replay the result for that id, or keep a short-lived last-delivered result per coordinator/task that a retry can return.
+- Preserve existing semantics: HTTP 4xx/5xx application errors should not be retried as network failures.
+- Keep retry bounded by the original `timeoutMs`; do not let backoff extend a caller's requested wait indefinitely.
+- Do not restage duplicate UI notifications or decrement/alter `remaining` twice when a replay happens.
+- Log enough context to distinguish "new signal consumed" from "previous signal replayed".
+
+**Tests to add:**
+
+- Active waiter receives `signal_done`, server resolves the waiter, client sees a simulated network `TypeError`, retry returns the same task result immediately.
+- Replay does not double-count `remaining`.
+- Replay does not re-stage or auto-fire duplicate coordinator notifications.
+- HTTP 4xx/5xx failures are not retried.
+- Repeated network `TypeError`s stop after the configured retry/timeout boundary.
+
+**Done when:** A transient response-loss/network failure after backend signal consumption still returns the consumed signal to the coordinator exactly once, without human intervention or duplicate UI side effects.
+
+---
+
+### 46. Comprehensive coordinator regression test suite — P1/P2
+
+**Goal:** Add tests around coordinator invariants so future changes cannot regress PR #100 behavior. Prefer real temporary git repos for diff/merge behavior and focused unit tests for pure validation/state-machine helpers. Do not rely only on mocked git output for preamble diff correctness.
+
+**Priority 1 — prevent known P1 regressions:**
+
+- `wait_for_signal_done` replay/idempotency: cover response loss after backend consumption, retry replay, no duplicate `remaining`, no duplicate notifications, HTTP errors not retried, and bounded network retry.
+- Normalized preamble diff: use a real temp git repo and verify `baseBranch` undefined uses the same detected-main diff base as `getAllFileDiffs`, not `HEAD`.
+- Preamble-bearing files: preamble-only changes are hidden; legitimate edits before the generated block are shown; legitimate edits after the generated block are shown; edits on both sides are shown.
+- Preamble merge cleanup: merge strips only the generated block and preserves legitimate edits before/after it.
+- `.claude/settings.local.json`: preserves unrelated keys, preserves pre-existing non-generated `systemPrompt`, removes only the generated block, deletes `systemPrompt` only when empty, and does not silently rewrite malformed JSON.
+
+**Priority 2 — lifecycle and recovery coverage:**
+
+- Restart/hydration: app restart rewrites child MCP config with fresh `subtaskToken`, never the stale or coordinator token.
+- Restart/hydration: `hydrateTask` restores `wait_for_idle` and unconsumed `signal_done`.
+- MCP startup failure: failed `StartMCPServer` / child hydration marks a visible error instead of leaving `TerminalView` waiting forever.
+- MCP retry: retry transitions `error -> pending -> ready`; child retry requires parent coordinator readiness and surfaces that dependency when missing.
+- Cleanup failure: `deleteTask` failure does not emit `MCP_TaskClosed`, retains backend state for retry, and marks the renderer task recoverable.
+- Merge cleanup failure: represent "merge succeeded, cleanup failed" separately from merge failure.
+
+**Priority 3 — boundary/security coverage:**
+
+- MCP/REST/IP C validation parity: `baseBranch` rejects empty strings, whitespace-only values, leading `-`, and control characters through public boundaries; valid refs still work.
+- Token/task scoping: coordinator token cannot access another coordinator's tasks; subtask token can only call `signal_done`; subtask token cannot use websocket.
+- Remote/mobile scoping: missing `X-Coordinator-Id` behavior is explicitly tested only for routes that are intended to support unscoped remote/mobile access.
+- Docker isolation: closing child A does not stop child B, delete child B's config, or remove child B from `listTasks()`.
+- Docker reachability: Docker MCP URL remains reachable from containers, while non-Docker mode does not widen bind address unless the owner-approved design requires it.
+
+**Recommended structure:**
+
+- Pure helper tests for branch validation, preamble-block removal, network-error retry classification, and replay-cache behavior.
+- Real temp git repo tests for `getTaskDiff()` and merge cleanup.
+- Unit tests for coordinator state transitions and renderer store error states.
+- One golden coordinator flow sequence test: `create_task -> wait_for_idle -> signal_done -> wait_for_signal_done -> get_task_diff -> review_and_merge -> cleanup`.
+- One restart sequence test: `persist -> reload -> StartMCPServer -> hydrate children -> respawn -> signal_done`.
+- Keep Docker runtime tests opt-in with `RUN_DOCKER_MCP_TEST=1`, but keep command-construction and state-isolation tests in the normal suite.
+
+**Done when:** The suite fails for the known replay/idempotency and normalized-diff-base bugs, passes after those fixes, and covers the coordinator lifecycle from creation through restart, review/merge, and cleanup.

@@ -195,6 +195,131 @@ describe('Layer 3 — MCP startup pipeline (no Electron, real FS)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Layer 3b: .mcp.json merge / cleanup (#40)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Layer 3b — .mcp.json merge and cleanup', () => {
+  it('merges parallel-code into a pre-existing .mcp.json preserving other servers', () => {
+    const worktreePath = mkTemp();
+    const projectRoot = mkTemp();
+    const mcpJsonDir = selectMcpJsonDir(worktreePath, projectRoot);
+    const mcpJsonPath = path.join(mcpJsonDir, '.mcp.json');
+
+    // Pre-existing file with another server
+    const existing = { mcpServers: { 'my-server': { command: 'my-tool', args: [] } } };
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2));
+
+    const cfg = buildCoordinatorMCPConfig({
+      mcpServerPath: '/server.cjs',
+      serverUrl: 'http://127.0.0.1:7777',
+      token: 'tok',
+      coordinatorTaskId: 'c1',
+    });
+
+    // Simulate the merge logic from StartMCPServer handler
+    const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+    parsed.mcpServers = { ...(parsed.mcpServers ?? {}), ...cfg.mcpServers };
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(parsed, null, 2));
+
+    const written = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8')) as typeof parsed;
+    expect(written.mcpServers?.['my-server']).toEqual({ command: 'my-tool', args: [] });
+    expect(written.mcpServers?.['parallel-code']).toBeDefined();
+  });
+
+  it('deregister removes parallel-code key and preserves other servers', () => {
+    const worktreePath = mkTemp();
+    const projectRoot = mkTemp();
+    const mcpJsonDir = selectMcpJsonDir(worktreePath, projectRoot);
+    const mcpJsonPath = path.join(mcpJsonDir, '.mcp.json');
+
+    // File with two servers
+    const twoServers = {
+      mcpServers: {
+        'my-server': { command: 'my-tool', args: [] },
+        'parallel-code': { command: 'node', args: ['server.cjs'] },
+      },
+    };
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(twoServers, null, 2));
+
+    // Simulate deregisterCoordinator cleanup logic
+    const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
+    const content = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+    if (content.mcpServers) delete content.mcpServers['parallel-code'];
+    const hasServers = Object.keys(content.mcpServers ?? {}).length > 0;
+    const hasOtherKeys = Object.keys(content).filter((k) => k !== 'mcpServers').length > 0;
+    if (!hasServers && !hasOtherKeys) {
+      fs.unlinkSync(mcpJsonPath);
+    } else {
+      if (!hasServers) delete content.mcpServers;
+      fs.writeFileSync(mcpJsonPath, JSON.stringify(content, null, 2));
+    }
+
+    expect(fs.existsSync(mcpJsonPath)).toBe(true);
+    const written = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8')) as typeof content;
+    expect(written.mcpServers?.['my-server']).toEqual({ command: 'my-tool', args: [] });
+    expect(written.mcpServers?.['parallel-code']).toBeUndefined();
+  });
+
+  it('deregister deletes the file when parallel-code was the only entry', () => {
+    const worktreePath = mkTemp();
+    const projectRoot = mkTemp();
+    const mcpJsonDir = selectMcpJsonDir(worktreePath, projectRoot);
+    const mcpJsonPath = path.join(mcpJsonDir, '.mcp.json');
+
+    const onlyUs = { mcpServers: { 'parallel-code': { command: 'node', args: [] } } };
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(onlyUs, null, 2));
+
+    const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
+    const content = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+    if (content.mcpServers) delete content.mcpServers['parallel-code'];
+    const hasServers = Object.keys(content.mcpServers ?? {}).length > 0;
+    const hasOtherKeys = Object.keys(content).filter((k) => k !== 'mcpServers').length > 0;
+    if (!hasServers && !hasOtherKeys) {
+      fs.unlinkSync(mcpJsonPath);
+    } else {
+      if (!hasServers) delete content.mcpServers;
+      fs.writeFileSync(mcpJsonPath, JSON.stringify(content, null, 2));
+    }
+
+    expect(fs.existsSync(mcpJsonPath)).toBe(false);
+  });
+
+  it('merge fails fast when .mcp.json is malformed JSON without overwriting it', () => {
+    const worktreePath = mkTemp();
+    const projectRoot = mkTemp();
+    const mcpJsonDir = selectMcpJsonDir(worktreePath, projectRoot);
+    const mcpJsonPath = path.join(mcpJsonDir, '.mcp.json');
+
+    const malformed = '{ "mcpServers": { not-valid-json ';
+    fs.writeFileSync(mcpJsonPath, malformed);
+
+    const cfg = buildCoordinatorMCPConfig({
+      mcpServerPath: '/server.cjs',
+      serverUrl: 'http://127.0.0.1:7777',
+      token: 'tok',
+      coordinatorTaskId: 'c1',
+    });
+
+    // Simulate the fail-closed parse logic from StartMCPServer handler
+    let threwError = false;
+    try {
+      const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
+      JSON.parse(raw); // throws on malformed
+      const parsed = {} as { mcpServers?: Record<string, unknown> };
+      parsed.mcpServers = { ...(parsed.mcpServers ?? {}), ...cfg.mcpServers };
+      fs.writeFileSync(mcpJsonPath, JSON.stringify(parsed, null, 2)); // must not reach here
+    } catch {
+      threwError = true;
+    }
+
+    expect(threwError).toBe(true);
+    // Original malformed content must be untouched
+    expect(fs.readFileSync(mcpJsonPath, 'utf-8')).toBe(malformed);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Layer 4: StartMCPServer input validation
 // ─────────────────────────────────────────────────────────────────────────────
 

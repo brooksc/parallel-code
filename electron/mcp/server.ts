@@ -7,6 +7,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MCPClient } from './client.js';
 import { selectTools } from './mcp-tool-list.js';
+import { validateBranchName } from './validation.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -68,11 +69,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case 'create_task': {
         const p = params as Record<string, unknown>;
+        const rawBranch = p.baseBranch;
+        const baseBranch =
+          rawBranch !== undefined ? validateBranchName(rawBranch, 'baseBranch') : undefined;
         const result = await client.createTask({
           name: p.name as string,
           prompt: p.prompt as string | undefined,
           coordinatorTaskId: coordinatorId || undefined,
-          baseBranch: p.baseBranch as string | undefined,
+          baseBranch,
         });
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
