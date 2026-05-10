@@ -851,7 +851,7 @@ export class Coordinator {
     if (task.worktreePath) {
       this.stripPreambleFromBranch(task);
       try {
-        await execAsync('git', ['add', '-u'], { cwd: task.worktreePath });
+        await execAsync('git', ['add', '-A'], { cwd: task.worktreePath });
         await execAsync('git', ['commit', '-m', 'WIP: auto-commit before merge'], {
           cwd: task.worktreePath,
         });
