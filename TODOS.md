@@ -11,12 +11,6 @@
 
 ## Beta blockers — lifecycle/scoping issues
 
-### 14. Coordinator MCP broken when remote access server was already running
-
-**File:** `electron/ipc/register.ts` (`StartMCPServer`), `electron/remote/server.ts` (`startRemoteServer`)
-**What's wrong:** `StartMCPServer` skips `startRemoteServer()` if already running. If remote access started first (without a coordinator), coordinator-specific API routes are never registered.
-**Done when:** Either route handlers look up coordinator at request time via a mutable closure, or the server is torn down and recreated when a coordinator registers.
-
 ### 15. Restart restore racy and incomplete
 
 **Files:** `src/App.tsx:329-349` (`StartMCPServer` calls), `electron/mcp/coordinator.ts:883-914` (`hydrateTask`)

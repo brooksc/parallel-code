@@ -351,6 +351,31 @@ export function PromptInput(props: PromptInputProps) {
   // Tracks text we populated from a staged notification so we can distinguish
   // it from text the user actually typed when a replacement notification arrives.
   let lastStagedText = '';
+
+  function executeAutoFire(staged: NonNullable<typeof props.stagedNotification>) {
+    if (autoFireInterval !== undefined) {
+      clearInterval(autoFireInterval);
+      autoFireInterval = undefined;
+    }
+    const taskId = props.taskId;
+    const agentId = props.agentId;
+    void (async () => {
+      try {
+        await sendPrompt(taskId, agentId, staged.text);
+        await invoke(IPC.MCP_CoordinatorNotificationAck, {
+          coordinatorTaskId: taskId,
+          batchId: staged.batchId,
+        });
+        clearStagedNotification(taskId);
+        lastStagedText = '';
+        setText('');
+        logWarn('autofire', 'auto-fire succeeded', { taskId });
+      } catch (e) {
+        logWarn('autofire', 'auto-fire failed', { taskId, err: String(e) });
+        console.error('[coordinator] Auto-fire failed:', e);
+      }
+    })();
+  }
   let autoFirePromptMissCount = 0;
 
   createEffect(() => {
@@ -469,28 +494,8 @@ export function PromptInput(props: PromptInputProps) {
         hasPrompt: true,
       });
       autoFirePromptMissCount = 0;
-
       logWarn('autofire', 'firing notification into coordinator PTY', { taskId: props.taskId });
-      clearInterval(autoFireInterval);
-      autoFireInterval = undefined;
-      const taskId = props.taskId;
-      const agentId = props.agentId;
-      void (async () => {
-        try {
-          await sendPrompt(taskId, agentId, staged.text);
-          await invoke(IPC.MCP_CoordinatorNotificationAck, {
-            coordinatorTaskId: taskId,
-            batchId: staged.batchId,
-          });
-          clearStagedNotification(taskId);
-          lastStagedText = '';
-          setText('');
-          logWarn('autofire', 'auto-fire succeeded', { taskId });
-        } catch (e) {
-          logWarn('autofire', 'auto-fire failed', { taskId, err: String(e) });
-          console.error('[coordinator] Auto-fire failed:', e);
-        }
-      })();
+      executeAutoFire(staged);
     }, 1_000);
   });
 
@@ -500,6 +505,25 @@ export function PromptInput(props: PromptInputProps) {
       autoFireInterval = undefined;
     }
   });
+
+  // When the user releases control, immediately attempt to fire any pending
+  // staged notification rather than waiting up to 1s for the next interval tick.
+  createEffect(
+    on(
+      // eslint-disable-next-line solid/reactivity
+      [() => props.controlledBy, () => props.stagedNotification] as const,
+      ([cb, staged], prev) => {
+        const prevCb = prev?.[0];
+        if (cb === 'coordinator' && prevCb === 'human' && staged && !staged.userEdited) {
+          const tail = stripAnsi(untrack(() => getAgentOutputTail(props.agentId)));
+          if (/[❯›]/.test(tail.slice(-500))) {
+            logWarn('autofire', 'immediate fire on control release', { taskId: props.taskId });
+            executeAutoFire(staged);
+          }
+        }
+      },
+    ),
+  );
 
   // --- Countdown display for auto-fire ---
   const [nowMs, setNowMs] = createSignal(Date.now());
