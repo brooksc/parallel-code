@@ -784,6 +784,10 @@ export async function collapseTask(taskId: string): Promise<void> {
   const task = store.tasks[taskId];
   if (!task || task.collapsed || task.closingStatus) return;
   if (task.coordinatorMode) return;
+  // Coordinated children must not be collapsed — the backend coordinator registry
+  // still holds the old agentId, so clearing agentIds here breaks send_prompt and
+  // idle detection. Block collapse entirely for tasks managed by a coordinator.
+  if (task.coordinatedBy) return;
 
   // Stop file watchers to prevent FSWatcher leak
   invoke(IPC.StopPlanWatcher, { taskId }).catch(console.error);

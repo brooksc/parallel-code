@@ -11,6 +11,7 @@ type MockTask = {
 let mockTasks: Record<string, MockTask> = {};
 let mockAgents: Record<string, unknown> = {};
 let mockTaskOrder: string[] = [];
+let mockCollapsedTaskOrder: string[] = [];
 const ipcHandlers = new Map<string, (data: unknown) => void>();
 
 function applySetStore(...args: unknown[]): void {
@@ -20,11 +21,13 @@ function applySetStore(...args: unknown[]): void {
         tasks: Record<string, MockTask>;
         agents: Record<string, unknown>;
         taskOrder: string[];
+        collapsedTaskOrder: string[];
       }) => void
     )({
       tasks: mockTasks,
       agents: mockAgents,
       taskOrder: mockTaskOrder,
+      collapsedTaskOrder: mockCollapsedTaskOrder,
     });
     return;
   }
@@ -53,7 +56,7 @@ vi.mock('./core', () => ({
       if (prop === 'tasks') return mockTasks;
       if (prop === 'agents') return mockAgents;
       if (prop === 'taskOrder') return mockTaskOrder;
-      if (prop === 'collapsedTaskOrder') return [];
+      if (prop === 'collapsedTaskOrder') return mockCollapsedTaskOrder;
       if (prop === 'availableAgents') return [];
       return undefined;
     },
@@ -114,7 +117,7 @@ vi.stubGlobal('window', {
   },
 });
 
-import { initMCPListeners, setTaskControl } from './tasks';
+import { initMCPListeners, setTaskControl, collapseTask } from './tasks';
 
 initMCPListeners();
 const taskCreatedHandler = ipcHandlers.get('mcp_task_created');
@@ -124,6 +127,7 @@ beforeEach(() => {
   mockTasks = {};
   mockAgents = {};
   mockTaskOrder = [];
+  mockCollapsedTaskOrder = [];
 });
 
 const baseEvent = {
@@ -209,6 +213,40 @@ describe('MCP_TaskCreated IPC handler', () => {
   it('regression: sub-tasks must not be created without controlledBy defined', () => {
     taskCreatedHandler(baseEvent);
     expect(mockTasks['sub-task-1'].controlledBy).toBeDefined();
+  });
+});
+
+describe('collapseTask — coordinated child guard (TODO #23)', () => {
+  it('is a no-op when task has coordinatedBy set', async () => {
+    mockTasks['sub-task-1'] = {
+      agentIds: ['agent-1'],
+      shellAgentIds: [],
+      coordinatedBy: 'coordinator-1',
+      collapsed: false,
+    };
+    mockTaskOrder.push('sub-task-1');
+
+    await collapseTask('sub-task-1');
+
+    // agentIds must be unchanged — backend coordinator still holds reference
+    expect(mockTasks['sub-task-1'].agentIds).toEqual(['agent-1']);
+    expect(mockTasks['sub-task-1'].collapsed).toBeFalsy();
+    expect(mockTaskOrder).toContain('sub-task-1');
+  });
+
+  it('proceeds normally for tasks without coordinatedBy', async () => {
+    mockTasks['plain-task'] = {
+      agentIds: ['agent-2'],
+      shellAgentIds: [],
+      collapsed: false,
+    };
+    mockTaskOrder.push('plain-task');
+
+    await collapseTask('plain-task');
+
+    // Task should have been collapsed (agentIds cleared)
+    expect(mockTasks['plain-task'].agentIds).toEqual([]);
+    expect(mockTasks['plain-task'].collapsed).toBe(true);
   });
 });
 
