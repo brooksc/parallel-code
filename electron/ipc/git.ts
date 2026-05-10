@@ -1412,6 +1412,9 @@ export async function getWorktreeStatus(
   has_uncommitted_changes: boolean;
   current_branch: string | null;
 }> {
+  if (!fs.existsSync(worktreePath)) {
+    return { has_committed_changes: false, has_uncommitted_changes: false, current_branch: null };
+  }
   const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
     cwd: worktreePath,
     maxBuffer: MAX_BUFFER,
