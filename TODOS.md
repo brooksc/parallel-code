@@ -103,12 +103,6 @@
 **What's wrong:** If remote access was enabled before any coordinator task exists, `coordinator` is `null` at `startRemoteServer` time and coordinator routes (`/api/tasks`, `signal_done`) are never registered. `StartMCPServer` reuses the existing server without adding the missing routes.
 **Done when:** Route handlers receive a mutable `getCoordinator()` callback so they look up the coordinator at request time, OR the server is restarted with the coordinator attached when `StartMCPServer` is called.
 
-### 26. MCP status reporting is too shallow
-
-**File:** `electron/ipc/register.ts` (`GetMCPStatus`)
-**What's wrong:** Returns only `{ mcpRunning: remoteServer !== null }`. Does not verify coordinator routes are attached, server has finished listening, or coordinator is registered.
-**Done when:** Returns separate fields: `remoteRunning`, `coordinatorRoutesAttached`, `coordinatorRegistered`, `serverUrl`, `mcpConfigPath`.
-
 ### 27. Coordinator deregistration does not clean child backend resources
 
 **File:** `electron/mcp/coordinator.ts` (`deregisterCoordinator`, ~line 1063)
