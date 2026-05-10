@@ -186,7 +186,7 @@ export class Coordinator {
           },
         },
       };
-      writeFileSync(task.mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
+      writeFileSync(task.mcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
     }
   }
 
@@ -1147,7 +1147,7 @@ export class Coordinator {
           },
         };
         try {
-          writeFileSync(opts.mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
+          writeFileSync(opts.mcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
         } catch {
           /* config dir may not exist yet; setMCPServerInfo rewrite will catch it */
         }
