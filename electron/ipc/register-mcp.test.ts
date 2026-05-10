@@ -216,7 +216,7 @@ describe('Layer 5 — Failure modes', () => {
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: null as never,
+      getCoordinator: () => null,
     });
     try {
       const res = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`);
@@ -235,7 +235,7 @@ describe('Layer 5 — Failure modes', () => {
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: null as never,
+      getCoordinator: () => null,
     });
     try {
       const res = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`, {
@@ -257,7 +257,7 @@ describe('Layer 5 — Failure modes', () => {
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: mockCoordinator as never,
+      getCoordinator: () => mockCoordinator as never,
     });
     try {
       const res = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`, {
@@ -303,7 +303,7 @@ describe('Layer 7 — Remote server bind address', () => {
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: mockCoordinator as never,
+      getCoordinator: () => mockCoordinator as never,
     });
     try {
       const res = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`, {
@@ -322,7 +322,7 @@ describe('Layer 7 — Remote server bind address', () => {
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: null as never,
+      getCoordinator: () => null,
     });
     try {
       const url = getMCPRemoteServerUrl(srv.port, undefined);
@@ -446,5 +446,45 @@ describe('Layer 6 — Log assertions (production startup messages)', () => {
     expect(console.warn).toHaveBeenCalledWith('[MCP] Server path:', destPath);
     // Server path must be the in-worktree copy, not the original
     expect(destPath.startsWith(worktreePath)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layer 8: Coordinator routes work when remote server started before coordinator
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Layer 8 — Coordinator routes available after late coordinator attach', () => {
+  it('coordinator routes return 503 before coordinator is set, then 200 after', async () => {
+    const port = await findFreePort();
+    let currentCoordinator: { listTasks: () => unknown[] } | null = null;
+
+    const srv = await startRemoteServer({
+      port,
+      staticDir: os.tmpdir(),
+      getTaskName: (id) => id,
+      getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
+      getCoordinator: () => currentCoordinator as never,
+    });
+
+    try {
+      // Before coordinator is set: coordinator routes should return 503
+      const res1 = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`, {
+        headers: { Authorization: `Bearer ${srv.token}` },
+      });
+      expect(res1.status).toBe(503);
+
+      // Simulate coordinator being attached later (e.g. StartMCPServer called after StartRemoteServer)
+      currentCoordinator = { listTasks: () => [] };
+
+      // After coordinator is set: coordinator routes should work
+      const res2 = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`, {
+        headers: { Authorization: `Bearer ${srv.token}` },
+      });
+      expect(res2.status).toBe(200);
+      const body = (await res2.json()) as unknown[];
+      expect(Array.isArray(body)).toBe(true);
+    } finally {
+      await srv.stop();
+    }
   });
 });

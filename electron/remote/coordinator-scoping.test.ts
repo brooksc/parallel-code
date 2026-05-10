@@ -114,7 +114,7 @@ async function startServer(coordinator: Coordinator) {
     staticDir: '/nonexistent',
     getTaskName: (id) => id,
     getAgentStatus: () => ({ status: 'exited', exitCode: null, lastLine: '' }),
-    coordinator,
+    getCoordinator: () => coordinator,
   });
   serverToken = srv.token;
   serverPort = srv.port;

@@ -126,7 +126,7 @@ export function startRemoteServer(opts: {
     exitCode: number | null;
     lastLine: string;
   };
-  coordinator?: Coordinator;
+  getCoordinator: () => Coordinator | null;
 }): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
@@ -195,7 +195,16 @@ export function startRemoteServer(opts: {
       }
 
       // --- Coordinator task API routes ---
-      const orch = opts.coordinator;
+      const orch = opts.getCoordinator();
+      const isCoordinatorRoute =
+        url.pathname === '/api/tasks' ||
+        url.pathname === '/api/wait-signal' ||
+        url.pathname.startsWith('/api/tasks/');
+      if (!orch && isCoordinatorRoute) {
+        res.writeHead(503, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'coordinator not available' }));
+        return;
+      }
       if (orch) {
         // Helper to read JSON body
         const readBody = (): Promise<Record<string, unknown>> =>

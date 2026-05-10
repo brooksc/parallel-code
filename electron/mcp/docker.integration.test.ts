@@ -111,7 +111,7 @@ describeDocker('Docker MCP integration', () => {
       staticDir: worktreePath,
       getTaskName: (taskId) => taskId,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator,
+      getCoordinator: () => coordinator,
     });
 
     const serverUrl = getMCPRemoteServerUrl(remoteServer.port, 'parallel-code-test-container');
@@ -207,7 +207,7 @@ describeDocker('Docker MCP integration', () => {
       staticDir: coordWorktree,
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: subtaskCoordinator,
+      getCoordinator: () => subtaskCoordinator,
     });
 
     try {
@@ -303,7 +303,7 @@ describeDocker('Layer 2 — Docker smoke tests', () => {
       staticDir: coordWorktree,
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: mockCoordinator,
+      getCoordinator: () => mockCoordinator,
     });
     remoteToken = srv.token;
   });
@@ -464,7 +464,7 @@ describeDocker('Layer 4 — Production-path coordinator Docker scenario', () => 
       staticDir: scenarioWorktree,
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: mockCoordinator,
+      getCoordinator: () => mockCoordinator,
     });
 
     // --- Production config pipeline (same logic as StartMCPServer handler) ---
@@ -707,6 +707,7 @@ describeDocker('Layer 9 — Project Dockerfile image MCP smoke test', () => {
       staticDir: worktree,
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
+      getCoordinator: () => null,
     });
 
     try {
@@ -803,7 +804,7 @@ describeDocker('Layer 2 — MCP tool schema drift between host and Docker', () =
       staticDir: worktree,
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: mockCoordinator as never,
+      getCoordinator: () => mockCoordinator as never,
     });
 
     // Get host tool list
@@ -909,7 +910,7 @@ describeDocker('Layer 2 — Large MCP response over Docker stdio', () => {
       staticDir: worktree,
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      coordinator: mockCoordinator as never,
+      getCoordinator: () => mockCoordinator as never,
     });
 
     try {

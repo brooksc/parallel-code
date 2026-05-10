@@ -1023,7 +1023,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           lastLine: '',
         };
       },
-      coordinator: coordinator ?? undefined,
+      getCoordinator: () => coordinator,
     });
     return {
       url: remoteServer.url,
@@ -1244,7 +1244,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
               lastLine: '',
             };
           },
-          coordinator,
+          getCoordinator: () => coordinator,
         });
       }
 
