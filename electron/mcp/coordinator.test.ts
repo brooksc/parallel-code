@@ -2916,6 +2916,119 @@ describe('Coordinator Docker mode — per-container sub-tasks', () => {
   });
 });
 
+// ─── waitForSignalDone requestId replay ──────────────────────────────────────
+
+describe('Coordinator waitForSignalDone — requestId replay after transport failure', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/test',
+      worktree_path: '/tmp/test',
+    });
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+  });
+
+  it('same requestId returns cached result after signal is already consumed', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const task = coordinator.getTask('task-1');
+    if (!task) throw new Error('task not found');
+    task.signalDoneAt = new Date();
+    task.signalDoneConsumed = false;
+
+    const requestId = 'replay-test-id-1';
+    // First call: consumes the signal
+    const result1 = await coordinator.waitForSignalDone('coord-1', 500, requestId);
+    expect(result1.taskId).toBe('task-1');
+    expect(task.signalDoneConsumed).toBe(true);
+
+    // Second call with same requestId: signal consumed, but result is replayed from cache
+    const result2 = await coordinator.waitForSignalDone('coord-1', 100, requestId);
+    expect(result2).toEqual(result1);
+  });
+
+  it('different requestId after signal is consumed blocks until timeout', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const task = coordinator.getTask('task-1');
+    if (!task) throw new Error('task not found');
+    task.signalDoneAt = new Date();
+    task.signalDoneConsumed = false;
+
+    // First call with requestId A consumes the signal
+    await coordinator.waitForSignalDone('coord-1', 500, 'id-A');
+    expect(task.signalDoneConsumed).toBe(true);
+
+    // Second call with a new requestId: no unconsumed signal, no cache hit → times out
+    await expect(coordinator.waitForSignalDone('coord-1', 50, 'id-B')).rejects.toThrow('Timed out');
+  });
+
+  it('waitForSignalDone without requestId still resolves from unconsumed signal', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const task = coordinator.getTask('task-1');
+    if (!task) throw new Error('task not found');
+    task.signalDoneAt = new Date();
+    task.signalDoneConsumed = false;
+
+    // No requestId: backward-compatible path
+    const result = await coordinator.waitForSignalDone('coord-1', 100);
+    expect(result.taskId).toBe('task-1');
+  });
+});
+
+// ─── removePreambleBlock unit tests ──────────────────────────────────────────
+
+describe('Coordinator removePreambleBlock', () => {
+  // Access the private method via casting for unit testing
+  let coordinator: InstanceType<typeof Coordinator>;
+  let strip: (content: string) => string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    coordinator = new Coordinator();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    strip = (coordinator as any).removePreambleBlock.bind(coordinator);
+  });
+
+  const BLOCK = '<sub-task-mode>\nrules\n</sub-task-mode>';
+
+  it('removes preamble block appended to existing content', () => {
+    const result = strip(`existing content\n\n${BLOCK}`);
+    expect(result).toBe('existing content');
+  });
+
+  it('preserves content after end marker', () => {
+    const result = strip(`before\n\n${BLOCK}\n\nafter`);
+    expect(result).toBe('before\n\nafter');
+  });
+
+  it('preserves content before preamble when no prior content exists', () => {
+    const result = strip(`${BLOCK}\n\nafter`);
+    expect(result).toBe('after');
+  });
+
+  it('returns empty string when file contains only preamble block', () => {
+    const result = strip(BLOCK);
+    expect(result).toBe('');
+  });
+
+  it('strips to EOF when end marker is absent (malformed, safe fallback)', () => {
+    const result = strip('before\n\n<sub-task-mode>\norphaned start');
+    expect(result).toBe('before');
+  });
+
+  it('returns content unchanged when no preamble marker present', () => {
+    const content = 'just a normal file\nno preamble here';
+    expect(strip(content)).toBe(content);
+  });
+});
+
 // ─── preload allowlist regression test ───────────────────────────────────────
 
 describe('preload.cjs MCP channel allowlist', () => {

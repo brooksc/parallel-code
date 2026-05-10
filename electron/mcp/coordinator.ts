@@ -29,7 +29,12 @@ import {
   getAgentScrollback,
   onPtyEvent,
 } from '../ipc/pty.js';
-import { getChangedFiles, getAllFileDiffs, mergeTask as gitMergeTask } from '../ipc/git.js';
+import {
+  getChangedFiles,
+  getAllFileDiffs,
+  getDiffBaseSha,
+  mergeTask as gitMergeTask,
+} from '../ipc/git.js';
 import { stripAnsi, chunkContainsAgentPrompt } from './prompt-detect.js';
 import { SUB_TASK_PREAMBLE } from './sub-task-preamble.js';
 import { warn as logWarn } from '../log.js';
@@ -62,6 +67,12 @@ export class Coordinator {
   private blockedByHumanControl = new Set<string>();
   private closingTaskIds = new Set<string>();
   private activeSignalWaitCounts = new Map<string, number>();
+  // Caches the last-delivered wait_for_signal_done result keyed by requestId so a retry
+  // after a transport failure returns the already-consumed result instead of blocking.
+  private recentlyDelivered = new Map<
+    string,
+    { result: WaitForSignalDoneResult; expiresAt: number }
+  >();
   private win: BrowserWindow | null = null;
   private projectRoot: string | null = null;
   private projectId: string | null = null;
@@ -790,9 +801,10 @@ export class Coordinator {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
-    const [files, diff] = await Promise.all([
+    const [files, diff, baseSha] = await Promise.all([
       getChangedFiles(task.worktreePath, task.baseBranch),
       getAllFileDiffs(task.worktreePath, task.baseBranch),
+      getDiffBaseSha(task.worktreePath, task.baseBranch),
     ]);
 
     // For preamble-bearing files: strip the injected block and show only real sub-task edits.
@@ -808,7 +820,7 @@ export class Coordinator {
       // For each preamble file, generate a diff that excludes the injected block.
       const normalizedSections = await Promise.all(
         [...preambleFiles].map((f) =>
-          this.buildNormalizedPreambleFileDiff(f, task.worktreePath, task.baseBranch),
+          this.buildNormalizedPreambleFileDiff(f, task.worktreePath, baseSha),
         ),
       );
       const preambleFilesWithChanges = new Set<string>();
@@ -901,7 +913,7 @@ export class Coordinator {
   private async buildNormalizedPreambleFileDiff(
     filename: string,
     worktreePath: string,
-    baseBranch: string | undefined,
+    baseSha: string,
   ): Promise<string> {
     const filePath = join(worktreePath, filename);
     if (!existsSync(filePath)) return '';
@@ -932,14 +944,10 @@ export class Coordinator {
       normalizedContent = this.removePreambleBlock(worktreeContent);
     }
 
-    // Get base content using merge-base to match getAllFileDiffs semantics.
+    // Get base content using the same SHA already computed by getTaskDiff/getDiffBaseSha.
     let baseContent = '';
     try {
-      const mbResult = await execAsync('git', ['merge-base', 'HEAD', baseBranch ?? 'HEAD'], {
-        cwd: worktreePath,
-      }).catch(() => execAsync('git', ['rev-parse', 'HEAD'], { cwd: worktreePath }));
-      const sha = mbResult.stdout.trim();
-      const { stdout } = await execAsync('git', ['show', `${sha}:${filename}`], {
+      const { stdout } = await execAsync('git', ['show', `${baseSha}:${filename}`], {
         cwd: worktreePath,
       });
       baseContent = stdout;
@@ -1676,12 +1684,27 @@ export class Coordinator {
     }
   }
 
+  private cacheDeliveredResult(requestId: string, result: WaitForSignalDoneResult): void {
+    const now = Date.now();
+    for (const [key, entry] of this.recentlyDelivered) {
+      if (entry.expiresAt <= now) this.recentlyDelivered.delete(key);
+    }
+    this.recentlyDelivered.set(requestId, { result, expiresAt: now + 120_000 });
+  }
+
   waitForSignalDone(
     coordinatorTaskId: string,
     timeoutMs = DEFAULT_WAIT_TIMEOUT_MS,
+    requestId?: string,
   ): Promise<WaitForSignalDoneResult> {
     if (!this.coordinators.has(coordinatorTaskId)) {
       return Promise.reject(new Error(`Coordinator not found: ${coordinatorTaskId}`));
+    }
+    // Replay the cached result if this requestId already delivered — handles retry
+    // after the HTTP response was lost before the client received it.
+    if (requestId) {
+      const cached = this.recentlyDelivered.get(requestId);
+      if (cached && Date.now() < cached.expiresAt) return Promise.resolve(cached.result);
     }
     // Return immediately if there's an unconsumed signal
     for (const task of this.tasks.values()) {
@@ -1699,13 +1722,15 @@ export class Coordinator {
           signalDoneConsumed: true,
         });
         const remaining = this.countRemaining(coordinatorTaskId);
-        return Promise.resolve({
+        const result = {
           taskId: task.id,
           name: task.name,
           status: task.status,
           signalDoneAt: task.signalDoneAt.toISOString(),
           remaining,
-        });
+        };
+        if (requestId) this.cacheDeliveredResult(requestId, result);
+        return Promise.resolve(result);
       }
     }
 
@@ -1721,6 +1746,7 @@ export class Coordinator {
 
       const wrapped = (result: WaitForSignalDoneResult) => {
         if (timerRef.value !== undefined) clearTimeout(timerRef.value);
+        if (requestId) this.cacheDeliveredResult(requestId, result);
         resolve(result);
       };
 

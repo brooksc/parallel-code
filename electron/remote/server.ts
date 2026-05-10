@@ -264,10 +264,12 @@ export function startRemoteServer(opts: {
                 (typeof body.timeoutMs !== 'number' || !Number.isFinite(body.timeoutMs))
               )
                 return jsonReply(400, { error: 'timeoutMs must be a finite number' });
+              const requestId = typeof body.requestId === 'string' ? body.requestId : undefined;
               mcpLog('info', `wait_for_signal_done coordinator=${coordinatorTaskId}`);
               const result = await orch.waitForSignalDone(
                 coordinatorTaskId,
                 body.timeoutMs as number | undefined,
+                requestId,
               );
               mcpLog(
                 'info',

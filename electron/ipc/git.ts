@@ -1175,6 +1175,15 @@ async function getUntrackedChangedFiles(
   return files;
 }
 
+export async function getDiffBaseSha(worktreePath: string, baseBranch?: string): Promise<string> {
+  const headHash = await pinHead(worktreePath);
+  const diffBase = await detectDiffBase(worktreePath, headHash, baseBranch).catch(() => ({
+    sha: headHash,
+    ref: headHash,
+  }));
+  return diffBase.sha;
+}
+
 export async function getAllFileDiffs(worktreePath: string, baseBranch?: string): Promise<string> {
   const headHash = await pinHead(worktreePath);
 

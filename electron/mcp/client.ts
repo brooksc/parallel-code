@@ -1,6 +1,7 @@
 // HTTP client wrapper for calling the remote server API.
 // Used by the MCP server to delegate tool calls to the Electron app.
 
+import { randomUUID } from 'crypto';
 import type {
   ApiTaskSummary,
   ApiTaskDetail,
@@ -113,6 +114,9 @@ export class MCPClient {
   ): Promise<WaitForSignalDoneResult> {
     const MAX_RETRIES = 10;
     const startedAt = Date.now();
+    // Stable per-call ID so retries after a transport failure replay the cached result
+    // rather than blocking on a signal that was already consumed.
+    const requestId = randomUUID();
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
@@ -122,6 +126,7 @@ export class MCPClient {
         return await this.request<WaitForSignalDoneResult>('POST', '/api/wait-signal', {
           coordinatorTaskId,
           timeoutMs: remaining,
+          requestId,
         });
       } catch (err: unknown) {
         // Retry on network-level errors (fetch failed, ECONNRESET, etc.).
