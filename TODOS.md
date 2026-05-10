@@ -67,12 +67,6 @@
 **What's wrong:** Sub-agents spawned via `docker exec` are not marked `dockerMode` with a `containerName`. Killing the PTY stops the host `docker exec` client but may leave the inner agent process running inside the coordinator container.
 **Done when:** Docker-exec PTY sessions are marked with the coordinator `containerName` and a `SIGTERM` is sent to the inner process via `docker exec <container> kill <pid>` on cleanup.
 
-### 19. All Docker sub-tasks share coordinator container HOME (`/tmp`)
-
-**File:** `electron/ipc/pty.ts` (docker exec spawn args)
-**What's wrong:** All `docker exec` sub-tasks inherit `HOME=/tmp`. Multiple Claude processes can collide on `/tmp/.claude` config files.
-**Done when:** Each `docker exec` call passes `-e HOME=/tmp/agent-<taskId>` and pre-creates the dir, OR the limitation is documented and single-sub-task-at-a-time is enforced.
-
 ### 20. Claude trust seeding (.claude.json) has a read-modify-write race
 
 **File:** `electron/ipc/pty.ts:642`
