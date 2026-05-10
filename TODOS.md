@@ -85,12 +85,6 @@
 **What's wrong:** `detectStaleDockerMCPUrl()` exists but is not called in the startup path. Users with `127.0.0.1` in `.mcp.json` on macOS get a silent connection failure.
 **Done when:** `detectStaleDockerMCPUrl()` is called in `StartMCPServer` after config is written, and a warning is surfaced to the renderer.
 
-### 22. Remote MCP server listen readiness not awaited
-
-**File:** `electron/remote/server.ts` (`startRemoteServer`)
-**What's wrong:** `server.listen()` is async but `startRemoteServer` returns immediately. Config files are written before the TCP port is bound, so fast Docker clients can connect before the host is listening.
-**Done when:** `startRemoteServer` resolves only inside `server.on('listening', ...)`.
-
 ### 25. Remote server started without coordinator routes when remote access precedes coordinator
 
 **File:** `electron/ipc/register.ts` (`StartRemoteServer`, `StartMCPServer`)
