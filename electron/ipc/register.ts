@@ -1002,6 +1002,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
   // --- Remote access ---
   ipcMain.handle(IPC.StartRemoteServer, async (_e, args: { port?: number }) => {
     remoteServerRequestedManually = true;
+    remoteServerPendingStop = false;
     if (remoteServer)
       return {
         url: remoteServer.url,

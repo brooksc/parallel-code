@@ -79,13 +79,26 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 
 1. `getTaskDiff` drops the _entire_ file section for any preamble-bearing file (`AGENTS.md`, `GEMINI.md`, `.agent.md`, `.claude/settings.local.json`). The coordinator review sees no changes to that file, so legitimate sub-agent edits are silently invisible at review time.
 2. `mergeTask` cleanup strips from the first `<sub-task-mode>` marker to EOF. If a sub-agent legitimately edits that file _after_ the injected preamble block, those edits are permanently deleted on merge. This is a data-loss risk.
-   **Fix direction:** Use explicit start/end markers and remove only the injected block from both `getTaskDiff` and `mergeTask` cleanup. Strip only the `<sub-task-mode>…</sub-task-mode>` block (and surrounding blank lines) rather than the whole file section or everything after the first marker. If the remaining content is non-empty, include it in the diff / preserve it after merge.
-   **Tests to add** (in `electron/mcp/coordinator.test.ts`):
+
+**Fix direction:** Treat the injected preamble as a bounded generated block, not as "everything from the first marker onward".
+
+Implementation constraints:
+
+- Add an explicit generated-block boundary that can be found unambiguously. Reuse `<sub-task-mode>` as the start marker only if there is a reliable end marker; otherwise add a wrapper comment around the generated block and migrate the injection/removal code together.
+- Removal must delete only the generated block and its immediately adjacent separator blank lines. Content before and after the generated block must be preserved byte-for-byte except for the separator normalization required by the removal.
+- `getTaskDiff()` must not drop the entire file. It should compute the diff after normalizing/removing the generated block from the worktree copy, then show any remaining user/sub-task edits.
+- `mergeTask()` must run the same normalization before staging. Do not implement separate "diff cleanup" and "merge cleanup" algorithms that can drift.
+- `.claude/settings.local.json` needs a JSON-specific path: remove only the injected content from `systemPrompt`; preserve other keys and any non-generated system prompt text.
+
+**Tests to add** (in `electron/mcp/coordinator.test.ts`):
 
 - `getTaskDiff()` on a worktree where `AGENTS.md` has an injected preamble _and_ a legitimate edit after it → diff includes the legitimate edit, excludes the injected block
+- same as above with a legitimate edit before the injected preamble → edit is visible and preserved
 - `mergeTask` with same scenario → committed result contains the legitimate edit, injected block removed
 - Pure-preamble case (no other edits) → empty diff for that file, no content lost after merge
-  **Done when:** A sub-task that edits a preamble-bearing file outside the injected block has those edits visible in the diff review and preserved after merge.
+- `.claude/settings.local.json` with another key and pre-existing `systemPrompt` text → only generated preamble text removed
+
+**Done when:** A sub-task that edits a preamble-bearing file outside the injected block has those edits visible in the diff review and preserved after merge.
 
 ---
 
@@ -110,7 +123,8 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 - `agentArgs` containing a non-string element → rejected
 - `dockerContainerName` containing shell-special characters (e.g. `; rm -rf`) → rejected
 - Assert `writeFileSync`/`copyFileSync` are not called when validation fails
-  **Done when:** All validation paths have at least one negative test and one positive test confirming valid input is accepted.
+
+**Done when:** All validation paths have at least one negative test and one positive test confirming valid input is accepted.
 
 ---
 
@@ -124,7 +138,8 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 - `/tmp/evil/parallel-code-subtask-{id}.json` (right filename, wrong dir) → rejected
 - `/tmp/parallel-code-subtask-{id}.json` with correct host tmpdir → accepted, write occurs
 - Docker mode: `dirname(serverPath)/subtask-{id}.json` → accepted; any other dir → rejected
-  **Done when:** Every branch of the path-scoping logic has a test, including both accepted and rejected cases.
+
+**Done when:** Every branch of the path-scoping logic has a test, including both accepted and rejected cases.
 
 ---
 
@@ -134,21 +149,41 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 **What's wrong:** `MCP_CoordinatorDeregistered` and `MCP_CoordinatedTaskClosed` are now awaited before UI state is removed, but there are no tests asserting the order or handling a rejection.
 **Tests to add:**
 
-- `MCP_CoordinatedTaskClosed` rejects → task is not removed from the store silently as "fully cleaned up"; warning is logged
+- `MCP_CoordinatedTaskClosed` rejects → expected behavior is explicit and tested. If product behavior remains "remove from UI anyway", the test must assert that the warning is logged and the backend cleanup failure is not presented as a successful backend cleanup.
 - `MCP_CoordinatedTaskClosed` resolves → backend state removal happens before `removeTaskFromStore`
 - Coordinator close: `MCP_CoordinatorDeregistered` rejects → warning logged; task close still completes
-  **Done when:** Both the success-ordering guarantee and the rejection-warning behavior have test coverage.
+
+**Done when:** Both the success-ordering guarantee and the rejection-warning behavior have test coverage.
 
 ---
 
 ### 38. MCP/REST `baseBranch` bypasses IPC branch-name guard — P2
 
 **Files:** `electron/mcp/server.ts:69`, `electron/remote/server.ts:291`, `electron/ipc/git.ts:705`
-**What's wrong:** Normal IPC validates `baseBranch` with `validateBranchName` (rejects leading `-`, shell-special chars, etc). The MCP tool handler and REST `POST /api/tasks` only check that `baseBranch` is a string, then pass it directly into `createTask`. `execFile` avoids shell injection, but git can interpret option-looking refs strangely, and this creates an inconsistency between UI task creation and coordinator-created tasks.
-**Fix direction:** Call the same `validateBranchName` (from `electron/ipc/git.ts`) on the MCP and REST paths before invoking `createTask`. This also upgrades the validation that was added to `coordinator.createTask()` (which currently only checks non-empty and no leading `-`) to use the shared validator.
-**Tests to add** (unit, in coordinator.test.ts): `createTask` called with `baseBranch: '-main'` → throws; `baseBranch: ''` → throws; `baseBranch: 'main'` → accepted.
-**Tests to add** (integration, via REST in coordinator-scoping.test.ts): `POST /api/tasks` with `baseBranch: '-bad'` → 400; with `baseBranch: 'feature/ok'` → proceeds past validation.
-**Done when:** Leading-dash, empty-string, and valid inputs are all covered by tests; MCP and REST paths use the same validator as IPC.
+**What's wrong:** Normal IPC validates `baseBranch` before it reaches git. The MCP tool handler and REST `POST /api/tasks` only check that `baseBranch` is a string, then pass it into coordinator task creation and eventually git. `execFile` avoids shell injection, but git can interpret option-looking refs strangely, and this creates an inconsistency between UI-created tasks and coordinator-created tasks.
+
+Implementation constraints:
+
+- Do not import `validateBranchName` from `electron/ipc/register.ts`; it is currently a local helper inside IPC registration code and is the wrong ownership boundary for MCP/REST validation.
+- Extract a shared validator into a small non-IPC module, for example `electron/ipc/validation.ts` or `electron/git/validation.ts`, and use it from IPC, MCP, and REST paths.
+- Keep the validator intentionally conservative and documented. At minimum reject non-string, empty, leading `-`, ASCII control characters, and whitespace-only values. Prefer aligning with `git check-ref-format --branch` semantics if implemented without adding process-spawn overhead to hot paths.
+- Validate `baseBranch` at the boundary (`electron/mcp/server.ts` and `electron/remote/server.ts`) before calling `client.createTask()` / `orch.createTask()`. Also keep validation in lower-level coordinator creation as defense in depth.
+- Preserve the current "undefined means default base branch" behavior. Empty string should be rejected at external boundaries, not silently treated as default.
+
+**Tests to add** (unit, in `electron/mcp/coordinator.test.ts` or validator-specific test):
+
+- `createTask` called with `baseBranch: '-main'` → throws
+- `baseBranch: ''` → throws
+- `baseBranch: '   '` → throws
+- `baseBranch: 'main'` and `baseBranch: 'feature/ok'` → accepted
+
+**Tests to add** (integration, via REST in `electron/remote/coordinator-scoping.test.ts`):
+
+- `POST /api/tasks` with `baseBranch: '-bad'` → 400
+- `POST /api/tasks` with `baseBranch: ''` → 400
+- `POST /api/tasks` with `baseBranch: 'feature/ok'` → proceeds past validation
+
+**Done when:** IPC, MCP, REST, and coordinator-internal task creation all enforce the same branch/ref validation, and tests cover rejected and accepted values through at least one public boundary.
 
 ---
 
@@ -170,9 +205,12 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 - Start coordinator with a pre-existing `.mcp.json` that contains a `my-server` key → after `StartMCPServer`, file contains both `my-server` and `parallel-code`; `my-server` config is byte-for-byte unchanged
 - Deregister coordinator → `parallel-code` key removed, `my-server` preserved, file still exists
 - Start coordinator with no pre-existing `.mcp.json` → file created; deregister → file deleted entirely
-  **Tests to add (also):**
-- Start coordinator with a `.mcp.json` that contains malformed JSON → `StartMCPServer` fails with a clear error and does not overwrite the file (P3 complement — see #41 fix direction)
-  **Done when:** All three cases (merge, cleanup-preserving, cleanup-delete) have test coverage, plus the malformed-JSON rejection case.
+
+**Tests to add (also):**
+
+- Start coordinator with a `.mcp.json` that contains malformed JSON → `StartMCPServer` fails with a clear error and does not overwrite the file (P3 complement — see #42 fix direction)
+
+**Done when:** All three cases (merge, cleanup-preserving, cleanup-delete) have test coverage, plus the malformed-JSON rejection case.
 
 ---
 
@@ -180,8 +218,23 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 
 **File:** `electron/mcp/coordinator.ts` (`cleanupTask` ~line 1030; Docker inner-process cleanup ~line 1074)
 **What's wrong:** `cleanupTask` catches `deleteTask` failure, logs a warning, then removes backend state and emits `MCP_TaskClosed`. Docker inner-process cleanup is also fire-and-forget, so worktree deletion can race an agent process that is still alive. The UI and backend believe the task is cleanly closed while the worktree, branch, or Docker process may still exist.
-**Fix direction:** Await Docker inner-process cleanup (best-effort with timeout) before attempting worktree/branch deletion. Represent delete failure as a partial-cleanup error state on the task rather than emitting `MCP_TaskClosed` as if fully clean. Surface the error to the user so they can retry or manually clean up.
-**Done when:** If `deleteTask` (worktree/branch deletion) fails, the task is marked as partially-closed with an error, `MCP_TaskClosed` is not emitted, and the user has a visible recovery path (e.g., retry button or error message).
+
+Implementation constraints:
+
+- Split cleanup into explicit phases: unsubscribe/kill PTY, stop Docker inner process if any, delete worktree/branch, then remove coordinator backend state.
+- The Docker inner-process stop may remain best-effort, but it must be awaited with a bounded timeout before `deleteTask()` starts. Log its failure separately from worktree deletion failure.
+- If `deleteTask()` fails, do not delete the task from `this.tasks`, do not remove control/blocked state, and do not emit `IPC.MCP_TaskClosed`. Keep enough state for retry.
+- Add or reuse an IPC event that reports cleanup failure to the renderer. Do not overload `MCP_TaskClosed` for failure.
+- In the renderer/store, represent this as a visible `closingStatus: 'error'` / `closingError` or equivalent state on the task. The user should be able to retry close/cleanup without restarting the app.
+- For `mergeTask({ cleanup: true })`, treat cleanup failure as "merge may have succeeded, cleanup failed". Do not imply the merge itself was rolled back unless it actually was.
+
+**Tests to add:**
+
+- `electron/mcp/coordinator.test.ts`: mock `deleteTask` rejection; assert task remains in `listTasks()`, no `MCP_TaskClosed` notification is sent, and a failure notification/event is sent.
+- `electron/mcp/coordinator.test.ts`: Docker task cleanup awaits the targeted inner-process kill attempt before calling `deleteTask`.
+- `src/store/tasks.test.ts`: cleanup-failure event marks the visible task as recoverable error and does not remove it from the store.
+
+**Done when:** If `deleteTask` (worktree/branch deletion) fails, the task is retained with a visible recoverable error, `MCP_TaskClosed` is not emitted, and retry can run using the retained backend state.
 
 ---
 
@@ -189,8 +242,18 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 
 **File:** `electron/ipc/register.ts` (~line 1406)
 **What's wrong:** If `.mcp.json` exists but cannot be parsed (malformed JSON), the handler treats it as empty and writes a new file. This silently destroys a user's malformed-but-recoverable MCP config — other servers they have configured are gone.
-**Fix direction:** On JSON parse failure, either (a) fail `StartMCPServer` with a clear error message ("`.mcp.json` is malformed — please fix or remove it") so the user can recover their config, or (b) copy the original file to `.mcp.json.bak` before overwriting. Option (a) is safer; option (b) is friendlier but adds complexity.
-**Done when:** A malformed `.mcp.json` causes `StartMCPServer` to reject with a descriptive error rather than silently overwriting the file.
+**Fix direction:** Fail closed on parse failure. Do not overwrite or rewrite malformed user config.
+
+Implementation constraints:
+
+- If the selected `.mcp.json` exists and `JSON.parse` fails, throw a descriptive `StartMCPServer` error that includes the path and tells the user to fix or remove the file.
+- Do not create `.mcp.json.bak` in the first implementation unless the repo owner explicitly asks for backup behavior; failing without writes is simpler and safer.
+- Make sure the temp coordinator `--mcp-config` file is not left behind if `.mcp.json` merge fails after the temp file was written. Either reorder writes so `.mcp.json` parse/merge validation happens first, or clean up the temp file in the error path.
+- Keep the existing preservation behavior for valid JSON with unrelated `mcpServers` entries.
+
+**Tests to add:** See #40 for the malformed-JSON case. Also assert neither `writeFileSync(worktreeMcpPath, ...)` nor `chmodSync(worktreeMcpPath, ...)` is called after parse failure.
+
+**Done when:** A malformed `.mcp.json` causes `StartMCPServer` to reject with a descriptive error, no user config file is overwritten, and no stale temp MCP config is left behind.
 
 ---
 
@@ -198,5 +261,21 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 
 **Files:** `src/App.tsx` (~line 349), `src/components/TerminalView.tsx` (~line 637)
 **What's wrong:** On app restore, coordinator and coordinated task PTYs are gated on `mcpReady`. If `StartMCPServer` or `MCP_HydrateCoordinatedTask` fails (bad persisted path, config write error, Docker path issue, transient startup failure), the error is only logged and `mcpReady` is never set to `true`. `TerminalView` then waits indefinitely — the agent process is never spawned and there is no user-visible error or retry path. The task appears stuck/dead.
-**Fix direction:** On failure, set an `mcpError` state on the task (visible in the UI) and either (a) allow the user to retry startup, or (b) fall back to spawning without MCP when that is safe. At minimum, clear the `mcpReady` gate and show a recoverable error rather than silently blocking forever.
-**Done when:** A `StartMCPServer` or hydration failure on restore surfaces a visible error on the affected task(s) and provides a path to retry or recover, rather than leaving the task silently unspawnable.
+**Fix direction:** Treat MCP restore as an explicit task lifecycle state, not just a boolean gate.
+
+Implementation constraints:
+
+- Add a persisted or runtime-only task field such as `mcpStartupStatus?: 'pending' | 'ready' | 'error'` plus `mcpStartupError?: string`, or extend the existing model in an equally explicit way. Avoid encoding three states in `mcpReady?: boolean`.
+- On restore, set coordinator/coordinated tasks to `pending` before invoking `StartMCPServer` / `MCP_HydrateCoordinatedTask`.
+- On success, mark `ready` and spawn as today.
+- On failure, mark `error` with a sanitized message. `TerminalView` must stop waiting forever and render a visible failure/retry state instead of silently doing nothing.
+- Add a retry action that reruns the same startup/hydration path for the affected task. For children, retry should require the parent coordinator to be registered first; if the parent is in error, surface that dependency clearly.
+- Do not fall back to spawning a coordinated task without MCP unless a product decision explicitly accepts that degraded mode. Without MCP, `signal_done`, coordinator control, and task scoping are broken.
+
+**Tests to add:**
+
+- `src/store/persistence.test.ts` or `src/App`-level test if available: failed `StartMCPServer` marks coordinator task error instead of leaving it pending forever.
+- child hydration failure marks only that child error and leaves other successfully hydrated children spawnable.
+- retry success transitions `error -> pending -> ready` and allows `TerminalView` to spawn.
+
+**Done when:** A `StartMCPServer` or hydration failure on restore surfaces a visible error on the affected task(s), does not leave `TerminalView` waiting forever, and provides a retry path that uses the same validated startup/hydration flow.

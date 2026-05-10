@@ -775,10 +775,23 @@ export class Coordinator {
 
     // Exclude preamble-injected files so the diff matches what will actually be merged.
     const preambleFiles = this.detectPreambleFiles(task.worktreePath);
-    if (preambleFiles.size === 0) return { files, diff };
 
-    const filteredFiles = files.filter((f) => !preambleFiles.has(f.path));
-    const filteredDiff = this.filterDiffSections(diff, preambleFiles);
+    let filteredFiles = files;
+    let filteredDiff = diff;
+    if (preambleFiles.size > 0) {
+      filteredFiles = files.filter((f) => !preambleFiles.has(f.path));
+      filteredDiff = this.filterDiffSections(diff, preambleFiles);
+    }
+
+    const MAX_DIFF_BYTES = 50_000;
+    if (filteredDiff.length > MAX_DIFF_BYTES) {
+      return {
+        files: filteredFiles,
+        diff: filteredDiff.slice(0, MAX_DIFF_BYTES) + '\n... (diff truncated)',
+        truncated: true,
+        originalSizeBytes: filteredDiff.length,
+      };
+    }
     return { files: filteredFiles, diff: filteredDiff };
   }
 

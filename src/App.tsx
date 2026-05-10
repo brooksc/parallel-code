@@ -391,10 +391,10 @@ function App() {
         mcpConfigPath: task.mcpConfigPath,
         preambleFileExistedBefore: task.preambleFileExistedBefore,
       })
-        .then(() => markTaskMcpReady(task.id))
         .catch((err) => {
           console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
-        });
+        })
+        .finally(() => markTaskMcpReady(task.id));
     }
 
     // Restore plan content for tasks that had a plan file before restart
