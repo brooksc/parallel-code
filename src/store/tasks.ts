@@ -1139,11 +1139,16 @@ export function initMCPListeners(): () => void {
 }
 
 export function setTaskControl(taskId: string, who: 'coordinator' | 'human'): void {
+  const task = store.tasks[taskId];
+  const prev = task?.controlledBy;
   setStore('tasks', taskId, 'controlledBy', who);
   // Coordinator tasks manage their own control state in the frontend only.
   // Sub-tasks need to notify the backend Coordinator so it can gate send_prompt.
-  if (!store.tasks[taskId]?.coordinatorMode) {
-    invoke(IPC.MCP_ControlChanged, { taskId, controlledBy: who }).catch(() => {});
+  if (!task?.coordinatorMode) {
+    invoke(IPC.MCP_ControlChanged, { taskId, controlledBy: who }).catch((err: unknown) => {
+      console.warn('[tasks] setTaskControl IPC failed, rolling back controlledBy', err);
+      setStore('tasks', taskId, 'controlledBy', prev);
+    });
   }
   void saveState();
 }
