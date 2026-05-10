@@ -79,12 +79,6 @@
 **What's wrong:** Two concurrent agent spawns can each read `.claude.json` before the other writes, dropping one spawn's trusted project entry.
 **Done when:** Writes use an atomic rename pattern or a per-file advisory lock.
 
-### 21. Stale Docker MCP URL detection is passive
-
-**File:** `electron/ipc/register.ts` (`StartMCPServer`), `electron/mcp/config.ts` (`detectStaleDockerMCPUrl`)
-**What's wrong:** `detectStaleDockerMCPUrl()` exists but is not called in the startup path. Users with `127.0.0.1` in `.mcp.json` on macOS get a silent connection failure.
-**Done when:** `detectStaleDockerMCPUrl()` is called in `StartMCPServer` after config is written, and a warning is surfaced to the renderer.
-
 ### 25. Remote server started without coordinator routes when remote access precedes coordinator
 
 **File:** `electron/ipc/register.ts` (`StartRemoteServer`, `StartMCPServer`)
