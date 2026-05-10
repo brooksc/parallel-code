@@ -891,6 +891,35 @@ describe('Coordinator deregisterCoordinator', () => {
     coordinator.deregisterCoordinator('coord-1');
     expect(coordinator.hasActiveCoordinator()).toBe(false);
   });
+
+  it('deregister cleans up backend resource maps for child tasks', async () => {
+    const { unsubscribeFromAgent } =
+      await vi.importMock<typeof import('../ipc/pty.js')>('../ipc/pty.js');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const agentId = getAgentId();
+
+    // Confirm subscriber was registered
+    expect(mockSubscribeToAgent).toHaveBeenCalledWith(agentId, expect.any(Function));
+
+    coordinator.deregisterCoordinator('coord-1');
+
+    // PTY subscriber must be unregistered
+    expect(vi.mocked(unsubscribeFromAgent)).toHaveBeenCalledWith(agentId, expect.any(Function));
+
+    // Internal maps must no longer hold stale entries
+    const c = coordinator as unknown as {
+      subscribers: Map<string, unknown>;
+      tailBuffers: Map<string, unknown>;
+      decoders: Map<string, unknown>;
+      controlMap: Map<string, unknown>;
+      blockedByHumanControl: Set<string>;
+    };
+    expect(c.subscribers.has(agentId)).toBe(false);
+    expect(c.tailBuffers.has(agentId)).toBe(false);
+    expect(c.decoders.has(agentId)).toBe(false);
+  });
 });
 
 // ─── per-task projectRoot tests ───────────────────────────────────────────────

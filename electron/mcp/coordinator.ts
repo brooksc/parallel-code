@@ -1099,9 +1099,27 @@ export class Coordinator {
     // Remove all child tasks belonging to this coordinator so stale entries
     // can't trigger cleanup/signal logic after the coordinator is gone.
     for (const [taskId, task] of this.tasks) {
-      if (task.coordinatorTaskId === coordinatorTaskId) {
-        this.tasks.delete(taskId);
+      if (task.coordinatorTaskId !== coordinatorTaskId) continue;
+
+      // Unsubscribe PTY output callback
+      const cb = this.subscribers.get(task.agentId);
+      if (cb) {
+        unsubscribeFromAgent(task.agentId, cb);
+        this.subscribers.delete(task.agentId);
       }
+      this.tailBuffers.delete(task.agentId);
+      this.decoders.delete(task.agentId);
+
+      // Resolve pending idle waiters so callers aren't left hanging
+      const resolvers = this.idleResolvers.get(taskId);
+      if (resolvers) {
+        for (const resolve of resolvers) resolve({ reason: 'exited' });
+        this.idleResolvers.delete(taskId);
+      }
+
+      this.controlMap.delete(taskId);
+      this.blockedByHumanControl.delete(taskId);
+      this.tasks.delete(taskId);
     }
   }
 
