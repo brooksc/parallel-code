@@ -41,3 +41,23 @@ Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator 
 3. Unix socket bind-mounted into the container — eliminates TCP exposure entirely, larger change.
 
 **Status:** Waiting for repo owner to weigh in on preferred approach before any work begins.
+
+---
+
+### 31. Docker sub-tasks: one container per sub-task instead of docker exec
+
+**Current approach:** The coordinator spawns one `docker run` container and all sub-tasks run inside it via `docker exec`. This causes two known problems: HOME collision (#19, partially mitigated) and shaky process cleanup (#18, partially mitigated).
+
+**Proposed change:** Spawn each sub-task as its own `docker run` container (same image, same volume mounts). Sub-tasks get isolated filesystems, so HOME collision is eliminated by design. Process cleanup becomes `docker stop <container>` — clean and reliable.
+
+**Key files:** `electron/mcp/coordinator.ts` (sub-task spawn logic, ~line 526), `electron/ipc/pty.ts` (`spawnAgent` docker exec path)
+
+**What changes:**
+
+- In `coordinator.ts` `createTask`: instead of `docker exec -it -w <worktree> <coordinator-container> claude ...`, build a `docker run --rm -it -w <worktree> -v ... <image> claude ...` command with the same volume mounts the coordinator container uses (worktree parent + `.git` dir).
+- The coordinator container name is no longer needed as a spawn target for sub-tasks — only needed for the coordinator itself.
+- `electron/ipc/pty.ts` already handles `docker run` spawning; sub-tasks would use the same path as the coordinator (not the `docker exec` branch).
+
+**Note:** The bind address question (#30) is unchanged — sub-task containers still need to reach `host.docker.internal:7777` for `signal_done`. Resolve #30 first or in parallel.
+
+**Done when:** Sub-tasks spawned in Docker coordinator mode each run in their own container, HOME collisions are gone, and `close_task` cleanly stops the container.
