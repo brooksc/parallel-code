@@ -55,11 +55,9 @@
 **What's wrong:** Sub-agents spawned via `docker exec` are not marked `dockerMode` with a `containerName`. Killing the PTY stops the host `docker exec` client but may leave the inner agent process running inside the coordinator container.
 **Done when:** Docker-exec PTY sessions are marked with the coordinator `containerName` and a `SIGTERM` is sent to the inner process via `docker exec <container> kill <pid>` on cleanup.
 
-### 25. Remote server started without coordinator routes when remote access precedes coordinator
+### ~~25. Remote server started without coordinator routes when remote access precedes coordinator~~ ✅ COMPLETE
 
-**File:** `electron/ipc/register.ts` (`StartRemoteServer`, `StartMCPServer`)
-**What's wrong:** If remote access was enabled before any coordinator task exists, `coordinator` is `null` at `startRemoteServer` time and coordinator routes (`/api/tasks`, `signal_done`) are never registered. `StartMCPServer` reuses the existing server without adding the missing routes.
-**Done when:** Route handlers receive a mutable `getCoordinator()` callback so they look up the coordinator at request time, OR the server is restarted with the coordinator attached when `StartMCPServer` is called.
+Already resolved by TODO #14's lazy `getCoordinator()` pattern. All coordinator routes are registered at server startup and call `opts.getCoordinator()` at request time, returning 503 when null. Test coverage added in `electron/remote/coordinator-scoping.test.ts`.
 
 ### 30. MCP remote server bind address — WAITING FOR REPO OWNER INPUT — DO NOT FIX
 
