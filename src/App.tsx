@@ -385,6 +385,7 @@ function App() {
         agentId: task.agentIds[0],
         signalDoneAt: task.signalDoneAt,
         signalDoneConsumed: task.signalDoneConsumed,
+        mcpConfigPath: task.mcpConfigPath,
       }).catch((err) => {
         console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
       });

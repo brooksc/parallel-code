@@ -1149,6 +1149,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           agentId?: string;
           signalDoneAt?: string;
           signalDoneConsumed?: boolean;
+          mcpConfigPath?: string;
         },
       ) => {
         assertString(args.id, 'id');
@@ -1171,6 +1172,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           controlledBy: args.controlledBy,
           signalDoneAt: args.signalDoneAt,
           signalDoneConsumed: args.signalDoneConsumed,
+          mcpConfigPath: args.mcpConfigPath,
         });
       },
     );

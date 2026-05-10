@@ -1005,11 +1005,21 @@ export class Coordinator {
 
     // When spawned via `docker exec`, killing the host PTY only stops the exec
     // client. Best-effort: kill the inner agent process still running inside the
-    // coordinator container.
+    // coordinator container. Target only this task's process by matching its cwd
+    // (each sub-task has a unique worktree path) rather than pkill -f claude,
+    // which would terminate sibling sub-tasks and the coordinator itself.
     if (task.dockerContainerName) {
       execFile(
         'docker',
-        ['exec', task.dockerContainerName, 'pkill', '-TERM', '-f', 'claude'],
+        [
+          'exec',
+          task.dockerContainerName,
+          'sh',
+          '-c',
+          'for p in /proc/[0-9]*/cwd; do [ "$(readlink "$p" 2>/dev/null)" = "$1" ] && kill -TERM "$(basename "$(dirname "$p")")" 2>/dev/null; done',
+          '--',
+          task.worktreePath,
+        ],
         { timeout: 5000 },
         () => {
           // Intentionally ignore errors: inner process may have already exited.
@@ -1072,6 +1082,7 @@ export class Coordinator {
     controlledBy?: 'coordinator' | 'human';
     signalDoneAt?: string;
     signalDoneConsumed?: boolean;
+    mcpConfigPath?: string;
   }): void {
     if (this.tasks.has(opts.id)) return;
     const task: CoordinatedTask = {
@@ -1088,10 +1099,36 @@ export class Coordinator {
       exitCode: null,
       signalDoneAt: opts.signalDoneAt ? new Date(opts.signalDoneAt) : undefined,
       signalDoneConsumed: opts.signalDoneConsumed,
+      mcpConfigPath: opts.mcpConfigPath,
     };
     this.tasks.set(task.id, task);
     if (opts.controlledBy === 'human') {
       this.controlMap.set(task.id, 'human');
+    }
+
+    // If StartMCPServer already ran before this hydration call (the normal restart path),
+    // rewrite the config file immediately with the current port/token so the respawned
+    // agent gets fresh credentials instead of the stale pre-restart values.
+    if (opts.mcpConfigPath) {
+      const serverInfo = this.coordinators.get(opts.coordinatorTaskId)?.mcpServerInfo;
+      if (serverInfo) {
+        const { serverUrl, token, serverPath } = serverInfo;
+        const mcpConfig = {
+          mcpServers: {
+            'parallel-code': {
+              type: 'stdio' as const,
+              command: 'node',
+              args: [serverPath, '--url', serverUrl, '--task-id', task.id],
+              env: { PARALLEL_CODE_MCP_TOKEN: token },
+            },
+          },
+        };
+        try {
+          writeFileSync(opts.mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
+        } catch {
+          /* config dir may not exist yet; setMCPServerInfo rewrite will catch it */
+        }
+      }
     }
 
     // Set up output monitoring so wait_for_idle and idle detection work after restart.
