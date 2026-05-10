@@ -421,6 +421,7 @@ export function PromptInput(props: PromptInputProps) {
     lastStagedText = notification.text;
     autoFirePromptMissCount = 0;
     setText(notification.text);
+    let lastIntervalTail = '';
 
     // eslint-disable-next-line solid/reactivity -- intentional untracked reads in interval
     autoFireInterval = window.setInterval(() => {
@@ -437,12 +438,20 @@ export function PromptInput(props: PromptInputProps) {
         autoFireInterval = undefined;
         return;
       }
+      const currentTail = stripAnsi(untrack(() => getAgentOutputTail(props.agentId)));
+      // If the agent produced new output since the last tick it is actively working
+      // (e.g. mid-tool-call). Reset the miss counter so a long tool call doesn't
+      // accumulate misses and trigger the escalation path prematurely.
+      if (currentTail !== lastIntervalTail) {
+        autoFirePromptMissCount = 0;
+        lastIntervalTail = currentTail;
+      }
       const tick = processAutoFireTick({
         staged,
         now: Date.now(),
         controlledBy: untrack(() => store.tasks[props.taskId]?.controlledBy),
         questionActive: untrack(() => questionActive()),
-        tail: stripAnsi(untrack(() => getAgentOutputTail(props.agentId))),
+        tail: currentTail,
         currentMissCount: autoFirePromptMissCount,
       });
 
@@ -458,9 +467,7 @@ export function PromptInput(props: PromptInputProps) {
       }
       if (tick.outcome === 'no-prompt') {
         autoFirePromptMissCount = tick.newMissCount;
-        const tailSnippet = stripAnsi(untrack(() => getAgentOutputTail(props.agentId))).slice(
-          -PROMPT_MARKER_SCAN_CHARS,
-        );
+        const tailSnippet = currentTail.slice(-PROMPT_MARKER_SCAN_CHARS);
         if (autoFirePromptMissCount === 1 || autoFirePromptMissCount % 5 === 0) {
           logWarn('autofire', 'prompt not detected after autoFireAt', {
             taskId: props.taskId,

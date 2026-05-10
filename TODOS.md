@@ -11,10 +11,9 @@
 
 ## Known edge cases — no fix yet
 
-### 7. Autofire expiry window — coordinator in long tool call during countdown
+### ~~7. Autofire expiry window — coordinator in long tool call during countdown~~ ✅ COMPLETE
 
-**What's wrong:** If the coordinator is mid-tool-call when autofire countdown fires, it finds no PTY prompt, misses 10 times, and escalates unnecessarily.
-**No fix yet** — depends on timing; low frequency in practice.
+Fixed: the interval now tracks the last-seen tail. If new output arrives since the previous tick the agent is actively working, so the miss counter resets to zero. Escalation only triggers when the tail has been completely static for 10+ consecutive seconds with no prompt visible.
 
 ### 8. Post-restart coordinator MCP config stale if coordinator process restarts
 
