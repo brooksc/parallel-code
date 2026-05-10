@@ -184,7 +184,8 @@ export class Coordinator {
           'parallel-code': {
             type: 'stdio' as const,
             command: 'node',
-            args: [serverPath, '--url', serverUrl, '--token', token, '--task-id', task.id],
+            args: [serverPath, '--url', serverUrl, '--task-id', task.id],
+            env: { PARALLEL_CODE_MCP_TOKEN: token },
           },
         },
       };
@@ -509,7 +510,8 @@ export class Coordinator {
             'parallel-code': {
               type: 'stdio' as const,
               command: 'node',
-              args: [serverPath, '--url', serverUrl, '--token', token, '--task-id', task.id],
+              args: [serverPath, '--url', serverUrl, '--task-id', task.id],
+              env: { PARALLEL_CODE_MCP_TOKEN: token },
             },
           },
         };

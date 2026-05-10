@@ -116,12 +116,11 @@ describe('buildCoordinatorMCPConfig — config content', () => {
     expect(args[urlIdx + 1]).toBe('http://host.docker.internal:3001');
   });
 
-  it('args contain --token', () => {
+  it('token is passed via env var, not args', () => {
     const cfg = buildCoordinatorMCPConfig(baseOpts);
     const args = cfg.mcpServers['parallel-code'].args;
-    const tokenIdx = args.indexOf('--token');
-    expect(tokenIdx).toBeGreaterThan(0);
-    expect(args[tokenIdx + 1]).toBe(baseOpts.token);
+    expect(args).not.toContain('--token');
+    expect(cfg.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN']).toBe(baseOpts.token);
   });
 
   it('args contain --coordinator-id', () => {

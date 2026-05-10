@@ -110,9 +110,9 @@ describe('Layer 3 — MCP startup pipeline (no Electron, real FS)', () => {
     const urlIdx = server.args.indexOf('--url');
     expect(server.args[urlIdx + 1]).toBe('http://host.docker.internal:3001');
 
-    // Token is in config
-    const tokenIdx = server.args.indexOf('--token');
-    expect(server.args[tokenIdx + 1]).toBe(token);
+    // Token is passed via env var, not args
+    expect(server.args).not.toContain('--token');
+    expect(server.env['PARALLEL_CODE_MCP_TOKEN']).toBe(token);
   });
 
   it('mcp-server.cjs is copied to .parallel-code inside the worktree', () => {

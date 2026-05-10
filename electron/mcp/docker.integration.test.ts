@@ -120,15 +120,8 @@ describeDocker('Docker MCP integration', () => {
         'parallel-code': {
           type: 'stdio',
           command: 'node',
-          args: [
-            dockerMcpServerPath,
-            '--url',
-            serverUrl,
-            '--token',
-            remoteServer.token,
-            '--coordinator-id',
-            'coord-1',
-          ],
+          args: [dockerMcpServerPath, '--url', serverUrl, '--coordinator-id', 'coord-1'],
+          env: { PARALLEL_CODE_MCP_TOKEN: remoteServer.token },
         },
       },
     };
@@ -146,13 +139,13 @@ describeDocker('Docker MCP integration', () => {
         `${worktreePath}:${worktreePath}`,
         '-w',
         worktreePath,
+        '-e',
+        `PARALLEL_CODE_MCP_TOKEN=${remoteServer.token}`,
         DOCKER_DEFAULT_IMAGE,
         'node',
         dockerMcpServerPath,
         '--url',
         serverUrl,
-        '--token',
-        remoteServer.token,
         '--coordinator-id',
         'coord-1',
       ],
@@ -238,15 +231,8 @@ describeDocker('Docker MCP integration', () => {
           'parallel-code': {
             type: 'stdio',
             command: 'node',
-            args: [
-              dockerMcpServerPath,
-              '--url',
-              serverUrl,
-              '--token',
-              subServer.token,
-              '--task-id',
-              taskId,
-            ],
+            args: [dockerMcpServerPath, '--url', serverUrl, '--task-id', taskId],
+            env: { PARALLEL_CODE_MCP_TOKEN: subServer.token },
           },
         },
       };
@@ -264,13 +250,13 @@ describeDocker('Docker MCP integration', () => {
           `${coordWorktree}:${coordWorktree}`,
           '-w',
           coordWorktree,
+          '-e',
+          `PARALLEL_CODE_MCP_TOKEN=${subServer.token}`,
           DOCKER_DEFAULT_IMAGE,
           'node',
           dockerMcpServerPath,
           '--url',
           serverUrl,
-          '--token',
-          subServer.token,
           '--task-id',
           taskId,
         ],
@@ -527,13 +513,13 @@ describeDocker('Layer 4 — Production-path coordinator Docker scenario', () => 
         `${scenarioWorktree}:${scenarioWorktree}`,
         '-w',
         scenarioWorktree,
+        '-e',
+        `PARALLEL_CODE_MCP_TOKEN=${scenarioServer.token}`,
         DOCKER_DEFAULT_IMAGE,
         'node',
         destPath,
         '--url',
         serverUrl,
-        '--token',
-        scenarioServer.token,
         '--coordinator-id',
         'coord-prod',
       ],
@@ -624,7 +610,7 @@ describe('Docker coordinator bootstrap — port/token rotation in .mcp.json', ()
     const cfgBefore = buildCoordinatorMCPConfig(opts);
     const argsBefore = cfgBefore.mcpServers['parallel-code'].args;
     expect(argsBefore).toContain('http://host.docker.internal:3001');
-    expect(argsBefore).toContain('old-token');
+    expect(cfgBefore.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN']).toBe('old-token');
 
     // Simulate restart: new port and token
     const cfgAfter = buildCoordinatorMCPConfig({
@@ -634,9 +620,11 @@ describe('Docker coordinator bootstrap — port/token rotation in .mcp.json', ()
     });
     const argsAfter = cfgAfter.mcpServers['parallel-code'].args;
     expect(argsAfter).toContain('http://host.docker.internal:3099');
-    expect(argsAfter).toContain('new-token');
+    expect(cfgAfter.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN']).toBe('new-token');
     expect(argsAfter).not.toContain('http://host.docker.internal:3001');
-    expect(argsAfter).not.toContain('old-token');
+    expect(cfgAfter.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN']).not.toBe(
+      'old-token',
+    );
   });
 });
 
@@ -734,13 +722,13 @@ describeDocker('Layer 9 — Project Dockerfile image MCP smoke test', () => {
           `${worktree}:${worktree}`,
           '-w',
           worktree,
+          '-e',
+          `PARALLEL_CODE_MCP_TOKEN=${server.token}`,
           projectImage,
           'node',
           destPath,
           '--url',
           getMCPRemoteServerUrl(port, 'test-container', platform()),
-          '--token',
-          server.token,
         ],
       });
       const client = new Client({ name: 'project-image-test', version: '1.0.0' });
@@ -824,7 +812,8 @@ describeDocker('Layer 2 — MCP tool schema drift between host and Docker', () =
       await import('@modelcontextprotocol/sdk/client/stdio.js');
     const hostTransport = new HostTransport({
       command: 'node',
-      args: [destPath, '--url', `http://127.0.0.1:${port}`, '--token', server.token],
+      args: [destPath, '--url', `http://127.0.0.1:${port}`],
+      env: { ...process.env, PARALLEL_CODE_MCP_TOKEN: server.token },
     });
     const hostClient = new HostClient({ name: 'host-schema-test', version: '1.0.0' });
 
@@ -846,13 +835,13 @@ describeDocker('Layer 2 — MCP tool schema drift between host and Docker', () =
           `${worktree}:${worktree}`,
           '-w',
           worktree,
+          '-e',
+          `PARALLEL_CODE_MCP_TOKEN=${server.token}`,
           DOCKER_DEFAULT_IMAGE,
           'node',
           destPath,
           '--url',
           getMCPRemoteServerUrl(port, 'test-container', platform()),
-          '--token',
-          server.token,
         ],
       });
       const dockerClient = new Client({ name: 'docker-schema-test', version: '1.0.0' });
@@ -936,13 +925,13 @@ describeDocker('Layer 2 — Large MCP response over Docker stdio', () => {
           `${worktree}:${worktree}`,
           '-w',
           worktree,
+          '-e',
+          `PARALLEL_CODE_MCP_TOKEN=${server.token}`,
           DOCKER_DEFAULT_IMAGE,
           'node',
           destPath,
           '--url',
           getMCPRemoteServerUrl(port, 'test-container', platform()),
-          '--token',
-          server.token,
         ],
       });
       const client = new Client({ name: 'large-resp-test', version: '1.0.0' });

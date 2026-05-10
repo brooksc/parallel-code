@@ -11,7 +11,6 @@ import { selectTools } from './mcp-tool-list.js';
 // Parse CLI args
 const args = process.argv.slice(2);
 let url = '';
-let token = '';
 let taskId = ''; // set for sub-tasks: enables signal_done
 let coordinatorId = ''; // set for coordinator: sent as coordinatorTaskId in create_task
 let defaultSkipPermissions = false; // inherited from coordinator's own skipPermissions setting
@@ -19,8 +18,6 @@ let defaultSkipPermissions = false; // inherited from coordinator's own skipPerm
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--url' && args[i + 1]) {
     url = args[++i];
-  } else if (args[i] === '--token' && args[i + 1]) {
-    token = args[++i];
   } else if (args[i] === '--task-id' && args[i + 1]) {
     taskId = args[++i];
   } else if (args[i] === '--coordinator-id' && args[i + 1]) {
@@ -30,9 +27,12 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
+const token = process.env.PARALLEL_CODE_MCP_TOKEN ?? '';
+
 if (!url || !token) {
   console.error(
-    'Usage: node server.js --url <remote-server-url> --token <auth-token> [--task-id <taskId>] [--coordinator-id <coordinatorId>]',
+    'Usage: node server.js --url <remote-server-url> [--task-id <taskId>] [--coordinator-id <coordinatorId>]\n' +
+      'Token must be set via PARALLEL_CODE_MCP_TOKEN environment variable.',
   );
   process.exit(1);
 }

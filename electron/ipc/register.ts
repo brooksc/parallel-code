@@ -104,7 +104,14 @@ export interface CoordinatorMCPConfigOpts {
 
 /** Builds the coordinator `.mcp.json` / `--mcp-config` file content. */
 export function buildCoordinatorMCPConfig(opts: CoordinatorMCPConfigOpts): {
-  mcpServers: { 'parallel-code': { type: 'stdio'; command: 'node'; args: string[] } };
+  mcpServers: {
+    'parallel-code': {
+      type: 'stdio';
+      command: 'node';
+      args: string[];
+      env: Record<string, string>;
+    };
+  };
 } {
   return {
     mcpServers: {
@@ -115,12 +122,11 @@ export function buildCoordinatorMCPConfig(opts: CoordinatorMCPConfigOpts): {
           opts.mcpServerPath,
           '--url',
           opts.serverUrl,
-          '--token',
-          opts.token,
           '--coordinator-id',
           opts.coordinatorTaskId,
           ...(opts.skipPermissions && opts.propagateSkipPermissions ? ['--skip-permissions'] : []),
         ],
+        env: { PARALLEL_CODE_MCP_TOKEN: opts.token },
       },
     },
   };
@@ -1302,14 +1308,13 @@ export function registerAllHandlers(win: BrowserWindow): void {
               mcpServerPath,
               '--url',
               serverUrl,
-              '--token',
-              remoteServer.token,
               '--coordinator-id',
               args.coordinatorTaskId,
               ...(args.skipPermissions && args.propagateSkipPermissions
                 ? ['--skip-permissions']
                 : []),
             ],
+            env: { PARALLEL_CODE_MCP_TOKEN: remoteServer.token },
           },
         },
       };
