@@ -158,4 +158,5 @@ export enum IPC {
   MCP_CoordinatedTaskPromptDelivered = 'mcp_coordinated_task_prompt_delivered',
   MCP_CoordinatorRestageAfterUserSend = 'mcp_coordinator_restage_after_user_send',
   MCP_HydrateCoordinatedTask = 'mcp_hydrate_coordinated_task',
+  MCP_StaleUrlWarning = 'mcp_stale_url_warning',
 }

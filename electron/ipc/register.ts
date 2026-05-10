@@ -79,7 +79,7 @@ import {
   assertOptionalBoolean,
 } from './validate.js';
 import { warn as logWarn } from '../log.js';
-import { getMCPRemoteServerUrl } from '../mcp/config.js';
+import { getMCPRemoteServerUrl, detectStaleDockerMCPUrl } from '../mcp/config.js';
 
 export function selectMcpJsonDir(worktreePath: string | undefined, projectRoot: string): string {
   return worktreePath ?? projectRoot;
@@ -1363,6 +1363,14 @@ export function registerAllHandlers(win: BrowserWindow): void {
         }
 
         console.warn('[MCP] .mcp.json written to:', worktreeMcpPath);
+
+        const staleWarning = detectStaleDockerMCPUrl(serverUrl, args.dockerContainerName);
+        if (staleWarning) {
+          logWarn('mcp', staleWarning);
+          if (!win.isDestroyed()) {
+            win.webContents.send(IPC.MCP_StaleUrlWarning, { message: staleWarning });
+          }
+        }
       }
 
       if (configPath) {
