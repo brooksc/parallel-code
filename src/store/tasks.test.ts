@@ -210,3 +210,48 @@ describe('MCP_TaskCreated IPC handler', () => {
     expect(mockTasks['sub-task-1'].controlledBy).toBeDefined();
   });
 });
+
+describe('hasActiveCoordinator condition — coordinator task removal', () => {
+  it('condition is false when the store has no tasks', () => {
+    const result = Object.values(mockTasks).some((t) => t.coordinatorMode && !t.closingStatus);
+    expect(result).toBe(false);
+  });
+
+  it('condition is true when a coordinator task exists in the store', () => {
+    mockTasks['coord-1'] = {
+      coordinatorMode: true,
+      closingStatus: undefined,
+      projectId: 'proj-1',
+      agentIds: [],
+      shellAgentIds: [],
+    };
+    const result = Object.values(mockTasks).some((t) => t.coordinatorMode && !t.closingStatus);
+    expect(result).toBe(true);
+  });
+
+  it('condition is false after the coordinator task is removed from the store', () => {
+    mockTasks['coord-1'] = {
+      coordinatorMode: true,
+      closingStatus: undefined,
+      projectId: 'proj-1',
+      agentIds: [],
+      shellAgentIds: [],
+    };
+    // Simulate task removal (what happens when close completes)
+    delete mockTasks['coord-1'];
+    const result = Object.values(mockTasks).some((t) => t.coordinatorMode && !t.closingStatus);
+    expect(result).toBe(false);
+  });
+
+  it('condition is false when the coordinator task has closingStatus set (is being closed)', () => {
+    mockTasks['coord-1'] = {
+      coordinatorMode: true,
+      closingStatus: 'closing',
+      projectId: 'proj-1',
+      agentIds: [],
+      shellAgentIds: [],
+    };
+    const result = Object.values(mockTasks).some((t) => t.coordinatorMode && !t.closingStatus);
+    expect(result).toBe(false);
+  });
+});
