@@ -37,6 +37,12 @@ export function processAutoFireTick(params: {
     return { outcome: 'paused' };
   }
 
+  // User has manually edited the prompt — suppress autofire indefinitely until
+  // they press Enter themselves.
+  if (params.staged.userEdited) {
+    return { outcome: 'paused' };
+  }
+
   const tailSnippet = params.tail.slice(-PROMPT_MARKER_SCAN_CHARS);
   const hasPrompt = /[❯›]/.test(tailSnippet);
   if (!hasPrompt) {

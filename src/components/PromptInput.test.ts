@@ -14,6 +14,57 @@ const pastNow = 2_000; // past autoFireAt=1000
 const noPromptTail = 'agent is thinking...';
 const promptTail = 'agent output ❯ ';
 
+const stagedEdited: StagedNotification = {
+  ...staged,
+  userEdited: true,
+};
+
+describe('processAutoFireTick — userEdited suppression', () => {
+  it('returns paused when userEdited=true with controlledBy coordinator and prompt visible', () => {
+    const result = processAutoFireTick({
+      staged: stagedEdited,
+      now: pastNow,
+      controlledBy: 'coordinator',
+      tail: promptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('paused');
+  });
+
+  it('returns paused when userEdited=true with controlledBy undefined and prompt visible', () => {
+    const result = processAutoFireTick({
+      staged: stagedEdited,
+      now: pastNow,
+      controlledBy: undefined,
+      tail: promptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('paused');
+  });
+
+  it('returns paused when userEdited=true with controlledBy human', () => {
+    const result = processAutoFireTick({
+      staged: stagedEdited,
+      now: pastNow,
+      controlledBy: 'human',
+      tail: promptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('paused');
+  });
+
+  it('fires when userEdited=false with controlledBy coordinator and prompt visible (regression guard)', () => {
+    const result = processAutoFireTick({
+      staged,
+      now: pastNow,
+      controlledBy: 'coordinator',
+      tail: promptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('fire');
+  });
+});
+
 describe('processAutoFireTick — controlledBy: human', () => {
   it('returns paused without touching the miss counter when controlledBy is human', () => {
     const result = processAutoFireTick({

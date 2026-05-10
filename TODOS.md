@@ -13,13 +13,6 @@ No test currently verifies that `userEdited: true` on the staged notification
 prevents the autofire tick from firing. Add to `PromptInput.test.ts` or
 `autofire-tick.ts`.
 
-### 11. Coordinator checkbox re-enables after coordinator task closes (Test plan §12)
-
-`hasActiveCoordinator()` in `NewTaskDialog.tsx` derives from `store.tasks`. No
-test verifies that closing (removing) a coordinator task causes the signal to
-return false, re-enabling the checkbox. Add a store-level test to
-`src/store/tasks.test.ts`.
-
 ---
 
 ## Known edge cases — no fix yet
