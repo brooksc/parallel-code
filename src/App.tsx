@@ -358,10 +358,10 @@ function App() {
           agentArgs: agentDef?.args ?? [],
           dockerContainerName,
         })
-          .then(() => markTaskMcpReady(taskId))
           .catch((err) => {
             console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
-          }),
+          })
+          .finally(() => markTaskMcpReady(taskId)),
       );
     }
     // Wait for all coordinators to register before hydrating their children —
