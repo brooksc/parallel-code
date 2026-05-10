@@ -1006,6 +1006,8 @@ export class Coordinator {
     agentId: string;
     coordinatorTaskId: string;
     controlledBy?: 'coordinator' | 'human';
+    signalDoneAt?: string;
+    signalDoneConsumed?: boolean;
   }): void {
     if (this.tasks.has(opts.id)) return;
     const task: CoordinatedTask = {
@@ -1020,6 +1022,8 @@ export class Coordinator {
       coordinatorTaskId: opts.coordinatorTaskId,
       status: 'exited',
       exitCode: null,
+      signalDoneAt: opts.signalDoneAt ? new Date(opts.signalDoneAt) : undefined,
+      signalDoneConsumed: opts.signalDoneConsumed,
     };
     this.tasks.set(task.id, task);
     if (opts.controlledBy === 'human') {
@@ -1227,7 +1231,12 @@ export class Coordinator {
       });
       this.finishSignalWait(coordinatorId);
       // Tell renderer — coordinator already gets result via MCP return value, no UI notification needed
-      this.notifyRenderer(IPC.MCP_TaskStateSync, { taskId, signalDoneReceived: true });
+      this.notifyRenderer(IPC.MCP_TaskStateSync, {
+        taskId,
+        signalDoneReceived: true,
+        signalDoneAt: (task.signalDoneAt ?? new Date()).toISOString(),
+        signalDoneConsumed: true,
+      });
       logWarn('coordinator.signal_wait', 'wait_for_signal_done finish', {
         taskId,
         coordinatorTaskId: coordinatorId,
@@ -1238,7 +1247,12 @@ export class Coordinator {
     }
 
     // No active waiter — notify via UI so coordinator sees the completion
-    this.notifyRenderer(IPC.MCP_TaskStateSync, { taskId, signalDoneReceived: true });
+    this.notifyRenderer(IPC.MCP_TaskStateSync, {
+      taskId,
+      signalDoneReceived: true,
+      signalDoneAt: (task.signalDoneAt ?? new Date()).toISOString(),
+      signalDoneConsumed: false,
+    });
     const state: 'idle' | 'exited' = task.status === 'exited' ? 'exited' : 'idle';
     this.maybeQueueReviewNotification(task, state, task.exitCode ?? null, 5_000);
     return true;
@@ -1303,6 +1317,10 @@ export class Coordinator {
         // Suppress the staged UI notification that was queued when signalDone ran
         // without an active waiter — otherwise it will auto-fire as a duplicate.
         this.suppressPendingNotificationForTask(task);
+        this.notifyRenderer(IPC.MCP_TaskStateSync, {
+          taskId: task.id,
+          signalDoneConsumed: true,
+        });
         const remaining = this.countRemaining(coordinatorTaskId);
         return Promise.resolve({
           taskId: task.id,

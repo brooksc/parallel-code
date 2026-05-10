@@ -1144,6 +1144,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
           coordinatorTaskId: string;
           controlledBy?: 'coordinator' | 'human';
           agentId?: string;
+          signalDoneAt?: string;
+          signalDoneConsumed?: boolean;
         },
       ) => {
         assertString(args.id, 'id');
@@ -1164,6 +1166,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
           agentId: args.agentId ?? crypto.randomUUID(),
           coordinatorTaskId: args.coordinatorTaskId,
           controlledBy: args.controlledBy,
+          signalDoneAt: args.signalDoneAt,
+          signalDoneConsumed: args.signalDoneConsumed,
         });
       },
     );

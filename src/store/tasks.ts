@@ -1125,9 +1125,18 @@ export function initMCPListeners(): () => void {
 
   cleanups.push(
     window.electron.ipcRenderer.on(IPC.MCP_TaskStateSync, (data: unknown) => {
-      const evt = data as { taskId: string; signalDoneReceived?: boolean; needsReview?: boolean };
+      const evt = data as {
+        taskId: string;
+        signalDoneReceived?: boolean;
+        signalDoneAt?: string;
+        signalDoneConsumed?: boolean;
+        needsReview?: boolean;
+      };
       if (store.tasks[evt.taskId]) {
         if (evt.signalDoneReceived) setStore('tasks', evt.taskId, 'signalDoneReceived', true);
+        if (evt.signalDoneAt) setStore('tasks', evt.taskId, 'signalDoneAt', evt.signalDoneAt);
+        if (evt.signalDoneConsumed !== undefined)
+          setStore('tasks', evt.taskId, 'signalDoneConsumed', evt.signalDoneConsumed);
         if (evt.needsReview) setStore('tasks', evt.taskId, 'needsReview', true);
       }
     }),

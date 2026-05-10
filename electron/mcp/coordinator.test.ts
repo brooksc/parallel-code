@@ -381,10 +381,13 @@ describe('Coordinator signal_done', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.signalDone('task-1');
 
-    expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_state_sync', {
-      taskId: 'task-1',
-      signalDoneReceived: true,
-    });
+    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+      'mcp_task_state_sync',
+      expect.objectContaining({
+        taskId: 'task-1',
+        signalDoneReceived: true,
+      }),
+    );
   });
 
   it('sets signalDoneAt on the task', async () => {
