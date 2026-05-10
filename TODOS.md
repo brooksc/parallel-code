@@ -55,12 +55,6 @@
 **What's wrong:** `mcpConfigPath` is persisted and rewritten on app restart, but if the coordinator Claude process itself restarts, the MCP token changes and running sub-tasks become unreachable.
 **No fix yet** — edge case.
 
-### 17. MCP token visible in process list (`ps aux`)
-
-**File:** `electron/mcp/coordinator.ts` (`buildCoordinatorMCPConfig`), `electron/mcp/mcp-server.cjs` entry point
-**What's wrong:** `--token <value>` is passed as a CLI argument, visible in `ps aux`.
-**Done when:** Token is passed via env var (`PARALLEL_CODE_MCP_TOKEN`) or stdin instead of a CLI flag.
-
 ### 18. Docker sub-agent process cleanup is shaky
 
 **File:** `electron/mcp/coordinator.ts:507`
