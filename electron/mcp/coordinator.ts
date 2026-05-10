@@ -273,6 +273,10 @@ export class Coordinator {
       return;
     }
 
+    // Clear any previously staged batches — they are superseded by this new batch.
+    // Leaving old entries causes stagedBatches to grow unboundedly and makes
+    // deregisterCoordinator incorrectly believe notifications are still pending.
+    coordinator.stagedBatches.clear();
     const batchId = randomUUID();
     const notificationIds = pending.map((n) => n.id);
     coordinator.stagedBatches.set(batchId, notificationIds);
@@ -745,8 +749,8 @@ export class Coordinator {
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
     const [files, diff] = await Promise.all([
-      getChangedFiles(task.worktreePath),
-      getAllFileDiffs(task.worktreePath),
+      getChangedFiles(task.worktreePath, task.baseBranch),
+      getAllFileDiffs(task.worktreePath, task.baseBranch),
     ]);
 
     // Exclude preamble-injected files so the diff matches what will actually be merged.

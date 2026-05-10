@@ -1616,14 +1616,15 @@ export async function mergeTask(
         'Working tree has uncommitted changes. Please commit or stash them before merging.',
       );
 
+    // Capture the current branch BEFORE any checkout so we can restore it afterward.
+    const originalBranch = mergeWorktreePath
+      ? null
+      : await getCurrentBranchName(projectRoot).catch(() => null);
+
     if (!mergeWorktreePath) {
       // Need to checkout the target branch in the main repo
       await exec('git', ['checkout', mainBranch], { cwd: projectRoot });
     }
-
-    const originalBranch = mergeWorktreePath
-      ? null
-      : await getCurrentBranchName(projectRoot).catch(() => null);
 
     const restoreBranch = async () => {
       if (originalBranch) {
