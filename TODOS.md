@@ -41,12 +41,6 @@
 **What's wrong:** `collapseTask` clears `agentIds`; `uncollapseTask` creates a new `agentId`. The backend coordinator registry still holds the old `agentId`, so `send_prompt` and idle detection target a dead PTY.
 **Done when:** Either collapse is blocked for tasks with `coordinatedBy` set (simplest), or uncollapse emits an IPC event so the backend updates its agent reference.
 
-### 24. Coordinator-created task agent metadata is hardcoded as Claude
-
-**File:** `src/store/tasks.ts:898`
-**What's wrong:** The frontend `Agent` is created with `id: 'claude'` and `name: 'Claude Code'` regardless of `evt.agentCommand`. Coordinators spawning `codex` or `gemini` sub-tasks show wrong display names and broken `resume_args`.
-**Done when:** The agent `def` is derived from `evt.agentCommand` — look up by command in the configured agents list, or at minimum set `id` and `name` to match the actual binary.
-
 ---
 
 ## Known edge cases — no fix yet
