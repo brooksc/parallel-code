@@ -11,12 +11,6 @@
 
 ## Beta blockers — lifecycle/scoping issues
 
-### 15. Restart restore racy and incomplete
-
-**Files:** `src/App.tsx:329-349` (`StartMCPServer` calls), `electron/mcp/coordinator.ts:883-914` (`hydrateTask`)
-**What's wrong:** `StartMCPServer` is called without `await` before agent respawn. `hydrateTask` does not restore `signalDoneAt` or the consumed-signal flag — after restart, any sub-task that already called `signal_done` will cause `wait_for_signal_done` to block forever.
-**Done when:** `StartMCPServer` is awaited before child hydration; `signalDoneAt` and `signalDoneConsumed` are restored in `hydrateTask`.
-
 ### 16. Closing a coordinated child leaves stale backend coordinator state
 
 **Files:** `src/store/tasks.ts:349-368` (`closeTask`), `electron/mcp/coordinator.ts` (task removal)
