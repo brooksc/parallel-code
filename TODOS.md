@@ -1,20 +1,5 @@
 # TODOs
 
-## Missing unit tests (test plan gaps)
-
-Three test-plan behaviors have no unit test coverage and are likely to regress
-silently. Tests should be written from the spec, not the implementation.
-
-### 9. Edit suppression — auto-fire must not fire when user edits staged text (Test plan §6)
-
-When a staged notification appears in the coordinator PromptInput and the user
-types anything, auto-fire must be suppressed indefinitely (until manual Enter).
-No test currently verifies that `userEdited: true` on the staged notification
-prevents the autofire tick from firing. Add to `PromptInput.test.ts` or
-`autofire-tick.ts`.
-
----
-
 ## Known edge cases — no fix yet
 
 ### 7. Autofire expiry window — coordinator in long tool call during countdown
