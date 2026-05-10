@@ -11,12 +11,6 @@
 
 ## Beta blockers — lifecycle/scoping issues
 
-### 13. Coordinator cross-contamination — tasks not scoped to their coordinator
-
-**Files:** `electron/mcp/server.ts:75-80` (`create_task`), `electron/remote/server.ts:300-325,420-450` (`list_tasks`, `send_prompt`, `merge_task`, `close_task`)
-**What's wrong:** `create_task` sends no `projectId`. Tool handlers accept `taskId` without verifying the caller's `coordinatorId`. Multiple concurrent coordinators can see and control each other's sub-tasks.
-**Done when:** Every MCP tool call that targets a specific task passes `coordinatorId`, and each handler rejects calls where `task.coordinatorTaskId !== coordinatorId`.
-
 ### 14. Coordinator MCP broken when remote access server was already running
 
 **File:** `electron/ipc/register.ts` (`StartMCPServer`), `electron/remote/server.ts` (`startRemoteServer`)
