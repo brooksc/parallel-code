@@ -1087,25 +1087,27 @@ export class Coordinator {
     // (each sub-task has a unique worktree path) rather than pkill -f claude,
     // which would terminate sibling sub-tasks and the coordinator itself.
     if (task.dockerContainerName) {
-      execFile(
-        'docker',
-        [
-          'exec',
-          task.dockerContainerName,
-          'sh',
-          '-c',
-          'for p in /proc/[0-9]*/cwd; do [ "$(readlink "$p" 2>/dev/null)" = "$1" ] && kill -TERM "$(basename "$(dirname "$p")")" 2>/dev/null; done',
-          '--',
-          task.worktreePath,
-        ],
-        { timeout: 5000 },
-        () => {
-          // Intentionally ignore errors: inner process may have already exited.
-        },
-      );
+      try {
+        await execAsync(
+          'docker',
+          [
+            'exec',
+            task.dockerContainerName,
+            'sh',
+            '-c',
+            'for p in /proc/[0-9]*/cwd; do [ "$(readlink "$p" 2>/dev/null)" = "$1" ] && kill -TERM "$(basename "$(dirname "$p")")" 2>/dev/null; done',
+            '--',
+            task.worktreePath,
+          ],
+          { timeout: 5000 },
+        );
+      } catch {
+        // Inner process may have already exited — failure is expected and harmless.
+      }
     }
 
-    // Remove worktree
+    // Remove worktree. If this fails, keep all coordinator state so the caller
+    // can retry. Do NOT emit MCP_TaskClosed — the task still exists on disk.
     try {
       await deleteTask({
         agentIds: [task.agentId],
@@ -1115,6 +1117,12 @@ export class Coordinator {
       });
     } catch (err) {
       console.warn('Failed to delete coordinated task worktree:', err);
+      this.closingTaskIds.delete(taskId);
+      this.notifyRenderer(IPC.MCP_TaskCleanupFailed, {
+        taskId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
     }
 
     // Clean up internal state — resolve idle and signal waiters before deleting

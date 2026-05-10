@@ -161,4 +161,5 @@ export enum IPC {
   MCP_TaskHydrated = 'mcp_task_hydrated',
   MCP_StaleUrlWarning = 'mcp_stale_url_warning',
   MCP_CoordinatedTaskClosed = 'mcp_coordinated_task_closed',
+  MCP_TaskCleanupFailed = 'mcp_task_cleanup_failed',
 }

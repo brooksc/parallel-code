@@ -483,3 +483,47 @@ describe('sendPrompt', () => {
     expect(writePayloads()).toEqual(['\x1b[I', '\x1b[200~line 1\nline 2\x1b[201~', '\r']);
   });
 });
+
+// ─── MCP_TaskCleanupFailed IPC handler ───────────────────────────────────────
+
+const cleanupFailedHandler = ipcHandlers.get(IPC.MCP_TaskCleanupFailed);
+if (!cleanupFailedHandler) throw new Error('mcp_task_cleanup_failed handler not registered');
+
+describe('MCP_TaskCleanupFailed IPC handler', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
+    mockTasks = {
+      'task-1': {
+        agentIds: ['agent-1'],
+        shellAgentIds: [],
+        closingStatus: 'closing',
+      },
+    };
+  });
+
+  it('marks the task closingStatus as error', () => {
+    cleanupFailedHandler({ taskId: 'task-1', error: 'git worktree delete failed' });
+
+    expect(mockTasks['task-1'].closingStatus).toBe('error');
+  });
+
+  it('sets closingError to the error message', () => {
+    cleanupFailedHandler({ taskId: 'task-1', error: 'git worktree delete failed' });
+
+    expect(mockTasks['task-1'].closingError).toBe('git worktree delete failed');
+  });
+
+  it('does NOT remove the task from the store', () => {
+    cleanupFailedHandler({ taskId: 'task-1', error: 'delete failed' });
+
+    expect(mockTasks['task-1']).toBeDefined();
+  });
+
+  it('is a no-op if the task does not exist', () => {
+    expect(() =>
+      cleanupFailedHandler({ taskId: 'nonexistent', error: 'delete failed' }),
+    ).not.toThrow();
+    expect(mockTasks['task-1'].closingStatus).toBe('closing');
+  });
+});

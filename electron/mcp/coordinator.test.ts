@@ -3,6 +3,21 @@ import os from 'os';
 import { join, dirname } from 'path';
 
 // --- fs / child_process mocks (must come before dynamic import) ---
+const mockExecFile = vi.fn(
+  (
+    _cmd: string,
+    _args: string[],
+    _opts: unknown,
+    cb: (err: Error | null, stdout: string, stderr: string) => void,
+  ) => {
+    cb(null, '', '');
+  },
+);
+
+vi.mock('child_process', () => ({
+  execFile: mockExecFile,
+}));
+
 const mockWriteFileSync = vi.fn();
 const mockReadFileSync = vi.fn(() => '# existing\n');
 const mockExistsSync = vi.fn(() => false);
@@ -76,6 +91,7 @@ vi.mock('../ipc/channels.js', () => ({
   IPC: {
     MCP_TaskCreated: 'mcp_task_created',
     MCP_TaskClosed: 'mcp_task_closed',
+    MCP_TaskCleanupFailed: 'mcp_task_cleanup_failed',
     MCP_TaskStateSync: 'mcp_task_state_sync',
     MCP_CoordinatorNotificationStaged: 'mcp_coordinator_notification_staged',
     MCP_CoordinatorNotificationCleared: 'mcp_coordinator_notification_cleared',
@@ -1796,7 +1812,7 @@ describe('Coordinator cleanupTask — failure resilience', () => {
     coordinator.registerCoordinator('coord-1', 'proj-1');
   });
 
-  it('deleteTask failure is swallowed and task is removed from map', async () => {
+  it('deleteTask failure retains task in map and emits MCP_TaskCleanupFailed, not MCP_TaskClosed', async () => {
     const { deleteTask: mockDeleteTask } =
       await vi.importMock<typeof import('../ipc/tasks.js')>('../ipc/tasks.js');
     vi.mocked(mockDeleteTask).mockRejectedValueOnce(new Error('delete failed'));
@@ -1804,8 +1820,29 @@ describe('Coordinator cleanupTask — failure resilience', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     await coordinator.closeTask('task-1');
 
-    expect(coordinator.getTask('task-1')).toBeUndefined();
-    expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_closed', { taskId: 'task-1' });
+    // Task must remain in backend map so retry is possible
+    expect(coordinator.getTask('task-1')).toBeDefined();
+    // MCP_TaskClosed must NOT be sent
+    expect(mockNotifyRenderer).not.toHaveBeenCalledWith('mcp_task_closed', expect.anything());
+    // Failure event must be sent with the error message
+    expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_cleanup_failed', {
+      taskId: 'task-1',
+      error: 'delete failed',
+    });
+  });
+
+  it('deleteTask failure preserves controlMap and blockedByHumanControl state', async () => {
+    const { deleteTask: mockDeleteTask } =
+      await vi.importMock<typeof import('../ipc/tasks.js')>('../ipc/tasks.js');
+    vi.mocked(mockDeleteTask).mockRejectedValueOnce(new Error('delete failed'));
+
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    // Simulate the task being under coordinator control
+    coordinator.setTaskControl('task-1', 'coordinator');
+    await coordinator.closeTask('task-1');
+
+    // Backend task still findable — retry via closeTask should work
+    expect(coordinator.getTask('task-1')).toBeDefined();
   });
 
   it('MCP config file deletion failure is swallowed and task is removed', async () => {
@@ -1835,6 +1872,87 @@ describe('Coordinator cleanupTask — failure resilience', () => {
     await coordinator.closeTask('task-1');
 
     expect(vi.mocked(unsubscribeFromAgent)).toHaveBeenCalled();
+  });
+});
+
+// ─── Docker cleanup sequencing ────────────────────────────────────────────────
+
+describe('Coordinator cleanupTask — Docker inner-process kill sequencing', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: execFile calls its callback synchronously (success)
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        cb(null, '', '');
+      },
+    );
+    mockExistsSync.mockReturnValue(false);
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/test',
+      worktree_path: '/tmp/test',
+    });
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+    coordinator.setDockerContainerName('coord-1', 'my-coord-container');
+  });
+
+  it('awaits docker inner-process kill before calling deleteTask', async () => {
+    let resolveDockerKill!: () => void;
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        resolveDockerKill = () => cb(null, '', '');
+      },
+    );
+
+    const { deleteTask: mockDeleteTask } =
+      await vi.importMock<typeof import('../ipc/tasks.js')>('../ipc/tasks.js');
+    vi.mocked(mockDeleteTask).mockResolvedValue(undefined);
+
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const closePromise = coordinator.closeTask('task-1');
+
+    // Flush microtasks — docker kill is pending, deleteTask must not have been called yet
+    await Promise.resolve();
+    expect(vi.mocked(mockDeleteTask)).not.toHaveBeenCalled();
+
+    // Unblock docker kill — deleteTask should now be called
+    resolveDockerKill();
+    await closePromise;
+    expect(vi.mocked(mockDeleteTask)).toHaveBeenCalled();
+  });
+
+  it('docker kill failure does not prevent deleteTask from being called', async () => {
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        cb(new Error('container not found'), '', '');
+      },
+    );
+
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    await coordinator.closeTask('task-1');
+
+    expect(coordinator.getTask('task-1')).toBeUndefined();
+    expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_closed', { taskId: 'task-1' });
   });
 });
 

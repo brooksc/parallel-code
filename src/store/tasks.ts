@@ -1079,6 +1079,16 @@ export function initMCPListeners(): () => void {
   );
 
   cleanups.push(
+    window.electron.ipcRenderer.on(IPC.MCP_TaskCleanupFailed, (data: unknown) => {
+      const { taskId, error } = data as { taskId: string; error: string };
+      const task = store.tasks[taskId];
+      if (!task) return;
+      setStore('tasks', taskId, 'closingStatus', 'error');
+      setStore('tasks', taskId, 'closingError', error);
+    }),
+  );
+
+  cleanups.push(
     window.electron.ipcRenderer.on(IPC.MCP_CoordinatorNotificationStaged, (data: unknown) => {
       const evt = data as {
         coordinatorTaskId: string;
