@@ -881,6 +881,45 @@ export class Coordinator {
     await this.cleanupTask(taskId);
   }
 
+  /**
+   * Remove a coordinated task's backend state when the UI closes it directly.
+   * Unlike cleanupTask, this does NOT kill the agent or delete the worktree —
+   * the UI has already done both. It only cleans up in-memory coordinator state.
+   */
+  removeCoordinatedTask(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+
+    this.suppressPendingNotificationForTask(task);
+
+    const cb = this.subscribers.get(task.agentId);
+    if (cb) {
+      unsubscribeFromAgent(task.agentId, cb);
+      this.subscribers.delete(task.agentId);
+    }
+
+    this.tailBuffers.delete(task.agentId);
+    this.decoders.delete(task.agentId);
+
+    const resolvers = this.idleResolvers.get(taskId);
+    if (resolvers) {
+      for (const resolve of resolvers) resolve({ reason: 'exited' });
+      this.idleResolvers.delete(taskId);
+    }
+
+    if (task.mcpConfigPath) {
+      try {
+        unlinkSync(task.mcpConfigPath);
+      } catch {
+        /* already gone */
+      }
+    }
+
+    this.tasks.delete(taskId);
+    this.blockedByHumanControl.delete(taskId);
+    this.controlMap.delete(taskId);
+  }
+
   private stripPreambleFromBranch(task: CoordinatedTask): void {
     const PREAMBLE_START = '<sub-task-mode>';
     const worktreePath = task.worktreePath;

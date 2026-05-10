@@ -141,6 +141,7 @@ const ALLOWED_CHANNELS = new Set([
   'mcp_hydrate_coordinated_task',
   'mcp_coordinated_task_prompt_delivered',
   'mcp_coordinator_restage_after_user_send',
+  'mcp_coordinated_task_closed',
   // Coordinator settings
   'set_coordinator_mode_enabled',
 ]);

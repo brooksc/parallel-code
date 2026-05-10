@@ -2113,6 +2113,140 @@ describe('Coordinator restart hydration with Docker container name', () => {
   });
 });
 
+// ─── removeCoordinatedTask tests ─────────────────────────────────────────────
+
+describe('Coordinator removeCoordinatedTask', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/test',
+      worktree_path: '/tmp/test',
+    });
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+  });
+
+  it('is a no-op for unknown taskId', () => {
+    expect(() => coordinator.removeCoordinatedTask('nonexistent')).not.toThrow();
+  });
+
+  it('removes task from internal map', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    expect(coordinator.getTask('task-1')).toBeDefined();
+
+    coordinator.removeCoordinatedTask('task-1');
+
+    expect(coordinator.getTask('task-1')).toBeUndefined();
+  });
+
+  it('unsubscribes the PTY output callback', async () => {
+    const { unsubscribeFromAgent } =
+      await vi.importMock<typeof import('../ipc/pty.js')>('../ipc/pty.js');
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const agentId = getAgentId();
+
+    coordinator.removeCoordinatedTask('task-1');
+
+    expect(vi.mocked(unsubscribeFromAgent)).toHaveBeenCalledWith(agentId, expect.any(Function));
+  });
+
+  it('cleans up internal resource maps (subscribers, tailBuffers, decoders, controlMap, blockedByHumanControl)', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const agentId = getAgentId();
+    coordinator.setTaskControl('task-1', 'human');
+    await coordinator.sendPrompt('task-1', 'hello').catch(() => {});
+
+    coordinator.removeCoordinatedTask('task-1');
+
+    const c = coordinator as unknown as {
+      subscribers: Map<string, unknown>;
+      tailBuffers: Map<string, unknown>;
+      decoders: Map<string, unknown>;
+      controlMap: Map<string, unknown>;
+      blockedByHumanControl: Set<string>;
+    };
+    expect(c.subscribers.has(agentId)).toBe(false);
+    expect(c.tailBuffers.has(agentId)).toBe(false);
+    expect(c.decoders.has(agentId)).toBe(false);
+    expect(c.controlMap.has('task-1')).toBe(false);
+    expect(c.blockedByHumanControl.has('task-1')).toBe(false);
+  });
+
+  it('resolves pending idle waiters with exited reason', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const waitPromise = coordinator.waitForIdle('task-1');
+
+    coordinator.removeCoordinatedTask('task-1');
+
+    await expect(waitPromise).resolves.toEqual({ reason: 'exited' });
+  });
+
+  it('deletes MCP config file when mcpConfigPath is set', async () => {
+    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const configPath = coordinator.getTask('task-1')?.mcpConfigPath;
+    expect(configPath).toBeDefined();
+
+    mockUnlinkSync.mockClear();
+    coordinator.removeCoordinatedTask('task-1');
+
+    const unlinkCall = mockUnlinkSync.mock.calls.find((c) => c[0] === configPath);
+    expect(unlinkCall).toBeDefined();
+  });
+
+  it('does not call unlinkSync for tasks with no mcpConfigPath', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    expect(coordinator.getTask('task-1')?.mcpConfigPath).toBeUndefined();
+
+    mockUnlinkSync.mockClear();
+    coordinator.removeCoordinatedTask('task-1');
+
+    const parallelCodeCalls = mockUnlinkSync.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('parallel-code-subtask'),
+    );
+    expect(parallelCodeCalls).toHaveLength(0);
+  });
+
+  it('does NOT notify renderer (UI already removed the task)', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    mockNotifyRenderer.mockClear();
+
+    coordinator.removeCoordinatedTask('task-1');
+
+    expect(mockNotifyRenderer).not.toHaveBeenCalledWith('mcp_task_closed', expect.anything());
+  });
+
+  it('does NOT kill the agent (UI already did that)', async () => {
+    const { killAgent: mockKillFn } =
+      await vi.importMock<typeof import('../ipc/pty.js')>('../ipc/pty.js');
+    vi.mocked(mockKillFn).mockClear();
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    vi.mocked(mockKillFn).mockClear();
+
+    coordinator.removeCoordinatedTask('task-1');
+
+    expect(vi.mocked(mockKillFn)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT delete the worktree (UI already did that)', async () => {
+    const { deleteTask: mockDeleteTask } =
+      await vi.importMock<typeof import('../ipc/tasks.js')>('../ipc/tasks.js');
+    vi.mocked(mockDeleteTask).mockClear();
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    vi.mocked(mockDeleteTask).mockClear();
+
+    coordinator.removeCoordinatedTask('task-1');
+
+    expect(vi.mocked(mockDeleteTask)).not.toHaveBeenCalled();
+  });
+});
+
 // ─── preload allowlist regression test ───────────────────────────────────────
 
 describe('preload.cjs MCP channel allowlist', () => {
@@ -2137,6 +2271,7 @@ describe('preload.cjs MCP channel allowlist', () => {
       'mcp_coordinator_deregistered',
       'mcp_coordinator_notification_ack',
       'mcp_coordinated_task_prompt_delivered',
+      'mcp_coordinated_task_closed',
     ];
 
     for (const channel of required) {

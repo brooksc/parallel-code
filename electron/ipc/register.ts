@@ -1130,6 +1130,15 @@ export function registerAllHandlers(win: BrowserWindow): void {
     );
 
     ipcMain.handle(
+      IPC.MCP_CoordinatedTaskClosed,
+      (_e, args: { taskId: string; coordinatorTaskId: string }) => {
+        assertString(args.taskId, 'taskId');
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        coordinator?.removeCoordinatedTask(args.taskId);
+      },
+    );
+
+    ipcMain.handle(
       IPC.MCP_HydrateCoordinatedTask,
       (
         _e,

@@ -407,6 +407,14 @@ export async function closeTask(taskId: string): Promise<void> {
       invoke(IPC.MCP_CoordinatorDeregistered, { coordinatorTaskId: taskId }).catch(() => {});
     }
 
+    // Notify backend to clean up this task from its coordinator's state map.
+    if (task.coordinatedBy) {
+      invoke(IPC.MCP_CoordinatedTaskClosed, {
+        taskId,
+        coordinatorTaskId: task.coordinatedBy,
+      }).catch(() => {});
+    }
+
     // Backend cleanup succeeded — detach children then remove coordinator from UI.
     if (childIdsToDetach.length > 0) {
       setStore(
