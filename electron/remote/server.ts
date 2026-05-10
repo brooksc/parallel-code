@@ -207,12 +207,19 @@ export function startRemoteServer(opts: {
       }
       if (orch) {
         // Helper to read JSON body
+        const jsonReply = (status: number, body: unknown) => {
+          if (res.headersSent) return;
+          res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+
         const readBody = (): Promise<Record<string, unknown>> =>
           new Promise((resolve, reject) => {
             let data = '';
             req.on('data', (chunk: Buffer) => {
               data += chunk.toString();
               if (data.length > 1_000_000) {
+                jsonReply(413, { error: 'Request body too large' });
                 reject(new Error('Body too large'));
                 req.destroy();
               }
@@ -226,11 +233,6 @@ export function startRemoteServer(opts: {
             });
             req.on('error', reject);
           });
-
-        const jsonReply = (status: number, body: unknown) => {
-          res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(body));
-        };
 
         const taskIdMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(.+))?$/);
 
@@ -466,13 +468,13 @@ export function startRemoteServer(opts: {
 
         if (taskIdMatch && taskIdMatch[2] === 'done' && req.method === 'POST') {
           const taskId = decodeURIComponent(taskIdMatch[1]);
+          const doneDetail = orch.getTaskStatus(taskId);
+          if (!doneDetail) return jsonReply(404, { error: 'task not found' });
+          if (!ownedByCallerOrUnscoped(doneDetail.coordinatorTaskId))
+            return jsonReply(403, { error: 'forbidden' });
           mcpLog('info', `signal_done id=${taskId}`);
-          const found = orch.signalDone(taskId);
-          if (!found) {
-            jsonReply(404, { error: `Unknown task: ${taskId}` });
-          } else {
-            jsonReply(200, { ok: true });
-          }
+          orch.signalDone(taskId);
+          jsonReply(200, { ok: true });
           return;
         }
 

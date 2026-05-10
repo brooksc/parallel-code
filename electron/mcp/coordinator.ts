@@ -1083,15 +1083,31 @@ export class Coordinator {
       console.warn('Failed to delete coordinated task worktree:', err);
     }
 
-    // Clean up internal state — resolve idle waiters before deleting so callers
-    // don't hang until their own timeout fires.
+    // Clean up internal state — resolve idle and signal waiters before deleting
+    // so callers don't hang until their own timeout fires.
     const idleResolvers = this.idleResolvers.get(taskId);
     if (idleResolvers?.length) {
       for (const resolve of idleResolvers) resolve({ reason: 'exited' });
     }
+    this.idleResolvers.delete(taskId);
+    const coordinatorId = task.coordinatorTaskId;
+    const anyResolvers = this.anySignalResolvers.get(coordinatorId);
+    const firstAnyResolver = anyResolvers?.length ? anyResolvers.shift() : undefined;
+    if (firstAnyResolver) {
+      this.suppressPendingNotificationForTask(task);
+      task.reviewNotificationQueued = true;
+      const remaining = this.countRemaining(coordinatorId);
+      firstAnyResolver({
+        taskId: task.id,
+        name: task.name,
+        status: 'exited',
+        signalDoneAt: new Date().toISOString(),
+        remaining,
+      });
+      this.finishSignalWait(coordinatorId);
+    }
     this.tailBuffers.delete(task.agentId);
     this.decoders.delete(task.agentId);
-    this.idleResolvers.delete(taskId);
     // Delete per-task MCP config tmp file
     if (task.mcpConfigPath) {
       try {
