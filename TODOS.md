@@ -279,3 +279,22 @@ Implementation constraints:
 - retry success transitions `error -> pending -> ready` and allows `TerminalView` to spawn.
 
 **Done when:** A `StartMCPServer` or hydration failure on restore surfaces a visible error on the affected task(s), does not leave `TerminalView` waiting forever, and provides a retry path that uses the same validated startup/hydration flow.
+
+---
+
+### 44. Staged coordinator prompt is not visible unless the user takes control — UX
+
+**Files:** Coordinator notification UI (staged notification section, `src/components/`)
+**What's wrong:** When the coordinator is driving, the staged-notification section collapses. If a prompt has been queued for autofire and the user wants to see it, they must click "Take Control" to expand the section — which is a heavyweight action taken only for visibility. The user shouldn't need to claim control just to read what's pending.
+**Fix direction:** Show the staged notification (at minimum, the pending prompt text and countdown) in a read-only overlay or subtle indicator even while the coordinator is driving. The "Take Control" button can remain for actually interrupting, but visibility should not require it.
+**Related:** The coordinator's autofire already writes to the PTY when the timer fires regardless of agent state — Claude's readline layer will buffer the prompt if the agent is mid-response, exactly as a human typing ahead would. No idle-gate change is needed; only the visibility is the issue.
+**Done when:** A user can read the queued coordinator prompt and its countdown without taking control, and "Take Control" remains reserved for actually interrupting the coordinator.
+
+---
+
+### 45. `wait_for_signal_done` network errors silently stall the coordinator — P1
+
+**Files:** `electron/mcp/coordinator.ts` (`waitForSignalDone`), `electron/remote/server.ts` (long-poll endpoint)
+**What's wrong:** `wait_for_signal_done` long-polls the local HTTP server. If the request fails with a network error (connection reset, transient local socket error), the MCP tool call rejects and the coordinator loses the completion signal — even though the sub-task already called `signal_done` successfully. The coordinator then stalls indefinitely, unaware the task is done, until a human intervenes.
+**Fix direction:** On network error, retry `wait_for_signal_done` automatically with a short backoff rather than propagating the rejection. Since `signal_done` writes durable state server-side (task status), a retry will immediately return the already-signaled result. Cap retries (e.g., 5 attempts over 30 s) and only surface a hard failure if the server is genuinely unreachable for an extended period. Alternatively, expose a `get_task` status poll as a fallback so the coordinator can recover by checking task state directly.
+**Done when:** A transient `fetch failed` on `wait_for_signal_done` is retried transparently and the coordinator receives the signal-done result without human intervention.
