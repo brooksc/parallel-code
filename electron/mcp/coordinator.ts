@@ -380,6 +380,7 @@ export class Coordinator {
       coordinatorTaskId: coordinatorId,
       status: 'creating',
       exitCode: null,
+      dockerContainerName: this.coordinators.get(coordinatorId)?.dockerContainerName ?? null,
     };
 
     this.tasks.set(task.id, task);
@@ -996,6 +997,20 @@ export class Coordinator {
       killAgent(task.agentId);
     } catch {
       /* already dead */
+    }
+
+    // When spawned via `docker exec`, killing the host PTY only stops the exec
+    // client. Best-effort: kill the inner agent process still running inside the
+    // coordinator container.
+    if (task.dockerContainerName) {
+      execFile(
+        'docker',
+        ['exec', task.dockerContainerName, 'pkill', '-TERM', '-f', 'claude'],
+        { timeout: 5000 },
+        () => {
+          // Intentionally ignore errors: inner process may have already exited.
+        },
+      );
     }
 
     // Remove worktree

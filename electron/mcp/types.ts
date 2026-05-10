@@ -20,6 +20,10 @@ export interface CoordinatedTask {
   // Coordinator notification lifecycle flags
   assignedPromptDelivered?: boolean;
   reviewNotificationQueued?: boolean;
+  /** When the coordinator runs in Docker, sub-tasks are spawned via `docker exec`.
+   *  Storing the container name here lets cleanupTask kill the inner process even
+   *  after the coordinator state is gone. */
+  dockerContainerName?: string | null;
 }
 
 export interface WaitForSignalDoneResult {
