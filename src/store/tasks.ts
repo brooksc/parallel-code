@@ -977,18 +977,22 @@ export function initMCPListeners(): () => void {
         skipPermissions: evt.skipPermissions ?? false,
       };
 
+      const cmd = evt.agentCommand ?? 'claude';
+      const matchedDef = store.availableAgents?.find((a) => a.command === cmd);
+      const agentDef = matchedDef ?? {
+        id: cmd,
+        name: cmd,
+        command: cmd,
+        args: evt.agentArgs ?? [],
+        resume_args: [],
+        skip_permissions_args: ['--dangerously-skip-permissions'],
+        description: '',
+      };
+
       const agent: Agent = {
         id: evt.agentId,
         taskId: evt.taskId,
-        def: {
-          id: 'claude',
-          name: 'Claude Code',
-          command: evt.agentCommand ?? 'claude',
-          args: evt.agentArgs ?? [],
-          resume_args: [],
-          skip_permissions_args: ['--dangerously-skip-permissions'],
-          description: '',
-        },
+        def: matchedDef ? { ...matchedDef, args: evt.agentArgs ?? matchedDef.args } : agentDef,
         resumed: false,
         status: 'running',
         exitCode: null,

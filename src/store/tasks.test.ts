@@ -54,6 +54,7 @@ vi.mock('./core', () => ({
       if (prop === 'agents') return mockAgents;
       if (prop === 'taskOrder') return mockTaskOrder;
       if (prop === 'collapsedTaskOrder') return [];
+      if (prop === 'availableAgents') return [];
       return undefined;
     },
   }),
