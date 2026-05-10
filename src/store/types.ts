@@ -136,6 +136,7 @@ export interface PersistedTask {
   dockerSource?: DockerSource;
   dockerImage?: string;
   githubUrl?: string;
+  initialPrompt?: string;
   savedInitialPrompt?: string;
   collapsed?: boolean;
   savedSelectedAgentIndex?: number;
