@@ -1043,6 +1043,7 @@ export class Coordinator {
       }
     }
     this.tasks.delete(taskId);
+    this.controlMap.delete(taskId);
     this.blockedByHumanControl.delete(taskId);
     this.closingTaskIds.delete(taskId);
 

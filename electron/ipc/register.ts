@@ -1,7 +1,6 @@
 import { ipcMain, dialog, shell, app, clipboard, BrowserWindow, Notification } from 'electron';
 import crypto from 'crypto';
 import fs from 'fs';
-import net from 'net';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { IPC } from './channels.js';
@@ -132,26 +131,20 @@ export function buildCoordinatorMCPConfig(opts: CoordinatorMCPConfigOpts): {
   };
 }
 
-function findFreePort(start: number, end: number): Promise<number> {
-  return new Promise((resolve, reject) => {
-    let port = start;
-    const tryNext = () => {
-      if (port > end) {
-        reject(new Error(`No free port found in range ${start}–${end}`));
-        return;
-      }
-      const s = net.createServer();
-      s.listen(port, '127.0.0.1', () => {
-        const found = port;
-        s.close(() => resolve(found));
-      });
-      s.on('error', () => {
-        port++;
-        tryNext();
-      });
-    };
-    tryNext();
-  });
+async function startRemoteServerOnFreePort(
+  start: number,
+  end: number,
+  opts: Omit<Parameters<typeof startRemoteServer>[0], 'port'>,
+): Promise<Awaited<ReturnType<typeof startRemoteServer>>> {
+  for (let port = start; port <= end; port++) {
+    try {
+      return await startRemoteServer({ ...opts, port });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE' && port < end) continue;
+      throw err;
+    }
+  }
+  throw new Error(`No free port found in range ${start}–${end}`);
 }
 
 function errMessage(err: unknown): string {
@@ -1034,17 +1027,18 @@ export function registerAllHandlers(win: BrowserWindow): void {
     };
   });
 
-  ipcMain.handle(IPC.StopRemoteServer, async () => {
-    if (!remoteServer) return;
+  ipcMain.handle(IPC.StopRemoteServer, async (): Promise<{ stopped: boolean; reason?: string }> => {
+    if (!remoteServer) return { stopped: true };
     if (coordinator?.hasActiveCoordinator()) {
       // The coordinator MCP transport shares this HTTP server. Stopping it while
       // a coordinator is active would break all in-flight MCP tool calls.
       // The server will be stopped when the last coordinator deregisters.
       console.warn('[Remote] Stop requested but coordinator MCP is active — server kept running');
-      return;
+      return { stopped: false, reason: 'coordinator_active' };
     }
     await remoteServer.stop();
     remoteServer = null;
+    return { stopped: true };
   });
 
   ipcMain.handle(IPC.GetRemoteStatus, () => {
@@ -1243,9 +1237,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
       if (!remoteServer) {
         const thisDir = path.dirname(fileURLToPath(import.meta.url));
         const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
-        const port = await findFreePort(7777, 7800);
-        remoteServer = await startRemoteServer({
-          port,
+        remoteServer = await startRemoteServerOnFreePort(7777, 7800, {
           host: '0.0.0.0',
           staticDir: distRemote,
           getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
