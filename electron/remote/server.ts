@@ -297,9 +297,23 @@ export function startRemoteServer(opts: {
           return;
         }
 
+        // Extract the coordinator ID from the header (set by MCP coordinator clients).
+        // When absent (REST/mobile callers), no scoping is applied.
+        const callerCoordinatorId = (() => {
+          const h = req.headers['x-coordinator-id'];
+          return typeof h === 'string' && h ? h : undefined;
+        })();
+
+        const ownedByCallerOrUnscoped = (taskCoordinatorId: string): boolean =>
+          !callerCoordinatorId || taskCoordinatorId === callerCoordinatorId;
+
         if (url.pathname === '/api/tasks' && req.method === 'GET') {
           mcpLog('info', 'list_tasks');
-          jsonReply(200, orch.listTasks());
+          const all = orch.listTasks();
+          const tasks = callerCoordinatorId
+            ? all.filter((t) => t.coordinatorTaskId === callerCoordinatorId)
+            : all;
+          jsonReply(200, tasks);
           return;
         }
 
@@ -309,6 +323,8 @@ export function startRemoteServer(opts: {
           const detail = orch.getTaskStatus(taskId);
           if (!detail) {
             jsonReply(404, { error: 'task not found' });
+          } else if (!ownedByCallerOrUnscoped(detail.coordinatorTaskId)) {
+            jsonReply(403, { error: 'forbidden' });
           } else {
             jsonReply(200, detail);
           }
@@ -321,6 +337,10 @@ export function startRemoteServer(opts: {
               const taskId = decodeURIComponent(taskIdMatch[1]);
               if (typeof body.prompt !== 'string' || !body.prompt)
                 return jsonReply(400, { error: 'prompt must be a non-empty string' });
+              const detail = orch.getTaskStatus(taskId);
+              if (!detail) return jsonReply(404, { error: 'task not found' });
+              if (!ownedByCallerOrUnscoped(detail.coordinatorTaskId))
+                return jsonReply(403, { error: 'forbidden' });
               mcpLog('info', `send_prompt id=${taskId}`);
               await orch.sendPrompt(taskId, body.prompt);
               jsonReply(200, { ok: true });
@@ -341,6 +361,10 @@ export function startRemoteServer(opts: {
                 (typeof body.timeoutMs !== 'number' || !Number.isFinite(body.timeoutMs))
               )
                 return jsonReply(400, { error: 'timeoutMs must be a finite number' });
+              const waitDetail = orch.getTaskStatus(taskId);
+              if (!waitDetail) return jsonReply(404, { error: 'task not found' });
+              if (!ownedByCallerOrUnscoped(waitDetail.coordinatorTaskId))
+                return jsonReply(403, { error: 'forbidden' });
               mcpLog('info', `wait_for_idle id=${taskId}`);
               const idleResult = await orch.waitForIdle(
                 taskId,
@@ -368,6 +392,10 @@ export function startRemoteServer(opts: {
                 return jsonReply(400, { error: 'squash must be a boolean' });
               if (body.message !== undefined && typeof body.message !== 'string')
                 return jsonReply(400, { error: 'message must be a string' });
+              const rmDetail = orch.getTaskStatus(taskId);
+              if (!rmDetail) return jsonReply(404, { error: 'task not found' });
+              if (!ownedByCallerOrUnscoped(rmDetail.coordinatorTaskId))
+                return jsonReply(403, { error: 'forbidden' });
               mcpLog('info', `review_and_merge_task id=${taskId}`);
               const result = await orch.reviewAndMergeTask(taskId, {
                 squash: body.squash as boolean | undefined,
@@ -385,6 +413,15 @@ export function startRemoteServer(opts: {
 
         if (taskIdMatch && taskIdMatch[2] === 'diff' && req.method === 'GET') {
           const taskId = decodeURIComponent(taskIdMatch[1]);
+          const diffDetail = orch.getTaskStatus(taskId);
+          if (!diffDetail) {
+            jsonReply(404, { error: 'task not found' });
+            return;
+          }
+          if (!ownedByCallerOrUnscoped(diffDetail.coordinatorTaskId)) {
+            jsonReply(403, { error: 'forbidden' });
+            return;
+          }
           mcpLog('info', `get_task_diff id=${taskId}`);
           orch
             .getTaskDiff(taskId)
@@ -398,6 +435,15 @@ export function startRemoteServer(opts: {
 
         if (taskIdMatch && taskIdMatch[2] === 'output' && req.method === 'GET') {
           const taskId = decodeURIComponent(taskIdMatch[1]);
+          const outputDetail = orch.getTaskStatus(taskId);
+          if (!outputDetail) {
+            jsonReply(404, { error: 'task not found' });
+            return;
+          }
+          if (!ownedByCallerOrUnscoped(outputDetail.coordinatorTaskId)) {
+            jsonReply(403, { error: 'forbidden' });
+            return;
+          }
           mcpLog('info', `get_task_output id=${taskId}`);
           try {
             const output = orch.getTaskOutput(taskId);
@@ -431,6 +477,10 @@ export function startRemoteServer(opts: {
                 return jsonReply(400, { error: 'message must be a string' });
               if (body.cleanup !== undefined && typeof body.cleanup !== 'boolean')
                 return jsonReply(400, { error: 'cleanup must be a boolean' });
+              const mergeDetail = orch.getTaskStatus(taskId);
+              if (!mergeDetail) return jsonReply(404, { error: 'task not found' });
+              if (!ownedByCallerOrUnscoped(mergeDetail.coordinatorTaskId))
+                return jsonReply(403, { error: 'forbidden' });
               mcpLog('info', `merge_task id=${taskId} squash=${body.squash ?? false}`);
               const result = await orch.mergeTask(taskId, {
                 squash: body.squash as boolean | undefined,
@@ -449,6 +499,15 @@ export function startRemoteServer(opts: {
 
         if (taskIdMatch && !taskIdMatch[2] && req.method === 'DELETE') {
           const taskId = decodeURIComponent(taskIdMatch[1]);
+          const closeDetail = orch.getTaskStatus(taskId);
+          if (!closeDetail) {
+            jsonReply(404, { error: 'task not found' });
+            return;
+          }
+          if (!ownedByCallerOrUnscoped(closeDetail.coordinatorTaskId)) {
+            jsonReply(403, { error: 'forbidden' });
+            return;
+          }
           mcpLog('info', `close_task id=${taskId}`);
           orch
             .closeTask(taskId)
@@ -725,6 +784,9 @@ export function startRemoteServer(opts: {
     server.once('error', onError);
     server.listen(opts.port, opts.host ?? '127.0.0.1', () => {
       server.removeListener('error', onError);
+      // Capture the actual bound port (important when opts.port === 0)
+      const addr = server.address();
+      if (addr && typeof addr === 'object') result.port = addr.port;
       resolve(result);
     });
   });

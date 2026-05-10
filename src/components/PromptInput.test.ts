@@ -11,6 +11,7 @@ const staged: StagedNotification = {
 };
 
 const pastNow = 2_000; // past autoFireAt=1000
+const futureNow = 500; // before autoFireAt=1000
 const noPromptTail = 'agent is thinking...';
 const promptTail = 'agent output ❯ ';
 
@@ -157,6 +158,44 @@ describe('processAutoFireTick — dialog-like tails (item 2: initial prompt neve
       currentMissCount: 0,
     });
     expect(result.outcome).toBe('no-prompt');
+  });
+});
+
+describe('processAutoFireTick — coordinator skips autoFireAt delay', () => {
+  it('fires immediately (before autoFireAt) when coordinator is in control and ❯ is visible', () => {
+    const result = processAutoFireTick({
+      staged,
+      now: futureNow,
+      controlledBy: 'coordinator',
+      questionActive: false,
+      tail: promptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('fire');
+  });
+
+  it('returns no-prompt (not too-soon) when coordinator is in control and ❯ is absent', () => {
+    const result = processAutoFireTick({
+      staged,
+      now: futureNow,
+      controlledBy: 'coordinator',
+      questionActive: false,
+      tail: noPromptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('no-prompt');
+  });
+
+  it('still returns too-soon when controlledBy is undefined and autoFireAt is in the future', () => {
+    const result = processAutoFireTick({
+      staged,
+      now: futureNow,
+      controlledBy: undefined,
+      questionActive: false,
+      tail: promptTail,
+      currentMissCount: 0,
+    });
+    expect(result.outcome).toBe('too-soon');
   });
 });
 

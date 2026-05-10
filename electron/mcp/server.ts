@@ -37,7 +37,7 @@ if (!url || !token) {
   process.exit(1);
 }
 
-const client = new MCPClient(url, token);
+const client = new MCPClient(url, token, coordinatorId || undefined);
 
 const server = new Server(
   { name: 'parallel-code', version: '1.0.0' },

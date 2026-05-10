@@ -21,14 +21,16 @@ export function processAutoFireTick(params: {
   tail: string;
   currentMissCount: number;
 }): AutoFireTickResult {
-  if (params.staged.autoFireAt - params.now > 0) {
-    return { outcome: 'too-soon' };
-  }
-
   // Human has taken control — pause without counting misses so the counter
   // doesn't accumulate while the human is typing.
   if (params.controlledBy === 'human') {
     return { outcome: 'paused' };
+  }
+
+  // In coordinator-controlled mode there's no human to cancel, so skip the
+  // delay entirely. In human mode the delay is irrelevant (already paused above).
+  if (params.controlledBy !== 'coordinator' && params.staged.autoFireAt - params.now > 0) {
+    return { outcome: 'too-soon' };
   }
 
   // A question/dialog is active — the ❯ visible in the TUI is a selection

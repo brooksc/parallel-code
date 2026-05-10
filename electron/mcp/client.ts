@@ -14,6 +14,7 @@ export class MCPClient {
   constructor(
     private baseUrl: string,
     private token: string,
+    private coordinatorId?: string,
   ) {}
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -22,6 +23,9 @@ export class MCPClient {
       Authorization: `Bearer ${this.token}`,
       'Content-Type': 'application/json',
     };
+    if (this.coordinatorId) {
+      headers['X-Coordinator-Id'] = this.coordinatorId;
+    }
 
     const res = await fetch(url, {
       method,
