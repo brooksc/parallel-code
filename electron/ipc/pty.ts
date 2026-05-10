@@ -323,12 +323,23 @@ export function spawnAgent(
       cwd,
       // Forward env vars the agent needs (API keys, git config, etc.)
       ...buildDockerEnvFlags(spawnEnv),
-      // Writable HOME for agent config files (host HOME is blocked above)
+      // Per-agent writable HOME so concurrent sub-tasks don't collide on config files.
       '-e',
-      `HOME=${DOCKER_CONTAINER_HOME}`,
+      `HOME=${DOCKER_CONTAINER_HOME}/agent-${args.agentId}`,
       // Mount SSH and git config read-only for git operations
-      ...buildDockerCredentialMounts(args.command, args.shareDockerAgentAuth === true, cwd),
+      ...buildDockerCredentialMounts(
+        args.command,
+        args.shareDockerAgentAuth === true,
+        cwd,
+        `${DOCKER_CONTAINER_HOME}/agent-${args.agentId}`,
+      ),
       image,
+      // Pre-create the per-agent HOME directory then exec the real command.
+      // $HOME is already set by the -e flag above; using it here avoids repeating the path.
+      'sh',
+      '-c',
+      'mkdir -p "$HOME" && exec "$@"',
+      '--',
       command,
       ...args.args,
     ];
@@ -733,6 +744,7 @@ function buildDockerCredentialMounts(
   agentCommand: string,
   shareAgentAuth: boolean,
   worktreePath: string,
+  containerHome: string,
 ): string[] {
   const mounts: string[] = [];
   const home = process.env.HOME;
@@ -749,19 +761,19 @@ function buildDockerCredentialMounts(
   };
 
   // SSH keys for git push/pull
-  mountIfExists(`${home}/.ssh`, `${DOCKER_CONTAINER_HOME}/.ssh`);
+  mountIfExists(`${home}/.ssh`, `${containerHome}/.ssh`);
 
   // Git identity / config
-  mountIfExists(`${home}/.gitconfig`, `${DOCKER_CONTAINER_HOME}/.gitconfig`);
+  mountIfExists(`${home}/.gitconfig`, `${containerHome}/.gitconfig`);
 
   // GitHub CLI auth tokens (~/.config/gh/)
-  mountIfExists(`${home}/.config/gh`, `${DOCKER_CONTAINER_HOME}/.config/gh`);
+  mountIfExists(`${home}/.config/gh`, `${containerHome}/.config/gh`);
 
   // npm auth token
-  mountIfExists(`${home}/.npmrc`, `${DOCKER_CONTAINER_HOME}/.npmrc`);
+  mountIfExists(`${home}/.npmrc`, `${containerHome}/.npmrc`);
 
   // General HTTP/git HTTPS credentials (used by git credential helper)
-  mountIfExists(`${home}/.netrc`, `${DOCKER_CONTAINER_HOME}/.netrc`);
+  mountIfExists(`${home}/.netrc`, `${containerHome}/.netrc`);
 
   // Google Application Credentials file (for Vertex AI / gcloud) — mounted
   // at its original path since the env var points there.
@@ -782,7 +794,7 @@ function buildDockerCredentialMounts(
       const hostDir = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relDir);
       try {
         fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
-        mounts.push('-v', `${hostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
+        mounts.push('-v', `${hostDir}:${containerHome}/${relDir}`);
       } catch {
         console.warn(`[docker-auth] Could not create host auth dir ${hostDir}, skipping mount`);
       }
@@ -798,7 +810,7 @@ function buildDockerCredentialMounts(
         if (baseCommand === 'claude' && relFile === '.claude.json') {
           seedClaudeProjectTrust(hostFile, worktreePath);
         }
-        mounts.push('-v', `${hostFile}:${DOCKER_CONTAINER_HOME}/${relFile}`);
+        mounts.push('-v', `${hostFile}:${containerHome}/${relFile}`);
       } catch {
         console.warn(`[docker-auth] Could not create host auth file ${hostFile}, skipping mount`);
       }

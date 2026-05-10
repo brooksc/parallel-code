@@ -239,14 +239,15 @@ describe('spawnAgent docker mode', () => {
     expect(volumeFlags).toContain(`${cwd}:${cwd}`);
   });
 
-  it('injects HOME=/tmp into docker run args', () => {
+  it('injects a per-agent HOME under /tmp into docker run args', () => {
     vi.stubEnv('HOME', '/Users/tester');
 
-    spawnAgent(createMockWindow(), buildSpawnArgs());
+    const agentId = nextAgentId();
+    spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }));
 
     const { command, args } = getLastSpawnCall();
     expect(command).toBe('docker');
-    expect(getFlagValues(args, '-e')).toContain(`HOME=${DOCKER_CONTAINER_HOME}`);
+    expect(getFlagValues(args, '-e')).toContain(`HOME=${DOCKER_CONTAINER_HOME}/agent-${agentId}`);
   });
 
   it('does not forward host or renderer HOME as a generic docker env flag', () => {
@@ -254,9 +255,11 @@ describe('spawnAgent docker mode', () => {
     const rendererHome = '/Users/renderer-home';
     vi.stubEnv('HOME', hostHome);
 
+    const agentId = nextAgentId();
     spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
+        agentId,
         env: {
           API_KEY: 'secret',
           HOME: rendererHome,
@@ -267,7 +270,7 @@ describe('spawnAgent docker mode', () => {
     const envFlags = getFlagValues(getLastSpawnCall().args, '-e');
     expect(envFlags).toContain('API_KEY=secret');
     expect(envFlags.filter((value) => value.startsWith('HOME='))).toEqual([
-      `HOME=${DOCKER_CONTAINER_HOME}`,
+      `HOME=${DOCKER_CONTAINER_HOME}/agent-${agentId}`,
     ]);
     expect(envFlags).not.toContain(`HOME=${hostHome}`);
     expect(envFlags).not.toContain(`HOME=${rendererHome}`);
@@ -328,16 +331,18 @@ describe('spawnAgent docker mode', () => {
     expect(ctx.args).toEqual(['-c', '<redacted>']);
   });
 
-  it('redirects credential mounts under /tmp inside the container', () => {
+  it('redirects credential mounts under per-agent /tmp/agent-<id> inside the container', () => {
     const home = makeTempHome(['.ssh/', '.gitconfig', '.config/gh/']);
     vi.stubEnv('HOME', home);
 
-    spawnAgent(createMockWindow(), buildSpawnArgs());
+    const agentId = nextAgentId();
+    spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }));
 
+    const containerHome = `${DOCKER_CONTAINER_HOME}/agent-${agentId}`;
     const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
-    expect(volumeFlags).toContain(`${home}/.ssh:${DOCKER_CONTAINER_HOME}/.ssh:ro`);
-    expect(volumeFlags).toContain(`${home}/.gitconfig:${DOCKER_CONTAINER_HOME}/.gitconfig:ro`);
-    expect(volumeFlags).toContain(`${home}/.config/gh:${DOCKER_CONTAINER_HOME}/.config/gh:ro`);
+    expect(volumeFlags).toContain(`${home}/.ssh:${containerHome}/.ssh:ro`);
+    expect(volumeFlags).toContain(`${home}/.gitconfig:${containerHome}/.gitconfig:ro`);
+    expect(volumeFlags).toContain(`${home}/.config/gh:${containerHome}/.config/gh:ro`);
   });
 
   describe('agent config dir mounts (shareDockerAgentAuth)', () => {
@@ -353,11 +358,16 @@ describe('spawnAgent docker mode', () => {
         const home = makeTempHome([]);
         vi.stubEnv('HOME', home);
 
-        spawnAgent(createMockWindow(), buildSpawnArgs({ command, shareDockerAgentAuth: true }));
+        const agentId = nextAgentId();
+        spawnAgent(
+          createMockWindow(),
+          buildSpawnArgs({ agentId, command, shareDockerAgentAuth: true }),
+        );
 
+        const containerHome = `${DOCKER_CONTAINER_HOME}/agent-${agentId}`;
         const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
         const expectedHostDir = `${home}/.parallel-code/agent-auth/${command}/${relDir}`;
-        expect(volumeFlags).toContain(`${expectedHostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
+        expect(volumeFlags).toContain(`${expectedHostDir}:${containerHome}/${relDir}`);
       },
     );
 
@@ -378,14 +388,16 @@ describe('spawnAgent docker mode', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
+      const agentId = nextAgentId();
       spawnAgent(
         createMockWindow(),
-        buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: true }),
+        buildSpawnArgs({ agentId, command: 'claude', shareDockerAgentAuth: true }),
       );
 
+      const containerHome = `${DOCKER_CONTAINER_HOME}/agent-${agentId}`;
       const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
       const expectedHostFile = `${home}/.parallel-code/agent-auth/claude/.claude.json`;
-      expect(volumeFlags).toContain(`${expectedHostFile}:${DOCKER_CONTAINER_HOME}/.claude.json`);
+      expect(volumeFlags).toContain(`${expectedHostFile}:${containerHome}/.claude.json`);
       expect(JSON.parse(fs.readFileSync(expectedHostFile, 'utf8'))).toMatchObject({
         projects: {
           '/workspace/project': {
