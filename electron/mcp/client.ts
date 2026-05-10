@@ -111,10 +111,28 @@ export class MCPClient {
     coordinatorTaskId: string,
     timeoutMs?: number,
   ): Promise<WaitForSignalDoneResult> {
-    return this.request<WaitForSignalDoneResult>('POST', '/api/wait-signal', {
-      coordinatorTaskId,
-      timeoutMs,
-    });
+    const MAX_RETRIES = 10;
+    const startedAt = Date.now();
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const elapsed = Date.now() - startedAt;
+        const remaining = timeoutMs !== undefined ? timeoutMs - elapsed : undefined;
+        if (remaining !== undefined && remaining <= 0) break;
+        return await this.request<WaitForSignalDoneResult>('POST', '/api/wait-signal', {
+          coordinatorTaskId,
+          timeoutMs: remaining,
+        });
+      } catch (err: unknown) {
+        // Retry on network-level errors (fetch failed, ECONNRESET, etc.).
+        // HTTP errors (4xx/5xx) are application errors and should not be retried.
+        const isNetworkError = err instanceof TypeError;
+        if (!isNetworkError || attempt === MAX_RETRIES) throw err;
+        const delayMs = Math.min(1_000 * 2 ** attempt, 30_000);
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw new Error('wait_for_signal_done: timed out retrying after repeated network errors');
   }
 
   async reviewAndMergeTask(

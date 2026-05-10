@@ -795,14 +795,31 @@ export class Coordinator {
       getAllFileDiffs(task.worktreePath, task.baseBranch),
     ]);
 
-    // Exclude preamble-injected files so the diff matches what will actually be merged.
+    // For preamble-bearing files: strip the injected block and show only real sub-task edits.
+    // Files with no real changes beyond the preamble are excluded entirely.
+    // Files with real changes (before or after the preamble block) include a normalized diff.
     const preambleFiles = this.detectPreambleFiles(task.worktreePath);
 
     let filteredFiles = files;
     let filteredDiff = diff;
     if (preambleFiles.size > 0) {
-      filteredFiles = files.filter((f) => !preambleFiles.has(f.path));
+      // Drop preamble file sections from the raw diff; we'll add normalized sections below.
       filteredDiff = this.filterDiffSections(diff, preambleFiles);
+      // For each preamble file, generate a diff that excludes the injected block.
+      const normalizedSections = await Promise.all(
+        [...preambleFiles].map((f) =>
+          this.buildNormalizedPreambleFileDiff(f, task.worktreePath, task.baseBranch),
+        ),
+      );
+      const preambleFilesWithChanges = new Set<string>();
+      for (let i = 0; i < [...preambleFiles].length; i++) {
+        if (normalizedSections[i]) preambleFilesWithChanges.add([...preambleFiles][i]);
+      }
+      filteredDiff += normalizedSections.filter(Boolean).join('');
+      // Files list: exclude preamble-only files, keep files with real changes.
+      filteredFiles = files.filter(
+        (f) => !preambleFiles.has(f.path) || preambleFilesWithChanges.has(f.path),
+      );
     }
 
     const MAX_DIFF_BYTES = 50_000;
@@ -856,6 +873,119 @@ export class Coordinator {
         return !match || !excludeFiles.has(match[1]);
       })
       .join('');
+  }
+
+  // Remove the injected <sub-task-mode>...</sub-task-mode> block and its surrounding
+  // blank-line separators. Content before and after the block is preserved.
+  private removePreambleBlock(content: string): string {
+    const START = '<sub-task-mode>';
+    const END = '</sub-task-mode>';
+    const startIdx = content.indexOf(START);
+    if (startIdx === -1) return content;
+    const endIdx = content.indexOf(END, startIdx);
+    if (endIdx === -1) {
+      // Malformed: no end marker — strip from start to EOF (safe fallback, preserves nothing after)
+      return content.slice(0, startIdx).replace(/\n\n$/, '');
+    }
+    const blockEnd = endIdx + END.length;
+    const before = content.slice(0, startIdx).replace(/\n\n$/, '');
+    const after = content.slice(blockEnd).replace(/^\n\n/, '');
+    if (!before && !after) return '';
+    if (!before) return after.replace(/^\n/, '');
+    if (!after) return before;
+    return `${before}\n\n${after}`;
+  }
+
+  // Generate a git diff section showing only non-preamble changes to a preamble-bearing file.
+  // Returns empty string if the file has no real changes beyond the injected block.
+  private async buildNormalizedPreambleFileDiff(
+    filename: string,
+    worktreePath: string,
+    baseBranch: string | undefined,
+  ): Promise<string> {
+    const filePath = join(worktreePath, filename);
+    if (!existsSync(filePath)) return '';
+    let worktreeContent: string;
+    try {
+      worktreeContent = readFileSync(filePath, 'utf8');
+    } catch {
+      return '';
+    }
+
+    let normalizedContent: string;
+    if (filename === '.claude/settings.local.json') {
+      try {
+        const s = JSON.parse(worktreeContent) as Record<string, unknown>;
+        if (typeof s.systemPrompt === 'string') {
+          const stripped = this.removePreambleBlock(s.systemPrompt);
+          if (stripped.trim()) {
+            s.systemPrompt = stripped;
+          } else {
+            delete s.systemPrompt;
+          }
+        }
+        normalizedContent = JSON.stringify(s, null, 2);
+      } catch {
+        return '';
+      }
+    } else {
+      normalizedContent = this.removePreambleBlock(worktreeContent);
+    }
+
+    // Get base content using merge-base to match getAllFileDiffs semantics.
+    let baseContent = '';
+    try {
+      const mbResult = await execAsync('git', ['merge-base', 'HEAD', baseBranch ?? 'HEAD'], {
+        cwd: worktreePath,
+      }).catch(() => execAsync('git', ['rev-parse', 'HEAD'], { cwd: worktreePath }));
+      const sha = mbResult.stdout.trim();
+      const { stdout } = await execAsync('git', ['show', `${sha}:${filename}`], {
+        cwd: worktreePath,
+      });
+      baseContent = stdout;
+    } catch {
+      baseContent = '';
+    }
+
+    if (normalizedContent === baseContent) return '';
+
+    // Write temp files and diff them.
+    const id = randomUUID();
+    const tmpBase = join(os.tmpdir(), `parallel-code-base-${id}`);
+    const tmpNorm = join(os.tmpdir(), `parallel-code-norm-${id}`);
+    try {
+      writeFileSync(tmpBase, baseContent);
+      writeFileSync(tmpNorm, normalizedContent);
+      let diffOut = '';
+      try {
+        const { stdout } = await execAsync('git', ['diff', '--no-index', '-U3', tmpBase, tmpNorm]);
+        diffOut = stdout;
+      } catch (e: unknown) {
+        const err = e as { stdout?: string; code?: number };
+        // Exit code 1 means files differ — that's the expected path for non-empty diffs.
+        if (err.code === 1 && typeof err.stdout === 'string') diffOut = err.stdout;
+      }
+      if (!diffOut) return '';
+      // Replace temp file paths with the canonical filename so it looks like a normal git diff.
+      const baseSuffix = tmpBase.replace(/^\//, '');
+      const normSuffix = tmpNorm.replace(/^\//, '');
+      return diffOut
+        .split(`a/${baseSuffix}`)
+        .join(`a/${filename}`)
+        .split(`b/${normSuffix}`)
+        .join(`b/${filename}`);
+    } finally {
+      try {
+        unlinkSync(tmpBase);
+      } catch {
+        /* ignore */
+      }
+      try {
+        unlinkSync(tmpNorm);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   getTaskOutput(taskId: string): string {
@@ -1001,17 +1131,13 @@ export class Coordinator {
       } catch {
         continue;
       }
-      const idx = content.indexOf(PREAMBLE_START);
-      if (idx === -1) continue;
-      // Remove the preamble block and any preceding \n\n separator
-      const stripped = content.slice(0, idx).replace(/\n\n$/, '');
+      if (!content.includes(PREAMBLE_START)) continue;
+      const stripped = this.removePreambleBlock(content);
       if (stripped.trim()) {
         writeFileSync(filePath, stripped);
       } else if (task.preambleFileExistedBefore) {
-        // File existed before injection (even if empty) — restore to pre-injection bytes
         writeFileSync(filePath, stripped);
       } else {
-        // File was created solely for the preamble — remove it so git add -A won't pick it up
         unlinkSync(filePath);
       }
     }
@@ -1027,8 +1153,7 @@ export class Coordinator {
           typeof settings.systemPrompt === 'string' &&
           settings.systemPrompt.includes(PREAMBLE_START)
         ) {
-          const idx = settings.systemPrompt.indexOf(PREAMBLE_START);
-          const stripped = settings.systemPrompt.slice(0, idx).replace(/\n\n$/, '');
+          const stripped = this.removePreambleBlock(settings.systemPrompt);
           if (stripped.trim()) {
             settings.systemPrompt = stripped;
           } else {
