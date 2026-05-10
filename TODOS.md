@@ -91,12 +91,6 @@
 **What's wrong:** If remote access was enabled before any coordinator task exists, `coordinator` is `null` at `startRemoteServer` time and coordinator routes (`/api/tasks`, `signal_done`) are never registered. `StartMCPServer` reuses the existing server without adding the missing routes.
 **Done when:** Route handlers receive a mutable `getCoordinator()` callback so they look up the coordinator at request time, OR the server is restarted with the coordinator attached when `StartMCPServer` is called.
 
-### 27. Coordinator deregistration does not clean child backend resources
-
-**File:** `electron/mcp/coordinator.ts` (`deregisterCoordinator`, ~line 1063)
-**What's wrong:** Deletes child tasks from `this.tasks` but leaves `subscribers`, `tailBuffers`, `decoders`, `idleResolvers`, `controlMap`, `blockedByHumanControl` entries alive with callbacks closing over deleted task objects.
-**Done when:** Child tasks are either converted to a detached state or all coordinator-owned backend resources are cleaned on deregistration.
-
 ### 28. `setTaskControl` is optimistic with no rollback
 
 **File:** `src/store/tasks.ts` (`setTaskControl`, ~line 1063)
@@ -120,9 +114,3 @@
 3. Unix socket bind-mounted into the container — eliminates TCP exposure entirely, larger change.
 
 **Status:** Waiting for repo owner to weigh in on preferred approach before any work begins.
-
-### 29. Pending `initialPrompt` is not persisted across app restarts
-
-**Files:** `src/store/persistence.ts:106`, `src/store/tasks.ts:900`
-**What's wrong:** `saveState()` persists `savedInitialPrompt` but not `initialPrompt`. Sub-tasks created by MCP store the auto-send prompt only as `initialPrompt`. App restart loses it and the sub-task restarts idle.
-**Done when:** Pending `initialPrompt` is persisted and cleared only after `clearInitialPrompt()` confirms delivery.
