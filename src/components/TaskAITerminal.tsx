@@ -212,18 +212,42 @@ export function TaskAITerminal(props: TaskAITerminalProps) {
                     taskId={props.task.id}
                     agentId={a().id}
                     isFocused={isPanelFocused(props.task.id, 'ai-terminal')}
-                    command={a().def.command}
-                    args={[
-                      ...(a().resumed && a().def.resume_args?.length
-                        ? (a().def.resume_args ?? [])
-                        : a().def.args),
-                      ...(props.task.skipPermissions && a().def.skip_permissions_args?.length
-                        ? (a().def.skip_permissions_args ?? [])
-                        : []),
-                      ...(props.task.mcpConfigPath
-                        ? ['--mcp-config', props.task.mcpConfigPath]
-                        : []),
-                    ]}
+                    command={(() => {
+                      if (props.task.coordinatedBy) {
+                        const coordinator = store.tasks[props.task.coordinatedBy];
+                        if (coordinator?.dockerMode && coordinator.agentIds[0]) return 'docker';
+                      }
+                      return a().def.command;
+                    })()}
+                    args={(() => {
+                      const innerArgs = [
+                        ...(a().resumed && a().def.resume_args?.length
+                          ? (a().def.resume_args ?? [])
+                          : a().def.args),
+                        ...(props.task.skipPermissions && a().def.skip_permissions_args?.length
+                          ? (a().def.skip_permissions_args ?? [])
+                          : []),
+                        ...(props.task.mcpConfigPath
+                          ? ['--mcp-config', props.task.mcpConfigPath]
+                          : []),
+                      ];
+                      if (props.task.coordinatedBy) {
+                        const coordinator = store.tasks[props.task.coordinatedBy];
+                        if (coordinator?.dockerMode && coordinator.agentIds[0]) {
+                          const containerName = `parallel-code-${coordinator.agentIds[0].slice(0, 12)}`;
+                          return [
+                            'exec',
+                            '-it',
+                            '-w',
+                            props.task.worktreePath,
+                            containerName,
+                            a().def.command,
+                            ...innerArgs,
+                          ];
+                        }
+                      }
+                      return innerArgs;
+                    })()}
                     cwd={props.task.worktreePath}
                     stepsEnabled={props.task.stepsEnabled}
                     dockerMode={props.task.dockerMode}

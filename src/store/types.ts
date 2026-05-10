@@ -98,6 +98,7 @@ export interface Task {
   stepsContent?: StepEntry[];
   lastInputAt?: string;
   coordinatorMode?: boolean;
+  propagateSkipPermissions?: boolean; // coordinator setting: sub-tasks inherit skipPermissions
   coordinatedBy?: string; // taskId of the coordinator that created this task
   controlledBy?: 'coordinator' | 'human'; // coordinator control state — set on coordinator tasks and coordinated sub-tasks
   mcpConfigPath?: string; // path to MCP config file (for coordinator tasks)
@@ -106,6 +107,7 @@ export interface Task {
   signalDoneAt?: string; // ISO timestamp from backend when signal_done was called
   signalDoneConsumed?: boolean; // true after wait_for_signal_done consumed this task's signal
   needsReview?: boolean; // set when sub-task is reviewable but coordinator is closed
+  mcpReady?: boolean; // true once hydrateTask has completed for this task (prevents auto-spawn race)
 }
 
 export interface Terminal {
@@ -147,6 +149,7 @@ export interface PersistedTask {
   planFileName?: string;
   stepsEnabled?: boolean;
   coordinatorMode?: boolean;
+  propagateSkipPermissions?: boolean;
   coordinatedBy?: string;
   controlledBy?: 'coordinator' | 'human';
   mcpConfigPath?: string;

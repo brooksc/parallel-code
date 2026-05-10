@@ -52,7 +52,12 @@ export interface CoordinatorState {
   /** Docker container name for this coordinator, used to spawn sub-tasks via `docker exec`. */
   dockerContainerName?: string | null;
   /** Per-coordinator MCP server info; set after the remote server starts. */
-  mcpServerInfo: { serverUrl: string; token: string; serverPath: string } | null;
+  mcpServerInfo: {
+    serverUrl: string;
+    token: string;
+    subtaskToken: string;
+    serverPath: string;
+  } | null;
   /** Per-coordinator agent spawn defaults; set when the coordinator registers. */
   spawnDefaults: { command: string; args: string[] };
   pendingNotifications: PendingNotification[];
@@ -61,6 +66,12 @@ export interface CoordinatorState {
   /** Bounded to last 64 to prevent unbounded growth */
   ackedBatchIds: string[];
   restageTimer: ReturnType<typeof setTimeout> | null;
+  /** Whether to pass skipPermissions to sub-tasks created by this coordinator. */
+  propagateSkipPermissions: boolean;
+  /** Path to the .mcp.json file written for this coordinator. */
+  mcpJsonPath: string;
+  /** True if Parallel Code created .mcp.json from scratch; false if it was pre-existing. */
+  createdMcpJson: boolean;
 }
 
 // --- MCP tool input schemas ---

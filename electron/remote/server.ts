@@ -56,6 +56,7 @@ const MIME: Record<string, string> = {
 interface RemoteServer {
   stop: () => Promise<void>;
   token: string;
+  subtaskToken: string;
   port: number;
   url: string;
   tailscaleUrl: string | null;
@@ -129,22 +130,28 @@ export function startRemoteServer(opts: {
   getCoordinator: () => Coordinator | null;
 }): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
+  const subtaskToken = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
 
   const tokenBuf = Buffer.from(token);
+  const subtaskTokenBuf = Buffer.from(subtaskToken);
 
-  function safeCompare(candidate: string | null | undefined): boolean {
-    if (!candidate) return false;
+  function classifyCandidate(
+    candidate: string | null | undefined,
+  ): 'coordinator' | 'subtask' | null {
+    if (!candidate) return null;
     const buf = Buffer.from(candidate);
-    if (buf.length !== tokenBuf.length) return false;
-    return timingSafeEqual(buf, tokenBuf);
+    if (buf.length === tokenBuf.length && timingSafeEqual(buf, tokenBuf)) return 'coordinator';
+    if (buf.length === subtaskTokenBuf.length && timingSafeEqual(buf, subtaskTokenBuf))
+      return 'subtask';
+    return null;
   }
 
-  function checkAuth(req: IncomingMessage): boolean {
+  function classifyToken(req: IncomingMessage): 'coordinator' | 'subtask' | null {
     const auth = req.headers.authorization;
-    if (auth?.startsWith('Bearer ') && safeCompare(auth.slice(7))) return true;
+    if (auth?.startsWith('Bearer ')) return classifyCandidate(auth.slice(7));
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    return safeCompare(url.searchParams.get('token'));
+    return classifyCandidate(url.searchParams.get('token'));
   }
 
   const SECURITY_HEADERS: Record<string, string> = {
@@ -158,10 +165,19 @@ export function startRemoteServer(opts: {
 
     // --- API routes (require auth) ---
     if (url.pathname.startsWith('/api/')) {
-      if (!checkAuth(req)) {
+      const tokenClass = classifyToken(req);
+      if (tokenClass === null) {
         res.writeHead(401, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'unauthorized' }));
         return;
+      }
+      if (tokenClass === 'subtask') {
+        const allowed = req.method === 'POST' && /^\/api\/tasks\/[^/]+\/done$/.test(url.pathname);
+        if (!allowed) {
+          res.writeHead(403, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'forbidden' }));
+          return;
+        }
       }
 
       if (url.pathname === '/api/agents' && req.method === 'GET') {
@@ -275,8 +291,6 @@ export function startRemoteServer(opts: {
                 return jsonReply(400, { error: 'prompt must be a string' });
               if (body.projectId !== undefined && typeof body.projectId !== 'string')
                 return jsonReply(400, { error: 'projectId must be a string' });
-              if (body.skipPermissions !== undefined && typeof body.skipPermissions !== 'boolean')
-                return jsonReply(400, { error: 'skipPermissions must be a boolean' });
               if (body.baseBranch !== undefined && typeof body.baseBranch !== 'string')
                 return jsonReply(400, { error: 'baseBranch must be a string' });
               if (body.gitIsolation !== undefined)
@@ -285,7 +299,7 @@ export function startRemoteServer(opts: {
                 });
               mcpLog(
                 'info',
-                `create_task name=${body.name} skipPermissions=${!!body.skipPermissions} baseBranch=${body.baseBranch ?? 'default'}`,
+                `create_task name=${body.name} baseBranch=${body.baseBranch ?? 'default'}`,
               );
               const result = await orch.createTask({
                 name: body.name,
@@ -295,7 +309,6 @@ export function startRemoteServer(opts: {
                     ? body.coordinatorTaskId
                     : REST_COORDINATOR_SENTINEL,
                 projectId: body.projectId as string | undefined,
-                skipPermissions: body.skipPermissions as boolean | undefined,
                 baseBranch: body.baseBranch as string | undefined,
               });
               mcpLog('info', `create_task OK id=${result.id}`);
@@ -632,8 +645,9 @@ export function startRemoteServer(opts: {
   wss.on('connection', (ws, req) => {
     clientSubs.set(ws, new Map());
 
-    // Support legacy URL-based auth (verifyClient accepted all connections)
-    if (checkAuth(req)) {
+    // Support legacy URL-based auth (verifyClient accepted all connections).
+    // Subtask tokens are denied WS access — they only need REST signal_done.
+    if (classifyToken(req) === 'coordinator') {
       authenticatedClients.add(ws);
       const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
       ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
@@ -651,9 +665,9 @@ export function startRemoteServer(opts: {
       const msg = parseClientMessage(String(raw));
       if (!msg) return;
 
-      // Handle first-message auth
+      // Handle first-message auth. Subtask tokens are denied WS access.
       if (msg.type === 'auth') {
-        if (safeCompare(msg.token)) {
+        if (classifyCandidate(msg.token) === 'coordinator') {
           authenticatedClients.add(ws);
           const timer = authTimers.get(ws);
           if (timer) clearTimeout(timer);
@@ -763,6 +777,7 @@ export function startRemoteServer(opts: {
 
   const result: RemoteServer = {
     token,
+    subtaskToken,
     port: opts.port,
     url,
     /** Re-detect network IPs so newly connected interfaces (e.g. Tailscale) are picked up. */

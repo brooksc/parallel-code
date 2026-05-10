@@ -301,6 +301,15 @@ export function registerAllHandlers(win: BrowserWindow): void {
   let coordinator: CoordinatorType | null = null;
   let coordinatorHandlersRegistered = false;
   let lastMcpConfigPath: string | null = null;
+  // True when the remote server was started by StartMCPServer (not the manual StartRemoteServer).
+  // Used to stop the server automatically when the last MCP coordinator deregisters.
+  let remoteServerStartedForMcp = false;
+  // True when the user has explicitly requested remote access via StartRemoteServer.
+  // Prevents auto-stop when coordinator deregisters even if MCP started the server first.
+  let remoteServerRequestedManually = false;
+  // True when StopRemoteServer was called while a coordinator was active.
+  // The server will be stopped when the last coordinator deregisters.
+  let remoteServerPendingStop = false;
 
   // --- PTY commands ---
   ipcMain.handle(IPC.SpawnAgent, (_e, args) => {
@@ -992,6 +1001,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
   // --- Remote access ---
   ipcMain.handle(IPC.StartRemoteServer, async (_e, args: { port?: number }) => {
+    remoteServerRequestedManually = true;
     if (remoteServer)
       return {
         url: remoteServer.url,
@@ -1032,12 +1042,16 @@ export function registerAllHandlers(win: BrowserWindow): void {
     if (coordinator?.hasActiveCoordinator()) {
       // The coordinator MCP transport shares this HTTP server. Stopping it while
       // a coordinator is active would break all in-flight MCP tool calls.
-      // The server will be stopped when the last coordinator deregisters.
-      console.warn('[Remote] Stop requested but coordinator MCP is active — server kept running');
+      // Record the pending stop so the last coordinator deregistration will auto-stop.
+      remoteServerPendingStop = true;
+      console.warn(
+        '[Remote] Stop requested but coordinator MCP is active — will stop on last coordinator exit',
+      );
       return { stopped: false, reason: 'coordinator_active' };
     }
     await remoteServer.stop();
     remoteServer = null;
+    remoteServerRequestedManually = false;
     return { stopped: true };
   });
 
@@ -1081,14 +1095,33 @@ export function registerAllHandlers(win: BrowserWindow): void {
       (_e, args: { coordinatorTaskId: string; projectId: string; worktreePath?: string }) => {
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
         assertString(args.projectId, 'projectId');
-        coordinator?.registerCoordinator(args.coordinatorTaskId, args.projectId, args.worktreePath);
+        coordinator?.registerCoordinator(args.coordinatorTaskId, args.projectId, {
+          worktreePath: args.worktreePath,
+        });
       },
     );
 
-    ipcMain.handle(IPC.MCP_CoordinatorDeregistered, (_e, args: { coordinatorTaskId: string }) => {
-      assertString(args.coordinatorTaskId, 'coordinatorTaskId');
-      coordinator?.deregisterCoordinator(args.coordinatorTaskId);
-    });
+    ipcMain.handle(
+      IPC.MCP_CoordinatorDeregistered,
+      async (_e, args: { coordinatorTaskId: string }) => {
+        assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        coordinator?.deregisterCoordinator(args.coordinatorTaskId);
+        // Stop the remote server when the last coordinator exits if:
+        // - MCP started the server and user hasn't separately requested manual access, OR
+        // - the user explicitly requested stop while coordinator was active (pendingStop)
+        if (
+          remoteServer &&
+          !coordinator?.hasActiveCoordinator() &&
+          (remoteServerPendingStop || (remoteServerStartedForMcp && !remoteServerRequestedManually))
+        ) {
+          await remoteServer.stop();
+          remoteServer = null;
+          remoteServerStartedForMcp = false;
+          remoteServerRequestedManually = false;
+          remoteServerPendingStop = false;
+        }
+      },
+    );
 
     // Autofire miss threshold reached — renderer already cleared the staged notification locally.
     // Ack the batch on the backend and mark affected sub-tasks as needsReview.
@@ -1176,6 +1209,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
           mcpConfigPath: args.mcpConfigPath,
           preambleFileExistedBefore: args.preambleFileExistedBefore,
         });
+        // Signal to renderer that MCP hydration is complete — gates TerminalView auto-spawn.
+        if (!win.isDestroyed()) {
+          win.webContents.send(IPC.MCP_TaskHydrated, { taskId: args.id });
+        }
       },
     );
   }
@@ -1229,13 +1266,29 @@ export function registerAllHandlers(win: BrowserWindow): void {
         dockerContainerName?: string;
       },
     ) => {
+      assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+      assertString(args.projectId, 'projectId');
+      validatePath(args.projectRoot, 'projectRoot');
+      if (args.worktreePath !== undefined) validatePath(args.worktreePath, 'worktreePath');
+      if (args.agentCommand !== undefined) assertString(args.agentCommand, 'agentCommand');
+      if (args.agentArgs !== undefined) assertStringArray(args.agentArgs, 'agentArgs');
+      if (args.dockerContainerName !== undefined) {
+        assertString(args.dockerContainerName, 'dockerContainerName');
+        if (!/^[a-zA-Z0-9_.-]+$/.test(args.dockerContainerName)) {
+          throw new Error('dockerContainerName contains invalid characters');
+        }
+      }
+
       await enableCoordinatorMode();
       if (!coordinator) return;
 
       // Set coordinator's default project + coordinator task ID, and register this coordinator
       // so create_task / list_tasks know about it. Idempotent — safe to call on restore.
       coordinator.setDefaultProject(args.projectId, args.projectRoot, args.coordinatorTaskId);
-      coordinator.registerCoordinator(args.coordinatorTaskId, args.projectId, args.worktreePath);
+      coordinator.registerCoordinator(args.coordinatorTaskId, args.projectId, {
+        worktreePath: args.worktreePath,
+        skipPermissions: Boolean(args.skipPermissions && args.propagateSkipPermissions),
+      });
 
       // Start remote server if not running
       if (!remoteServer) {
@@ -1255,6 +1308,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           },
           getCoordinator: () => coordinator,
         });
+        remoteServerStartedForMcp = true;
       }
 
       // Write temp MCP config file — use the bundled single-file MCP server
@@ -1312,6 +1366,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         args.coordinatorTaskId,
         serverUrl,
         remoteServer.token,
+        remoteServer.subtaskToken,
         mcpServerPath,
       );
       coordinator.setCoordinatorSpawnDefaults(
@@ -1353,13 +1408,34 @@ export function registerAllHandlers(win: BrowserWindow): void {
         fs.writeFileSync(configPath, configJson, { mode: 0o600 });
       }
 
-      // Write .mcp.json for auto-discovery. The Docker container mounts the same
-      // worktree/project path as the host, so the same helper works for both modes:
-      // worktree → write to worktree, direct mode → write to project root.
+      // Write .mcp.json for auto-discovery. Read before writing — merge only the
+      // parallel-code key so we don't destroy user-defined entries. Track whether
+      // we created the file so deregisterCoordinator can clean up correctly.
       const mcpJsonDir = selectMcpJsonDir(args.worktreePath, args.projectRoot);
       if (mcpJsonDir) {
         const worktreeMcpPath = path.join(mcpJsonDir, '.mcp.json');
-        fs.writeFileSync(worktreeMcpPath, configJson, { mode: 0o600 });
+        const fileExists = fs.existsSync(worktreeMcpPath);
+        let existingContent: Record<string, unknown> = {};
+        if (fileExists) {
+          try {
+            existingContent = JSON.parse(fs.readFileSync(worktreeMcpPath, 'utf-8')) as Record<
+              string,
+              unknown
+            >;
+          } catch {
+            /* ignore — treat as empty */
+          }
+        }
+        const existingServers =
+          (existingContent.mcpServers as Record<string, unknown> | undefined) ?? {};
+        existingContent.mcpServers = {
+          ...existingServers,
+          ...mcpConfig.mcpServers,
+        };
+        const mergedJson = JSON.stringify(existingContent, null, 2);
+        fs.writeFileSync(worktreeMcpPath, mergedJson);
+        fs.chmodSync(worktreeMcpPath, 0o600);
+        coordinator.setMcpJsonInfo(args.coordinatorTaskId, worktreeMcpPath, !fileExists);
 
         // Append to .git/info/exclude (local-only gitignore, not committed)
         try {

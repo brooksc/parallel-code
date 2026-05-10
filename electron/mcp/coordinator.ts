@@ -6,7 +6,8 @@ import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { writeFileSync, unlinkSync, readFileSync, existsSync, mkdirSync } from 'fs';
-import { join, basename } from 'path';
+import { join, dirname } from 'path';
+import os from 'os';
 import { getSubTaskMcpConfigPath } from './config.js';
 
 const execAsync = promisify(execFile);
@@ -185,11 +186,12 @@ export class Coordinator {
     coordinatorTaskId: string,
     serverUrl: string,
     token: string,
+    subtaskToken: string,
     serverPath: string,
   ): void {
     const state = this.coordinators.get(coordinatorTaskId);
     if (state) {
-      state.mcpServerInfo = { serverUrl, token, serverPath };
+      state.mcpServerInfo = { serverUrl, token, subtaskToken, serverPath };
     }
     // Rewrite config files only for sub-tasks owned by this coordinator so a
     // second coordinator starting up does not overwrite the first's task configs.
@@ -202,7 +204,7 @@ export class Coordinator {
             type: 'stdio' as const,
             command: 'node',
             args: [serverPath, '--url', serverUrl, '--task-id', task.id],
-            env: { PARALLEL_CODE_MCP_TOKEN: token },
+            env: { PARALLEL_CODE_MCP_TOKEN: subtaskToken },
           },
         },
       };
@@ -380,6 +382,12 @@ export class Coordinator {
       );
     }
 
+    if (opts.baseBranch !== undefined) {
+      if (typeof opts.baseBranch !== 'string' || !opts.baseBranch)
+        throw new Error('baseBranch must be a non-empty string');
+      if (opts.baseBranch.startsWith('-')) throw new Error('baseBranch must not start with "-"');
+    }
+
     const root = opts.projectRoot ?? coordinatorState.projectRoot ?? this.projectRoot;
     const projId = opts.projectId ?? coordinatorState.projectId ?? this.projectId;
     if (!root || !projId) throw new Error('No project configured for coordinator');
@@ -531,14 +539,14 @@ export class Coordinator {
       // Always pass --mcp-config explicitly so Claude doesn't rely on auto-discovery.
       const mcpServerInfoForTask = coordinatorState.mcpServerInfo;
       if (mcpServerInfoForTask) {
-        const { serverUrl, token, serverPath } = mcpServerInfoForTask;
+        const { serverUrl, subtaskToken, serverPath } = mcpServerInfoForTask;
         const mcpConfig = {
           mcpServers: {
             'parallel-code': {
               type: 'stdio' as const,
               command: 'node',
               args: [serverPath, '--url', serverUrl, '--task-id', task.id],
-              env: { PARALLEL_CODE_MCP_TOKEN: token },
+              env: { PARALLEL_CODE_MCP_TOKEN: subtaskToken },
             },
           },
         };
@@ -552,7 +560,7 @@ export class Coordinator {
       const agentArgs = opts.agentArgs ?? coordinatorState.spawnDefaults.args;
       const baseArgs = [
         ...agentArgs,
-        ...(opts.skipPermissions ? ['--dangerously-skip-permissions'] : []),
+        ...(coordinatorState.propagateSkipPermissions ? ['--dangerously-skip-permissions'] : []),
       ];
       const mcpArgs = subTaskMcpConfigPath ? ['--mcp-config', subTaskMcpConfigPath] : [];
       const agentFinalArgs = [...baseArgs, ...mcpArgs];
@@ -613,19 +621,10 @@ export class Coordinator {
       // Notify renderer with the prompt — the renderer sets it as initialPrompt
       // on the task, and PromptInput auto-delivers it using the same code path
       // as manually created tasks (stability checks, quiescence detection, etc.)
-      // For renderer storage: agentCommand/agentArgs are used to restart the agent from the UI.
-      // In docker mode, we store the `docker exec <container> <agentCommand>` form so restarts work.
-      const notifyAgentArgs = dockerContainerName
-        ? [
-            'exec',
-            '-it',
-            '-w',
-            result.worktree_path,
-            dockerContainerName,
-            agentCommand,
-            ...agentArgs,
-          ]
-        : agentArgs;
+      // For renderer storage: only store the inner agent args (without docker wrapper).
+      // TaskAITerminal re-wraps with the coordinator's current container name at respawn time
+      // so stale container names don't get baked into persisted state.
+      const notifyAgentArgs = agentArgs;
       this.notifyRenderer(IPC.MCP_TaskCreated, {
         taskId: task.id,
         name: task.name,
@@ -637,9 +636,9 @@ export class Coordinator {
         prompt: opts.prompt ? SUB_TASK_PREAMBLE + opts.prompt : opts.prompt,
         mcpConfigPath: subTaskMcpConfigPath,
         preambleFileExistedBefore: task.preambleFileExistedBefore,
-        agentCommand: command,
+        agentCommand: agentCommand,
         agentArgs: notifyAgentArgs,
-        skipPermissions: opts.skipPermissions ?? false,
+        skipPermissions: coordinatorState.propagateSkipPermissions,
       });
 
       return task;
@@ -1167,13 +1166,20 @@ export class Coordinator {
       this.controlMap.set(task.id, 'human');
     }
 
-    // Validate the persisted mcpConfigPath matches the expected filename pattern before
-    // writing to it — a crafted state file could otherwise cause an arbitrary write on
-    // startup. Only the two filenames generated by getSubTaskMcpConfigPath are accepted.
+    // Validate the persisted mcpConfigPath is exactly one of the two paths that
+    // getSubTaskMcpConfigPath generates — basename-only is too permissive and would
+    // allow a crafted state file to direct the token write to an arbitrary location.
+    // Host mode: os.tmpdir()/parallel-code-subtask-{id}.json
+    // Docker mode: dirname(serverPath)/subtask-{id}.json  (looked up from live coordinator state)
+    const serverInfo = this.coordinators.get(opts.coordinatorTaskId)?.mcpServerInfo;
+    const expectedHostPath = join(os.tmpdir(), `parallel-code-subtask-${opts.id}.json`);
+    const expectedDockerPath = serverInfo
+      ? join(dirname(serverInfo.serverPath), `subtask-${opts.id}.json`)
+      : null;
     const safeMcpConfigPath =
       opts.mcpConfigPath &&
-      (basename(opts.mcpConfigPath) === `parallel-code-subtask-${opts.id}.json` ||
-        basename(opts.mcpConfigPath) === `subtask-${opts.id}.json`)
+      (opts.mcpConfigPath === expectedHostPath ||
+        (expectedDockerPath !== null && opts.mcpConfigPath === expectedDockerPath))
         ? opts.mcpConfigPath
         : undefined;
     task.mcpConfigPath = safeMcpConfigPath;
@@ -1181,25 +1187,22 @@ export class Coordinator {
     // If StartMCPServer already ran before this hydration call (the normal restart path),
     // rewrite the config file immediately with the current port/token so the respawned
     // agent gets fresh credentials instead of the stale pre-restart values.
-    if (safeMcpConfigPath) {
-      const serverInfo = this.coordinators.get(opts.coordinatorTaskId)?.mcpServerInfo;
-      if (serverInfo) {
-        const { serverUrl, token, serverPath } = serverInfo;
-        const mcpConfig = {
-          mcpServers: {
-            'parallel-code': {
-              type: 'stdio' as const,
-              command: 'node',
-              args: [serverPath, '--url', serverUrl, '--task-id', task.id],
-              env: { PARALLEL_CODE_MCP_TOKEN: token },
-            },
+    if (safeMcpConfigPath && serverInfo) {
+      const { serverUrl, subtaskToken, serverPath } = serverInfo;
+      const mcpConfig = {
+        mcpServers: {
+          'parallel-code': {
+            type: 'stdio' as const,
+            command: 'node',
+            args: [serverPath, '--url', serverUrl, '--task-id', task.id],
+            env: { PARALLEL_CODE_MCP_TOKEN: subtaskToken },
           },
-        };
-        try {
-          writeFileSync(safeMcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
-        } catch {
-          /* config dir may not exist yet; setMCPServerInfo rewrite will catch it */
-        }
+        },
+      };
+      try {
+        writeFileSync(safeMcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
+      } catch {
+        /* config dir may not exist yet; setMCPServerInfo rewrite will catch it */
       }
     }
 
@@ -1248,7 +1251,11 @@ export class Coordinator {
     }
   }
 
-  registerCoordinator(coordinatorTaskId: string, projectId: string, worktreePath?: string): void {
+  registerCoordinator(
+    coordinatorTaskId: string,
+    projectId: string,
+    opts?: { worktreePath?: string; skipPermissions?: boolean },
+  ): void {
     if (this.coordinators.has(coordinatorTaskId)) return;
     // Snapshot the current global project root and defaults so each coordinator gets
     // the values that were active when IT registered, not whatever a later coordinator sets.
@@ -1256,14 +1263,25 @@ export class Coordinator {
       taskId: coordinatorTaskId,
       projectId,
       projectRoot: this.projectRoot ?? '',
-      worktreePath,
+      worktreePath: opts?.worktreePath,
       mcpServerInfo: null,
       spawnDefaults: { ...this.coordinatorSpawnDefaults },
       pendingNotifications: [],
       stagedBatches: new Map(),
       ackedBatchIds: [],
       restageTimer: null,
+      propagateSkipPermissions: Boolean(opts?.skipPermissions),
+      mcpJsonPath: '',
+      createdMcpJson: false,
     });
+  }
+
+  setMcpJsonInfo(coordinatorTaskId: string, mcpJsonPath: string, createdMcpJson: boolean): void {
+    const state = this.coordinators.get(coordinatorTaskId);
+    if (state) {
+      state.mcpJsonPath = mcpJsonPath;
+      state.createdMcpJson = createdMcpJson;
+    }
   }
 
   deregisterCoordinator(coordinatorTaskId: string): void {
@@ -1280,6 +1298,32 @@ export class Coordinator {
         coordinatorTaskId: coordinator.taskId,
       });
     }
+
+    // Clean up coordinator .mcp.json — remove only the parallel-code key.
+    // Always read current contents (user may have added keys while running),
+    // then delete the whole file only if nothing else remains.
+    if (coordinator.mcpJsonPath) {
+      try {
+        const raw = existsSync(coordinator.mcpJsonPath)
+          ? readFileSync(coordinator.mcpJsonPath, 'utf-8')
+          : null;
+        if (raw !== null) {
+          const content = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+          if (content.mcpServers) delete content.mcpServers['parallel-code'];
+          const hasServers = Object.keys(content.mcpServers ?? {}).length > 0;
+          const hasOtherKeys = Object.keys(content).filter((k) => k !== 'mcpServers').length > 0;
+          if (!hasServers && !hasOtherKeys) {
+            unlinkSync(coordinator.mcpJsonPath);
+          } else {
+            if (!hasServers) delete content.mcpServers;
+            writeFileSync(coordinator.mcpJsonPath, JSON.stringify(content, null, 2));
+          }
+        }
+      } catch {
+        /* ignore — file may already be gone or malformed */
+      }
+    }
+
     this.coordinators.delete(coordinatorTaskId);
 
     // Resolve any pending wait_for_signal_done calls so they don't hang until

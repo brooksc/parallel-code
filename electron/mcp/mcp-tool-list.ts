@@ -28,11 +28,6 @@ export const COORDINATOR_TOOLS: ToolDef[] = [
           type: 'string',
           description: 'Initial prompt to send to the agent once it finishes starting up.',
         },
-        skipPermissions: {
-          type: 'boolean',
-          description:
-            'Run the sub-agent with --dangerously-skip-permissions (auto-approve all tool uses). Use for fully autonomous sub-tasks.',
-        },
         baseBranch: {
           type: 'string',
           description:

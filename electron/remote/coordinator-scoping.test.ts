@@ -377,3 +377,87 @@ describe('coordinator scoping', () => {
     });
   });
 });
+
+// ─── Subtask token access control ────────────────────────────────────────────
+
+describe('subtask token — restricted to signal_done only', () => {
+  let subtaskToken = '';
+  let stop: () => Promise<void>;
+
+  beforeEach(async () => {
+    const coord = makeMockCoordinator();
+    const srv = await startServer(coord);
+    subtaskToken = srv.subtaskToken;
+    stop = srv.stop;
+  });
+
+  afterEach(async () => {
+    await stop();
+  });
+
+  function subtaskRequest(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number }> {
+    return new Promise((resolve, reject) => {
+      const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${subtaskToken}`,
+        'Content-Type': 'application/json',
+      };
+      if (bodyStr) headers['Content-Length'] = String(Buffer.byteLength(bodyStr));
+      const req = http.request(
+        { hostname: '127.0.0.1', port: serverPort, path, method, headers },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+        },
+      );
+      req.on('error', reject);
+      if (bodyStr) req.write(bodyStr);
+      req.end();
+    });
+  }
+
+  it('subtaskToken is defined and differs from coordinator token', () => {
+    expect(subtaskToken).toBeTruthy();
+    expect(subtaskToken).not.toBe(serverToken);
+  });
+
+  it('POST /api/tasks/{id}/done is allowed with subtaskToken', async () => {
+    const res = await subtaskRequest('POST', `/api/tasks/${taskA.id}/done`, {});
+    expect(res.status).not.toBe(401);
+    expect(res.status).not.toBe(403);
+  });
+
+  it('GET /api/tasks returns 403 with subtaskToken', async () => {
+    const res = await subtaskRequest('GET', '/api/tasks');
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /api/tasks returns 403 with subtaskToken', async () => {
+    const res = await subtaskRequest('POST', '/api/tasks', { name: 'x', prompt: 'y' });
+    expect(res.status).toBe(403);
+  });
+
+  it('GET /api/agents returns 403 with subtaskToken', async () => {
+    const res = await subtaskRequest('GET', '/api/agents');
+    expect(res.status).toBe(403);
+  });
+
+  it('DELETE /api/tasks/{id} returns 403 with subtaskToken', async () => {
+    const res = await subtaskRequest('DELETE', `/api/tasks/${taskA.id}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /api/tasks/{id}/merge returns 403 with subtaskToken', async () => {
+    const res = await subtaskRequest('POST', `/api/tasks/${taskA.id}/merge`);
+    expect(res.status).toBe(403);
+  });
+
+  it('coordinator token still has full access to task routes', async () => {
+    const res = await get('/api/tasks');
+    expect(res.status).toBe(200);
+  });
+});

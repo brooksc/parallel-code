@@ -610,34 +610,53 @@ export function TerminalView(props: TerminalViewProps) {
       // WebGL2 not supported — DOM renderer used automatically
     }
 
-    invoke(IPC.SpawnAgent, {
-      taskId,
-      agentId,
-      command: props.command,
-      args: props.args,
-      cwd: props.cwd,
-      env: props.env ?? {},
-      cols: term.cols,
-      rows: term.rows,
-      isShell: props.isShell,
-      stepsEnabled: props.stepsEnabled,
-      dockerMode: props.dockerMode,
-      dockerImage: props.dockerImage,
-      dockerMountWorktreeParent: props.dockerMountWorktreeParent,
-      shareDockerAgentAuth: store.shareDockerAgentAuth,
-      onOutput,
-      // eslint-disable-next-line solid/reactivity -- promise catch handler reads current prop values intentionally
-    }).catch((err) => {
-      // Strip control/escape characters to prevent terminal escape injection
-      // eslint-disable-next-line no-control-regex -- intentionally stripping control/escape chars to prevent terminal injection
-      const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, '');
-      term?.write(`\x1b[31mFailed to spawn: ${safeErr}\x1b[0m\r\n`);
-      props.onExit?.({
-        exit_code: null,
-        signal: 'spawn_failed',
-        last_output: [`Failed to spawn: ${safeErr}`],
+    function spawnNow() {
+      const t = term;
+      invoke(IPC.SpawnAgent, {
+        taskId,
+        agentId,
+        command: props.command,
+        args: props.args,
+        cwd: props.cwd,
+        env: props.env ?? {},
+        cols: t?.cols ?? 80,
+        rows: t?.rows ?? 24,
+        isShell: props.isShell,
+        stepsEnabled: props.stepsEnabled,
+        dockerMode: props.dockerMode,
+        dockerImage: props.dockerImage,
+        dockerMountWorktreeParent: props.dockerMountWorktreeParent,
+        shareDockerAgentAuth: store.shareDockerAgentAuth,
+        onOutput,
+        // eslint-disable-next-line solid/reactivity -- promise catch handler reads current prop values intentionally
+      }).catch((err) => {
+        // Strip control/escape characters to prevent terminal escape injection
+        // eslint-disable-next-line no-control-regex -- intentionally stripping control/escape chars to prevent terminal injection
+        const safeErr = String(err).replace(/[\x00-\x1f\x7f]/g, '');
+        term?.write(`\x1b[31mFailed to spawn: ${safeErr}\x1b[0m\r\n`);
+        props.onExit?.({
+          exit_code: null,
+          signal: 'spawn_failed',
+          last_output: [`Failed to spawn: ${safeErr}`],
+        });
       });
-    });
+    }
+
+    // For coordinator and coordinated sub-tasks, defer spawn until MCP is ready.
+    // Coordinator tasks wait for StartMCPServer to complete; sub-tasks wait for hydrateTask.
+    const task = store.tasks[taskId];
+    if ((task?.coordinatedBy || task?.coordinatorMode) && !task?.mcpReady) {
+      let spawned = false;
+      createEffect(() => {
+        if (spawned) return;
+        if (store.tasks[taskId]?.mcpReady) {
+          spawned = true;
+          spawnNow();
+        }
+      });
+    } else {
+      spawnNow();
+    }
 
     onCleanup(() => {
       flushPendingInput();

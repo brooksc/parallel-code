@@ -49,6 +49,7 @@ import {
   setDockerAvailable,
   toggleTaskFocusMode,
   initMCPListeners,
+  markTaskMcpReady,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
@@ -352,13 +353,15 @@ function App() {
           projectRoot,
           worktreePath: task.gitIsolation === 'worktree' ? task.worktreePath : undefined,
           skipPermissions: task.skipPermissions ?? false,
-          propagateSkipPermissions: false,
+          propagateSkipPermissions: task.propagateSkipPermissions ?? false,
           agentCommand: agentDef?.command ?? 'claude',
           agentArgs: agentDef?.args ?? [],
           dockerContainerName,
-        }).catch((err) => {
-          console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
-        }),
+        })
+          .then(() => markTaskMcpReady(taskId))
+          .catch((err) => {
+            console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
+          }),
       );
     }
     // Wait for all coordinators to register before hydrating their children —
@@ -387,9 +390,11 @@ function App() {
         signalDoneConsumed: task.signalDoneConsumed,
         mcpConfigPath: task.mcpConfigPath,
         preambleFileExistedBefore: task.preambleFileExistedBefore,
-      }).catch((err) => {
-        console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
-      });
+      })
+        .then(() => markTaskMcpReady(task.id))
+        .catch((err) => {
+          console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
+        });
     }
 
     // Restore plan content for tasks that had a plan file before restart

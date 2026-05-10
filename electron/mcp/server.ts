@@ -13,8 +13,6 @@ const args = process.argv.slice(2);
 let url = '';
 let taskId = ''; // set for sub-tasks: enables signal_done
 let coordinatorId = ''; // set for coordinator: sent as coordinatorTaskId in create_task
-let defaultSkipPermissions = false; // inherited from coordinator's own skipPermissions setting
-
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--url' && args[i + 1]) {
     url = args[++i];
@@ -22,8 +20,6 @@ for (let i = 0; i < args.length; i++) {
     taskId = args[++i];
   } else if (args[i] === '--coordinator-id' && args[i + 1]) {
     coordinatorId = args[++i];
-  } else if (args[i] === '--skip-permissions') {
-    defaultSkipPermissions = true;
   }
 }
 
@@ -76,7 +72,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           name: p.name as string,
           prompt: p.prompt as string | undefined,
           coordinatorTaskId: coordinatorId || undefined,
-          skipPermissions: (p.skipPermissions as boolean | undefined) ?? defaultSkipPermissions,
           baseBranch: p.baseBranch as string | undefined,
         });
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };

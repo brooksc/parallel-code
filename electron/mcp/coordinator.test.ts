@@ -116,8 +116,8 @@ describe('Coordinator registerCoordinator — idempotency', () => {
   });
 
   it('registerCoordinator is idempotent — second call is a no-op', () => {
-    coordinator.registerCoordinator('coord-1', 'proj-1', '/tmp/project');
-    coordinator.registerCoordinator('coord-1', 'proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1', { worktreePath: '/tmp/project' });
+    coordinator.registerCoordinator('coord-1', 'proj-1', { worktreePath: '/tmp/project' });
     // createTask should work — only one CoordinatorState entry
     expect(() =>
       coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' }),
@@ -139,7 +139,13 @@ describe('Coordinator registerCoordinator — idempotency', () => {
     // Simulates restore: StartMCPServer calls registerCoordinator internally.
     // No separate MCP_CoordinatorRegistered call occurs.
     coordinator.registerCoordinator('coord-1', 'proj-1');
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
     // Should get a task created notification (not "coordinator not found" error)
@@ -456,23 +462,23 @@ describe('Coordinator sub-agent spawn settings', () => {
     expect(spawnArgs).toContain('claude-opus-4-7');
   });
 
-  it('adds --dangerously-skip-permissions when skipPermissions is true', async () => {
+  it('adds --dangerously-skip-permissions when coordinator has propagateSkipPermissions', async () => {
+    // skipPermissions is inherited from coordinator state, not from createTask opts.
+    coordinator.registerCoordinator('coord-skip', 'proj-1', { skipPermissions: true });
     await coordinator.createTask({
       name: 'test',
       prompt: 'do',
-      coordinatorTaskId: 'coord-1',
-      skipPermissions: true,
+      coordinatorTaskId: 'coord-skip',
     });
     const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
     expect(spawnArgs).toContain('--dangerously-skip-permissions');
   });
 
-  it('does not add --dangerously-skip-permissions when skipPermissions is false', async () => {
+  it('does not add --dangerously-skip-permissions when coordinator does not propagate', async () => {
     await coordinator.createTask({
       name: 'test',
       prompt: 'do',
       coordinatorTaskId: 'coord-1',
-      skipPermissions: false,
     });
     const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
     expect(spawnArgs).not.toContain('--dangerously-skip-permissions');
@@ -1116,7 +1122,6 @@ describe('Coordinator MCP_TaskCreated spawn settings', () => {
       name: 'test',
       prompt: 'do',
       coordinatorTaskId: 'coord-1',
-      skipPermissions: true,
     });
     const payload = mockNotifyRenderer.mock.calls.find((c) => c[0] === 'mcp_task_created')?.[1] as {
       agentArgs: string[];
@@ -1126,12 +1131,14 @@ describe('Coordinator MCP_TaskCreated spawn settings', () => {
     expect(payload.agentArgs).not.toContain('--dangerously-skip-permissions');
   });
 
-  it('includes skipPermissions true in MCP_TaskCreated payload', async () => {
+  it('includes skipPermissions true in MCP_TaskCreated payload when coordinator has propagateSkipPermissions', async () => {
+    // skipPermissions is now inherited from the coordinator's propagateSkipPermissions,
+    // not from createTask opts. Re-register with skipPermissions: true.
+    coordinator.registerCoordinator('coord-skip', 'proj-1', { skipPermissions: true });
     await coordinator.createTask({
       name: 'test',
       prompt: 'do',
-      coordinatorTaskId: 'coord-1',
-      skipPermissions: true,
+      coordinatorTaskId: 'coord-skip',
     });
     expect(mockNotifyRenderer).toHaveBeenCalledWith(
       'mcp_task_created',
@@ -1167,7 +1174,13 @@ describe('Coordinator sub-task MCP config isolation', () => {
       .mockResolvedValueOnce({ id: 'task-a', branch_name: 'task/a', worktree_path: '/tmp/a' })
       .mockResolvedValueOnce({ id: 'task-b', branch_name: 'task/b', worktree_path: '/tmp/b' });
 
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-1' });
     await coordinator.createTask({ name: 'task-b', prompt: 'do b', coordinatorTaskId: 'coord-1' });
 
@@ -1199,7 +1212,13 @@ describe('Coordinator sub-task MCP config isolation', () => {
       .mockResolvedValueOnce({ id: 'task-a', branch_name: 'task/a', worktree_path: '/tmp/a' })
       .mockResolvedValueOnce({ id: 'task-b', branch_name: 'task/b', worktree_path: '/tmp/b' });
 
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-1' });
     await coordinator.createTask({ name: 'task-b', prompt: 'do b', coordinatorTaskId: 'coord-1' });
 
@@ -1235,6 +1254,7 @@ describe('Coordinator MCP config restart rewrite', () => {
       'coord-1',
       'http://localhost:3001',
       'old-token',
+      'old-token',
       '/path/to/server.js',
     );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
@@ -1260,6 +1280,7 @@ describe('Coordinator MCP config restart rewrite', () => {
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://localhost:3002',
+      'new-token',
       'new-token',
       '/path/to/server.js',
     );
@@ -1292,12 +1313,14 @@ describe('Coordinator MCP config restart rewrite', () => {
       'coord-1',
       'http://localhost:3001',
       'old-token',
+      'old-token',
       '/path/to/server.js',
     );
     mockWriteFileSync.mockClear();
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://localhost:3002',
+      'new-token',
       'new-token',
       '/path/to/server.js',
     );
@@ -1317,6 +1340,7 @@ describe('Coordinator MCP config restart rewrite', () => {
       'coord-1',
       'http://localhost:3001',
       'old-token',
+      'old-token',
       '/path/to/server.js',
     );
     await coordinator.createTask({ name: 'task-a', prompt: 'do', coordinatorTaskId: 'coord-1' });
@@ -1326,6 +1350,7 @@ describe('Coordinator MCP config restart rewrite', () => {
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://localhost:3002',
+      'new-token',
       'new-token',
       '/path/to/server.js',
     );
@@ -1354,6 +1379,7 @@ describe('Coordinator MCP config restart rewrite', () => {
       'coord-1',
       'http://localhost:3002',
       'new-token',
+      'new-token',
       '/path/to/server.js',
     );
 
@@ -1361,6 +1387,83 @@ describe('Coordinator MCP config restart rewrite', () => {
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrites).toHaveLength(0);
+  });
+});
+
+// ─── Two-class token: subtask configs use subtaskToken, not coordinator token ──
+
+describe('Coordinator two-class token — subtask configs use subtaskToken', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/test',
+      worktree_path: '/tmp/test',
+    });
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+  });
+
+  it('createTask writes subtaskToken (not coordinator token) into the sub-task MCP config', async () => {
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'coordinator-secret',
+      'subtask-secret',
+      '/path/server.js',
+    );
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const configWrite = mockWriteFileSync.mock.calls.find((c) =>
+      (c[0] as string).includes('parallel-code-subtask-'),
+    );
+    expect(configWrite).toBeDefined();
+    if (!configWrite) throw new Error('expected config write');
+
+    const config = JSON.parse(configWrite[1] as string) as {
+      mcpServers: { 'parallel-code': { env: Record<string, string> } };
+    };
+    const writtenToken = config.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN'];
+    expect(writtenToken).toBe('subtask-secret');
+    expect(writtenToken).not.toBe('coordinator-secret');
+  });
+
+  it('setMCPServerInfo rewrites existing sub-task configs with subtaskToken on restart', async () => {
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'old-coordinator',
+      'old-subtask',
+      '/path/server.js',
+    );
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    mockWriteFileSync.mockClear();
+
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3002',
+      'new-coordinator',
+      'new-subtask',
+      '/path/server.js',
+    );
+
+    const rewrite = mockWriteFileSync.mock.calls.find((c) =>
+      (c[0] as string).includes('parallel-code-subtask-'),
+    );
+    expect(rewrite).toBeDefined();
+    if (!rewrite) throw new Error('expected rewrite');
+
+    const config = JSON.parse(rewrite[1] as string) as {
+      mcpServers: { 'parallel-code': { env: Record<string, string> } };
+    };
+    const writtenToken = config.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN'];
+    expect(writtenToken).toBe('new-subtask');
+    expect(writtenToken).not.toBe('new-coordinator');
   });
 });
 
@@ -1687,7 +1790,13 @@ describe('Coordinator cleanupTask — failure resilience', () => {
   });
 
   it('MCP config file deletion failure is swallowed and task is removed', async () => {
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
     mockUnlinkSync.mockImplementationOnce(() => {
@@ -1735,6 +1844,7 @@ describe('Coordinator setMCPServerInfo — token rotation', () => {
       'coord-1',
       'http://127.0.0.1:3001',
       'old-token',
+      'old-token',
       '/path/to/mcp-server.cjs',
     );
 
@@ -1748,6 +1858,7 @@ describe('Coordinator setMCPServerInfo — token rotation', () => {
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://127.0.0.1:3002',
+      'new-token-xyz',
       'new-token-xyz',
       '/path/to/mcp-server.cjs',
     );
@@ -1772,7 +1883,13 @@ describe('Coordinator setMCPServerInfo — token rotation', () => {
 
   it('setMCPServerInfo with no existing tasks writes nothing', () => {
     mockWriteFileSync.mockClear();
-    coordinator.setMCPServerInfo('coord-1', 'http://127.0.0.1:3001', 'new-token', '/path/mcp.cjs');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://127.0.0.1:3001',
+      'new-token',
+      'new-token',
+      '/path/mcp.cjs',
+    );
     // No tasks yet — nothing to rewrite
     const rewriteCalls = mockWriteFileSync.mock.calls.filter(
       (c) => typeof c[1] === 'string' && c[1].includes('new-token'),
@@ -1816,7 +1933,13 @@ describe('Multiple Docker coordinators — isolation', () => {
   });
 
   it('sub-task MCP config for coord-a uses coord-a coordinator id, not coord-b', async () => {
-    coordA.setMCPServerInfo('coord-a', 'http://localhost:3001', 'tok-a', '/path/server.js');
+    coordA.setMCPServerInfo(
+      'coord-a',
+      'http://localhost:3001',
+      'tok-a',
+      'subtask-tok-a',
+      '/path/server.js',
+    );
     await coordA.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-a' });
 
     const configWrites = mockWriteFileSync.mock.calls.filter((c) =>
@@ -1827,8 +1950,10 @@ describe('Multiple Docker coordinators — isolation', () => {
     const cfg = JSON.parse(configWrites[0][1] as string) as {
       mcpServers: { 'parallel-code': { args: string[]; env: Record<string, string> } };
     };
-    expect(cfg.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN']).toBe('tok-a');
-    expect(cfg.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN']).not.toBe('tok-b');
+    expect(cfg.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN']).toBe('subtask-tok-a');
+    expect(cfg.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN']).not.toBe(
+      'subtask-tok-b',
+    );
   });
 });
 
@@ -1944,7 +2069,13 @@ describe('Coordinator very fast prompt — scrollback detection', () => {
       Buffer.from('Welcome to Claude Code ❯ ').toString('base64'),
     );
 
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
     const task = coordinator.getTask('task-1');
@@ -1958,7 +2089,13 @@ describe('Coordinator very fast prompt — scrollback detection', () => {
       Buffer.from('Loading… please wait').toString('base64'),
     );
 
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
     const task = coordinator.getTask('task-1');
@@ -1968,7 +2105,13 @@ describe('Coordinator very fast prompt — scrollback detection', () => {
   it('null scrollback (agent not yet started) leaves task in running state', async () => {
     mockGetAgentScrollback.mockReturnValueOnce(null);
 
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
     const task = coordinator.getTask('task-1');
@@ -2014,7 +2157,13 @@ describe('Coordinator close with active sub-tasks', () => {
       branch_name: 'task/test',
       worktree_path: '/tmp/test',
     });
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
     const task = coordinator.getTask('task-1');
@@ -2188,7 +2337,13 @@ describe('Coordinator removeCoordinatedTask', () => {
   });
 
   it('deletes MCP config file when mcpConfigPath is set', async () => {
-    coordinator.setMCPServerInfo('coord-1', 'http://localhost:3001', 'tok', '/path/server.js');
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'tok',
+      'subtask-tok',
+      '/path/server.js',
+    );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const configPath = coordinator.getTask('task-1')?.mcpConfigPath;
     expect(configPath).toBeDefined();

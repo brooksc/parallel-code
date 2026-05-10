@@ -253,8 +253,13 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     dockerImage: dockerImage ?? undefined,
     githubUrl,
     coordinatorMode: opts.coordinatorMode || undefined,
+    propagateSkipPermissions: opts.coordinatorMode
+      ? (opts.propagateSkipPermissions ?? false)
+      : undefined,
     controlledBy: opts.coordinatorMode ? 'coordinator' : undefined,
     mcpConfigPath,
+    // Coordinator tasks call StartMCPServer before entering the store, so MCP is ready immediately.
+    mcpReady: opts.coordinatorMode ? true : undefined,
   };
 
   const agent: Agent = {
@@ -404,15 +409,17 @@ export async function closeTask(taskId: string): Promise<void> {
     // Done after kills (not before) so a failed close leaves the backend registered
     // and the coordinator agent can still make tool calls until it's actually gone.
     if (task.coordinatorMode) {
-      invoke(IPC.MCP_CoordinatorDeregistered, { coordinatorTaskId: taskId }).catch(() => {});
+      await invoke(IPC.MCP_CoordinatorDeregistered, { coordinatorTaskId: taskId }).catch((err) =>
+        console.warn('[MCP] Failed to deregister coordinator:', err),
+      );
     }
 
     // Notify backend to clean up this task from its coordinator's state map.
     if (task.coordinatedBy) {
-      invoke(IPC.MCP_CoordinatedTaskClosed, {
+      await invoke(IPC.MCP_CoordinatedTaskClosed, {
         taskId,
         coordinatorTaskId: task.coordinatedBy,
-      }).catch(() => {});
+      }).catch((err) => console.warn('[MCP] Failed to notify coordinator of task close:', err));
     }
 
     // Backend cleanup succeeded — detach children then remove coordinator from UI.
@@ -553,10 +560,10 @@ export async function mergeTask(
     // Notify backend coordinator to remove this task from its state map so MCP
     // tools (list_tasks, send_prompt, etc.) don't operate on a phantom task.
     if (task.coordinatedBy) {
-      invoke(IPC.MCP_CoordinatedTaskClosed, {
+      await invoke(IPC.MCP_CoordinatedTaskClosed, {
         taskId,
         coordinatorTaskId: task.coordinatedBy,
-      }).catch(() => {});
+      }).catch((err) => console.warn('[MCP] Failed to notify coordinator of task close:', err));
     }
     removeTaskFromStore(taskId, [...agentIds, ...shellAgentIds]);
   }
@@ -997,6 +1004,8 @@ export function initMCPListeners(): () => void {
         mcpConfigPath: evt.mcpConfigPath,
         preambleFileExistedBefore: evt.preambleFileExistedBefore,
         skipPermissions: evt.skipPermissions ?? false,
+        // MCP server is already running when the task is created mid-session.
+        mcpReady: true,
       };
 
       const cmd = evt.agentCommand ?? 'claude';
@@ -1162,11 +1171,21 @@ export function initMCPListeners(): () => void {
         if (evt.needsReview) setStore('tasks', evt.taskId, 'needsReview', true);
       }
     }),
+    window.electron.ipcRenderer.on(IPC.MCP_TaskHydrated, (data: unknown) => {
+      const evt = data as { taskId: string };
+      if (store.tasks[evt.taskId]) {
+        setStore('tasks', evt.taskId, 'mcpReady', true);
+      }
+    }),
   );
 
   return () => {
     for (const cleanup of cleanups) cleanup();
   };
+}
+
+export function markTaskMcpReady(taskId: string): void {
+  if (store.tasks[taskId]) setStore('tasks', taskId, 'mcpReady', true);
 }
 
 export function setTaskControl(taskId: string, who: 'coordinator' | 'human'): void {

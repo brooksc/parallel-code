@@ -108,6 +108,7 @@ export async function saveState(): Promise<void> {
       planFileName: task.planFileName,
       stepsEnabled: task.stepsEnabled,
       coordinatorMode: task.coordinatorMode,
+      propagateSkipPermissions: task.propagateSkipPermissions,
       coordinatedBy: task.coordinatedBy,
       controlledBy: task.controlledBy,
       mcpConfigPath: task.mcpConfigPath,
@@ -149,6 +150,7 @@ export async function saveState(): Promise<void> {
       stepsEnabled: task.stepsEnabled,
       collapsed: true,
       coordinatorMode: task.coordinatorMode,
+      propagateSkipPermissions: task.propagateSkipPermissions,
       coordinatedBy: task.coordinatedBy,
       controlledBy: task.controlledBy,
       mcpConfigPath: task.mcpConfigPath,
@@ -519,6 +521,7 @@ export async function loadState(): Promise<void> {
           planFileName: pt.planFileName,
           stepsEnabled: pt.stepsEnabled,
           coordinatorMode: pt.coordinatorMode,
+          propagateSkipPermissions: pt.propagateSkipPermissions,
           coordinatedBy: pt.coordinatedBy,
           controlledBy:
             pt.controlledBy ?? (pt.coordinatorMode || pt.coordinatedBy ? 'coordinator' : undefined),
@@ -606,6 +609,7 @@ export async function loadState(): Promise<void> {
           collapsed: true,
           savedAgentDef: agentDef ?? undefined,
           coordinatorMode: pt.coordinatorMode,
+          propagateSkipPermissions: pt.propagateSkipPermissions,
           coordinatedBy: pt.coordinatedBy,
           controlledBy:
             pt.controlledBy ?? (pt.coordinatorMode || pt.coordinatedBy ? 'coordinator' : undefined),
