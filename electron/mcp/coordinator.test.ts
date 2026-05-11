@@ -62,6 +62,14 @@ const mockCreateBackendTask = vi.fn().mockResolvedValue({
   worktree_path: '/tmp/test',
 });
 
+const mockAtomicWriteFileSync = vi.fn();
+const mockAtomicWriteFile = vi.fn().mockResolvedValue(undefined);
+
+vi.mock('./atomic.js', () => ({
+  atomicWriteFileSync: mockAtomicWriteFileSync,
+  atomicWriteFile: mockAtomicWriteFile,
+}));
+
 vi.mock('./prompt-detect.js', () => ({
   stripAnsi: (s: string) => s,
   chunkContainsAgentPrompt: (s: string) => s.includes('❯'),
@@ -105,6 +113,7 @@ vi.mock('../ipc/channels.js', () => ({
 
 // Import after mocks
 const { Coordinator } = await import('./coordinator.js');
+const { removePreambleBlock } = await import('./preamble.js');
 
 // --- helpers ---
 function getExitHandler(): (agentId: string, data: unknown) => void {
@@ -1226,7 +1235,7 @@ describe('Coordinator sub-task MCP config isolation', () => {
     await coordinator.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-1' });
     await coordinator.createTask({ name: 'task-b', prompt: 'do b', coordinatorTaskId: 'coord-1' });
 
-    const configWrites = mockFsWriteFile.mock.calls.filter((c) =>
+    const configWrites = mockAtomicWriteFile.mock.calls.filter((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrites).toHaveLength(2);
@@ -1264,7 +1273,7 @@ describe('Coordinator sub-task MCP config isolation', () => {
     await coordinator.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-1' });
     await coordinator.createTask({ name: 'task-b', prompt: 'do b', coordinatorTaskId: 'coord-1' });
 
-    const configPaths = mockFsWriteFile.mock.calls
+    const configPaths = mockAtomicWriteFile.mock.calls
       .filter((c) => (c[0] as string).includes('parallel-code-subtask-'))
       .map((c) => c[0] as string);
 
@@ -1304,7 +1313,7 @@ describe('Coordinator MCP config restart rewrite', () => {
     const task = coordinator.getTask('task-1');
     expect(task?.mcpConfigPath).toBeDefined();
 
-    const initialWrite = mockFsWriteFile.mock.calls.find((c) =>
+    const initialWrite = mockAtomicWriteFile.mock.calls.find((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(initialWrite).toBeDefined();
@@ -1318,7 +1327,7 @@ describe('Coordinator MCP config restart rewrite', () => {
     expect(initialConfig.mcpServers['parallel-code'].args).toContain('http://localhost:3001');
 
     // Simulate coordinator restart with new port/token
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://localhost:3002',
@@ -1327,7 +1336,7 @@ describe('Coordinator MCP config restart rewrite', () => {
       '/path/to/server.js',
     );
 
-    const rewriteCall = mockWriteFileSync.mock.calls.find((c) =>
+    const rewriteCall = mockAtomicWriteFileSync.mock.calls.find((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(rewriteCall).toBeDefined();
@@ -1358,7 +1367,7 @@ describe('Coordinator MCP config restart rewrite', () => {
       'old-token',
       '/path/to/server.js',
     );
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://localhost:3002',
@@ -1367,7 +1376,7 @@ describe('Coordinator MCP config restart rewrite', () => {
       '/path/to/server.js',
     );
 
-    const configWrites = mockWriteFileSync.mock.calls.filter((c) =>
+    const configWrites = mockAtomicWriteFileSync.mock.calls.filter((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrites).toHaveLength(0);
@@ -1388,7 +1397,7 @@ describe('Coordinator MCP config restart rewrite', () => {
     await coordinator.createTask({ name: 'task-a', prompt: 'do', coordinatorTaskId: 'coord-1' });
     await coordinator.createTask({ name: 'task-b', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://localhost:3002',
@@ -1397,7 +1406,7 @@ describe('Coordinator MCP config restart rewrite', () => {
       '/path/to/server.js',
     );
 
-    const rewrites = mockWriteFileSync.mock.calls.filter((c) =>
+    const rewrites = mockAtomicWriteFileSync.mock.calls.filter((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(rewrites).toHaveLength(2);
@@ -1416,7 +1425,7 @@ describe('Coordinator MCP config restart rewrite', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     expect(coordinator.getTask('task-1')?.mcpConfigPath).toBeUndefined();
 
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://localhost:3002',
@@ -1425,7 +1434,7 @@ describe('Coordinator MCP config restart rewrite', () => {
       '/path/to/server.js',
     );
 
-    const configWrites = mockWriteFileSync.mock.calls.filter((c) =>
+    const configWrites = mockAtomicWriteFileSync.mock.calls.filter((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrites).toHaveLength(0);
@@ -1461,7 +1470,7 @@ describe('Coordinator two-class token — subtask configs use subtaskToken', () 
     );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
-    const configWrite = mockFsWriteFile.mock.calls.find((c) =>
+    const configWrite = mockAtomicWriteFile.mock.calls.find((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrite).toBeDefined();
@@ -1484,7 +1493,7 @@ describe('Coordinator two-class token — subtask configs use subtaskToken', () 
       '/path/server.js',
     );
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
 
     coordinator.setMCPServerInfo(
       'coord-1',
@@ -1494,7 +1503,7 @@ describe('Coordinator two-class token — subtask configs use subtaskToken', () 
       '/path/server.js',
     );
 
-    const rewrite = mockWriteFileSync.mock.calls.find((c) =>
+    const rewrite = mockAtomicWriteFileSync.mock.calls.find((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(rewrite).toBeDefined();
@@ -1977,7 +1986,7 @@ describe('Coordinator setMCPServerInfo — token rotation', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
 
     // Clear write calls from task creation
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
 
     // Rotate to a new token
     coordinator.setMCPServerInfo(
@@ -1989,7 +1998,7 @@ describe('Coordinator setMCPServerInfo — token rotation', () => {
     );
 
     // At least one writeFileSync call should have the new token
-    const rewriteCalls = mockWriteFileSync.mock.calls;
+    const rewriteCalls = mockAtomicWriteFileSync.mock.calls;
     const hasNewToken = rewriteCalls.some((c) => {
       const content = typeof c[1] === 'string' ? c[1] : '';
       return content.includes('new-token-xyz');
@@ -2007,7 +2016,7 @@ describe('Coordinator setMCPServerInfo — token rotation', () => {
   });
 
   it('setMCPServerInfo with no existing tasks writes nothing', () => {
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
     coordinator.setMCPServerInfo(
       'coord-1',
       'http://127.0.0.1:3001',
@@ -2016,7 +2025,7 @@ describe('Coordinator setMCPServerInfo — token rotation', () => {
       '/path/mcp.cjs',
     );
     // No tasks yet — nothing to rewrite
-    const rewriteCalls = mockWriteFileSync.mock.calls.filter(
+    const rewriteCalls = mockAtomicWriteFileSync.mock.calls.filter(
       (c) => typeof c[1] === 'string' && c[1].includes('new-token'),
     );
     expect(rewriteCalls).toHaveLength(0);
@@ -2067,7 +2076,7 @@ describe('Multiple Docker coordinators — isolation', () => {
     );
     await coordA.createTask({ name: 'task-a', prompt: 'do a', coordinatorTaskId: 'coord-a' });
 
-    const configWrites = mockFsWriteFile.mock.calls.filter((c) =>
+    const configWrites = mockAtomicWriteFile.mock.calls.filter((c) =>
       (c[0] as string).includes('parallel-code-subtask-'),
     );
     expect(configWrites).toHaveLength(1);
@@ -2557,7 +2566,7 @@ describe('Coordinator restart round-trip integration', () => {
     const taskId = 'hydrated-restart-1';
     const configPath = join(os.tmpdir(), `parallel-code-subtask-${taskId}.json`);
 
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
     coordinator.hydrateTask({
       id: taskId,
       name: 'hydrated-task',
@@ -2570,7 +2579,7 @@ describe('Coordinator restart round-trip integration', () => {
       mcpConfigPath: configPath,
     });
 
-    const rewrite = mockWriteFileSync.mock.calls.find((c) => c[0] === configPath);
+    const rewrite = mockAtomicWriteFileSync.mock.calls.find((c) => c[0] === configPath);
     expect(rewrite).toBeDefined();
     if (!rewrite) throw new Error('expected config rewrite');
     const config = JSON.parse(rewrite[1] as string) as {
@@ -2660,7 +2669,7 @@ describe('Coordinator hydrateTask — mcpConfigPath directory scoping', () => {
     });
 
     expect(coordinator.getTask('task-traversal')?.mcpConfigPath).toBeUndefined();
-    const evilWrite = mockWriteFileSync.mock.calls.find((c) =>
+    const evilWrite = mockAtomicWriteFileSync.mock.calls.find((c) =>
       (c[0] as string).includes('etc/passwd'),
     );
     expect(evilWrite).toBeUndefined();
@@ -2687,7 +2696,7 @@ describe('Coordinator hydrateTask — mcpConfigPath directory scoping', () => {
     const taskId = 'task-valid-host';
     const validPath = join(os.tmpdir(), `parallel-code-subtask-${taskId}.json`);
 
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
     coordinator.hydrateTask({
       id: taskId,
       name: 'valid-host',
@@ -2701,7 +2710,7 @@ describe('Coordinator hydrateTask — mcpConfigPath directory scoping', () => {
     });
 
     expect(coordinator.getTask(taskId)?.mcpConfigPath).toBe(validPath);
-    const configWrite = mockWriteFileSync.mock.calls.find((c) => c[0] === validPath);
+    const configWrite = mockAtomicWriteFileSync.mock.calls.find((c) => c[0] === validPath);
     expect(configWrite).toBeDefined();
   });
 
@@ -2710,7 +2719,7 @@ describe('Coordinator hydrateTask — mcpConfigPath directory scoping', () => {
     const serverPath = '/srv/app/.parallel-code/mcp-server.js';
     const dockerPath = join(dirname(serverPath), `subtask-${taskId}.json`);
 
-    mockWriteFileSync.mockClear();
+    mockAtomicWriteFileSync.mockClear();
     coordinator.hydrateTask({
       id: taskId,
       name: 'valid-docker',
@@ -2724,7 +2733,7 @@ describe('Coordinator hydrateTask — mcpConfigPath directory scoping', () => {
     });
 
     expect(coordinator.getTask(taskId)?.mcpConfigPath).toBe(dockerPath);
-    const configWrite = mockWriteFileSync.mock.calls.find((c) => c[0] === dockerPath);
+    const configWrite = mockAtomicWriteFileSync.mock.calls.find((c) => c[0] === dockerPath);
     expect(configWrite).toBeDefined();
   });
 
@@ -3006,17 +3015,7 @@ describe('Coordinator waitForSignalDone — requestId replay after transport fai
 // ─── removePreambleBlock unit tests ──────────────────────────────────────────
 
 describe('Coordinator removePreambleBlock', () => {
-  // Access the private method via casting for unit testing
-  let coordinator: InstanceType<typeof Coordinator>;
-  let strip: (content: string) => string;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockExistsSync.mockReturnValue(false);
-    coordinator = new Coordinator();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    strip = (coordinator as any).removePreambleBlock.bind(coordinator);
-  });
+  const strip = removePreambleBlock;
 
   const BLOCK = '<sub-task-mode>\nrules\n</sub-task-mode>';
 
@@ -3317,7 +3316,7 @@ describe('Coordinator deregisterCoordinator — .mcp.json cleanup', () => {
 
     coordinator.deregisterCoordinator('coord-1');
 
-    const writeCall = mockWriteFileSync.mock.calls.find(
+    const writeCall = mockAtomicWriteFileSync.mock.calls.find(
       (c: unknown[]) => c[0] === '/tmp/.mcp.json',
     );
     expect(writeCall).toBeDefined();
@@ -3340,7 +3339,7 @@ describe('Coordinator deregisterCoordinator — .mcp.json cleanup', () => {
     coordinator.deregisterCoordinator('coord-1');
 
     expect(mockUnlinkSync).toHaveBeenCalledWith('/tmp/.mcp.json');
-    const writeCall = mockWriteFileSync.mock.calls.find(
+    const writeCall = mockAtomicWriteFileSync.mock.calls.find(
       (c: unknown[]) => c[0] === '/tmp/.mcp.json',
     );
     expect(writeCall).toBeUndefined();
@@ -3351,7 +3350,7 @@ describe('Coordinator deregisterCoordinator — .mcp.json cleanup', () => {
 
     coordinator.deregisterCoordinator('coord-1');
 
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockAtomicWriteFileSync).not.toHaveBeenCalled();
     expect(mockUnlinkSync).not.toHaveBeenCalled();
   });
 
@@ -3367,7 +3366,7 @@ describe('Coordinator deregisterCoordinator — .mcp.json cleanup', () => {
     coordinator.deregisterCoordinator('coord-1');
 
     // File should be rewritten (not deleted) because someOtherKey remains
-    const writeCall = mockWriteFileSync.mock.calls.find(
+    const writeCall = mockAtomicWriteFileSync.mock.calls.find(
       (c: unknown[]) => c[0] === '/tmp/.mcp.json',
     );
     expect(writeCall).toBeDefined();

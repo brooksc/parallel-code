@@ -5,7 +5,7 @@
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { writeFileSync, unlinkSync, readFileSync, existsSync } from 'fs';
+import { unlinkSync, readFileSync, existsSync } from 'fs';
 import {
   readFile as fsReadFile,
   writeFile as fsWriteFile,
@@ -17,6 +17,14 @@ import { join, dirname } from 'path';
 import os from 'os';
 import { getSubTaskMcpConfigPath } from './config.js';
 import { validateBranchName } from './validation.js';
+import { atomicWriteFileSync, atomicWriteFile } from './atomic.js';
+import { ReplayCache } from './replay-cache.js';
+import {
+  detectPreambleFiles,
+  filterDiffSections,
+  buildNormalizedPreambleFileDiff,
+  stripPreambleFromBranch,
+} from './preamble.js';
 
 const execAsync = promisify(execFile);
 import type { BrowserWindow } from 'electron';
@@ -68,12 +76,7 @@ export class Coordinator {
   private blockedByHumanControl = new Set<string>();
   private closingTaskIds = new Set<string>();
   private activeSignalWaitCounts = new Map<string, number>();
-  // Caches the last-delivered wait_for_signal_done result keyed by requestId so a retry
-  // after a transport failure returns the already-consumed result instead of blocking.
-  private recentlyDelivered = new Map<
-    string,
-    { result: WaitForSignalDoneResult; expiresAt: number }
-  >();
+  private recentlyDelivered = new ReplayCache<WaitForSignalDoneResult>();
   private win: BrowserWindow | null = null;
   private projectRoot: string | null = null;
   private projectId: string | null = null;
@@ -213,6 +216,7 @@ export class Coordinator {
     const state = this.coordinators.get(coordinatorTaskId);
     if (state) {
       state.mcpServerInfo = { serverUrl, token, subtaskToken, serverPath };
+      state.lifecycle = 'ready';
     }
     // Rewrite config files only for sub-tasks owned by this coordinator so a
     // second coordinator starting up does not overwrite the first's task configs.
@@ -229,7 +233,7 @@ export class Coordinator {
           },
         },
       };
-      writeFileSync(task.mcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
+      atomicWriteFileSync(task.mcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
     }
   }
 
@@ -590,7 +594,7 @@ export class Coordinator {
           },
         };
         const configPath = getSubTaskMcpConfigPath(dockerContainerName, serverPath, task.id);
-        await fsWriteFile(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
+        await atomicWriteFile(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
         subTaskMcpConfigPath = configPath;
         task.mcpConfigPath = configPath;
       }
@@ -812,17 +816,17 @@ export class Coordinator {
     // For preamble-bearing files: strip the injected block and show only real sub-task edits.
     // Files with no real changes beyond the preamble are excluded entirely.
     // Files with real changes (before or after the preamble block) include a normalized diff.
-    const preambleFiles = await this.detectPreambleFiles(task.worktreePath);
+    const preambleFiles = await detectPreambleFiles(task.worktreePath);
 
     let filteredFiles = files;
     let filteredDiff = diff;
     if (preambleFiles.size > 0) {
       // Drop preamble file sections from the raw diff; we'll add normalized sections below.
-      filteredDiff = this.filterDiffSections(diff, preambleFiles);
+      filteredDiff = filterDiffSections(diff, preambleFiles);
       // For each preamble file, generate a diff that excludes the injected block.
       const normalizedSections = await Promise.all(
         [...preambleFiles].map((f) =>
-          this.buildNormalizedPreambleFileDiff(f, task.worktreePath, baseSha),
+          buildNormalizedPreambleFileDiff(f, task.worktreePath, baseSha),
         ),
       );
       const preambleFilesWithChanges = new Set<string>();
@@ -846,154 +850,6 @@ export class Coordinator {
       };
     }
     return { files: filteredFiles, diff: filteredDiff };
-  }
-
-  private async detectPreambleFiles(worktreePath: string): Promise<Set<string>> {
-    const PREAMBLE_START = '<sub-task-mode>';
-    const result = new Set<string>();
-    await Promise.all(
-      ['AGENTS.md', 'GEMINI.md', '.agent.md'].map(async (filename) => {
-        try {
-          const content = await fsReadFile(join(worktreePath, filename), 'utf8');
-          if (content.includes(PREAMBLE_START)) result.add(filename);
-        } catch {
-          /* file absent or unreadable */
-        }
-      }),
-    );
-    const settingsRelPath = '.claude/settings.local.json';
-    try {
-      const raw = await fsReadFile(join(worktreePath, settingsRelPath), 'utf8');
-      const s = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof s.systemPrompt === 'string' && s.systemPrompt.includes(PREAMBLE_START)) {
-        result.add(settingsRelPath);
-      }
-    } catch {
-      /* file absent, unreadable, or malformed */
-    }
-    return result;
-  }
-
-  private filterDiffSections(diff: string, excludeFiles: Set<string>): string {
-    // Split on unified diff section boundaries (each starts with "diff --git a/<f> b/<f>")
-    // and drop sections whose file path is in excludeFiles.
-    const sections = diff.split(/(?=^diff --git )/m);
-    return sections
-      .filter((section) => {
-        const match = /^diff --git a\/(.+?) b\//.exec(section);
-        return !match || !excludeFiles.has(match[1]);
-      })
-      .join('');
-  }
-
-  // Remove the injected <sub-task-mode>...</sub-task-mode> block and its surrounding
-  // blank-line separators. Content before and after the block is preserved.
-  private removePreambleBlock(content: string): string {
-    const START = '<sub-task-mode>';
-    const END = '</sub-task-mode>';
-    const startIdx = content.indexOf(START);
-    if (startIdx === -1) return content;
-    const endIdx = content.indexOf(END, startIdx);
-    if (endIdx === -1) {
-      // Malformed: end marker missing — return content unchanged to avoid data loss.
-      // A malformed block is a bug in the injector; don't silently delete content.
-      return content;
-    }
-    const blockEnd = endIdx + END.length;
-    const before = content.slice(0, startIdx).replace(/\n\n$/, '');
-    const after = content.slice(blockEnd).replace(/^\n\n/, '');
-    if (!before && !after) return '';
-    if (!before) return after.replace(/^\n/, '');
-    if (!after) return before;
-    return `${before}\n\n${after}`;
-  }
-
-  // Generate a git diff section showing only non-preamble changes to a preamble-bearing file.
-  // Returns empty string if the file has no real changes beyond the injected block.
-  private async buildNormalizedPreambleFileDiff(
-    filename: string,
-    worktreePath: string,
-    baseSha: string,
-  ): Promise<string> {
-    const filePath = join(worktreePath, filename);
-    if (!existsSync(filePath)) return '';
-    let worktreeContent: string;
-    try {
-      worktreeContent = readFileSync(filePath, 'utf8');
-    } catch {
-      return '';
-    }
-
-    let normalizedContent: string;
-    if (filename === '.claude/settings.local.json') {
-      try {
-        const s = JSON.parse(worktreeContent) as Record<string, unknown>;
-        if (typeof s.systemPrompt === 'string') {
-          const stripped = this.removePreambleBlock(s.systemPrompt);
-          if (stripped.trim()) {
-            s.systemPrompt = stripped;
-          } else {
-            delete s.systemPrompt;
-          }
-        }
-        normalizedContent = JSON.stringify(s, null, 2);
-      } catch {
-        return '';
-      }
-    } else {
-      normalizedContent = this.removePreambleBlock(worktreeContent);
-    }
-
-    // Get base content using the same SHA already computed by getTaskDiff/getDiffBaseSha.
-    let baseContent = '';
-    try {
-      const { stdout } = await execAsync('git', ['show', `${baseSha}:${filename}`], {
-        cwd: worktreePath,
-      });
-      baseContent = stdout;
-    } catch {
-      baseContent = '';
-    }
-
-    if (normalizedContent === baseContent) return '';
-
-    // Write temp files and diff them.
-    const id = randomUUID();
-    const tmpBase = join(os.tmpdir(), `parallel-code-base-${id}`);
-    const tmpNorm = join(os.tmpdir(), `parallel-code-norm-${id}`);
-    try {
-      writeFileSync(tmpBase, baseContent);
-      writeFileSync(tmpNorm, normalizedContent);
-      let diffOut = '';
-      try {
-        const { stdout } = await execAsync('git', ['diff', '--no-index', '-U3', tmpBase, tmpNorm]);
-        diffOut = stdout;
-      } catch (e: unknown) {
-        const err = e as { stdout?: string; code?: number };
-        // Exit code 1 means files differ — that's the expected path for non-empty diffs.
-        if (err.code === 1 && typeof err.stdout === 'string') diffOut = err.stdout;
-      }
-      if (!diffOut) return '';
-      // Replace temp file paths with the canonical filename so it looks like a normal git diff.
-      const baseSuffix = tmpBase.replace(/^\//, '');
-      const normSuffix = tmpNorm.replace(/^\//, '');
-      return diffOut
-        .split(`a/${baseSuffix}`)
-        .join(`a/${filename}`)
-        .split(`b/${normSuffix}`)
-        .join(`b/${filename}`);
-    } finally {
-      try {
-        unlinkSync(tmpBase);
-      } catch {
-        /* ignore */
-      }
-      try {
-        unlinkSync(tmpNorm);
-      } catch {
-        /* ignore */
-      }
-    }
   }
 
   getTaskOutput(taskId: string): string {
@@ -1021,7 +877,7 @@ export class Coordinator {
     // Strip injected preamble files before staging so they don't land in history,
     // then auto-commit any uncommitted changes in the task worktree before merging.
     if (task.worktreePath) {
-      await this.stripPreambleFromBranch(task);
+      await stripPreambleFromBranch(task);
       try {
         await execAsync('git', ['add', '-A'], { cwd: task.worktreePath });
         await execAsync('git', ['commit', '-m', 'WIP: auto-commit before merge'], {
@@ -1124,57 +980,6 @@ export class Coordinator {
     this.tasks.delete(taskId);
     this.blockedByHumanControl.delete(taskId);
     this.controlMap.delete(taskId);
-  }
-
-  private async stripPreambleFromBranch(task: CoordinatedTask): Promise<void> {
-    const PREAMBLE_START = '<sub-task-mode>';
-    const worktreePath = task.worktreePath;
-
-    await Promise.all(
-      ['AGENTS.md', 'GEMINI.md', '.agent.md'].map(async (filename) => {
-        const filePath = join(worktreePath, filename);
-        let content: string;
-        try {
-          content = await fsReadFile(filePath, 'utf8');
-        } catch {
-          return;
-        }
-        if (!content.includes(PREAMBLE_START)) return;
-        const stripped = this.removePreambleBlock(content);
-        if (stripped.trim() || task.preambleFileExistedBefore) {
-          await fsWriteFile(filePath, stripped);
-        } else {
-          await fsUnlink(filePath);
-        }
-      }),
-    );
-
-    // Claude: preamble is stored in systemPrompt inside .claude/settings.local.json.
-    const settingsPath = join(worktreePath, '.claude', 'settings.local.json');
-    try {
-      const settings = JSON.parse(await fsReadFile(settingsPath, 'utf8')) as Record<
-        string,
-        unknown
-      >;
-      if (
-        typeof settings.systemPrompt === 'string' &&
-        settings.systemPrompt.includes(PREAMBLE_START)
-      ) {
-        const stripped = this.removePreambleBlock(settings.systemPrompt);
-        if (stripped.trim()) {
-          settings.systemPrompt = stripped;
-        } else {
-          delete settings.systemPrompt;
-        }
-        if (Object.keys(settings).length === 0) {
-          await fsUnlink(settingsPath);
-        } else {
-          await fsWriteFile(settingsPath, JSON.stringify(settings, null, 2));
-        }
-      }
-    } catch {
-      /* file absent, unreadable, or malformed */
-    }
   }
 
   private async cleanupTask(taskId: string): Promise<void> {
@@ -1336,7 +1141,7 @@ export class Coordinator {
         },
       };
       try {
-        writeFileSync(safeMcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
+        atomicWriteFileSync(safeMcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
       } catch {
         /* config dir may not exist yet; setMCPServerInfo rewrite will catch it */
       }
@@ -1401,6 +1206,7 @@ export class Coordinator {
     // the values that were active when IT registered, not whatever a later coordinator sets.
     this.coordinators.set(coordinatorTaskId, {
       taskId: coordinatorTaskId,
+      lifecycle: 'starting',
       projectId,
       projectRoot: this.projectRoot ?? '',
       worktreePath: opts?.worktreePath,
@@ -1427,6 +1233,7 @@ export class Coordinator {
   deregisterCoordinator(coordinatorTaskId: string): void {
     const coordinator = this.coordinators.get(coordinatorTaskId);
     if (!coordinator) return;
+    coordinator.lifecycle = 'closing';
     if (coordinator.restageTimer) clearTimeout(coordinator.restageTimer);
     if (coordinator.pendingNotifications.length > 0 || coordinator.stagedBatches.size > 0) {
       logWarn('coordinator.notification', 'staged notification cleared', {
@@ -1456,7 +1263,7 @@ export class Coordinator {
             unlinkSync(coordinator.mcpJsonPath);
           } else {
             if (!hasServers) delete content.mcpServers;
-            writeFileSync(coordinator.mcpJsonPath, JSON.stringify(content, null, 2));
+            atomicWriteFileSync(coordinator.mcpJsonPath, JSON.stringify(content, null, 2));
           }
         }
       } catch {
@@ -1686,21 +1493,6 @@ export class Coordinator {
     }
   }
 
-  private cacheDeliveredResult(
-    coordinatorTaskId: string,
-    requestId: string,
-    result: WaitForSignalDoneResult,
-  ): void {
-    const now = Date.now();
-    for (const [key, entry] of this.recentlyDelivered) {
-      if (entry.expiresAt <= now) this.recentlyDelivered.delete(key);
-    }
-    this.recentlyDelivered.set(`${coordinatorTaskId}:${requestId}`, {
-      result,
-      expiresAt: now + 120_000,
-    });
-  }
-
   waitForSignalDone(
     coordinatorTaskId: string,
     timeoutMs = DEFAULT_WAIT_TIMEOUT_MS,
@@ -1713,8 +1505,8 @@ export class Coordinator {
     // after the HTTP response was lost before the client received it.
     // Key includes coordinatorTaskId to prevent cross-coordinator replay.
     if (requestId) {
-      const cached = this.recentlyDelivered.get(`${coordinatorTaskId}:${requestId}`);
-      if (cached && Date.now() < cached.expiresAt) return Promise.resolve(cached.result);
+      const cached = this.recentlyDelivered.get(coordinatorTaskId, requestId);
+      if (cached) return Promise.resolve(cached);
     }
     // Return immediately if there's an unconsumed signal
     for (const task of this.tasks.values()) {
@@ -1739,7 +1531,7 @@ export class Coordinator {
           signalDoneAt: task.signalDoneAt.toISOString(),
           remaining,
         };
-        if (requestId) this.cacheDeliveredResult(coordinatorTaskId, requestId, result);
+        if (requestId) this.recentlyDelivered.set(coordinatorTaskId, requestId, result);
         return Promise.resolve(result);
       }
     }
@@ -1756,7 +1548,7 @@ export class Coordinator {
 
       const wrapped = (result: WaitForSignalDoneResult) => {
         if (timerRef.value !== undefined) clearTimeout(timerRef.value);
-        if (requestId) this.cacheDeliveredResult(coordinatorTaskId, requestId, result);
+        if (requestId) this.recentlyDelivered.set(coordinatorTaskId, requestId, result);
         resolve(result);
       };
 

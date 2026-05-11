@@ -44,8 +44,11 @@ export interface PendingNotification {
   completedAt: Date;
 }
 
+export type CoordinatorLifecycle = 'starting' | 'ready' | 'closing' | 'closed';
+
 export interface CoordinatorState {
   taskId: string;
+  lifecycle: CoordinatorLifecycle;
   projectId: string;
   projectRoot: string;
   worktreePath?: string;

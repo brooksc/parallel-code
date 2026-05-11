@@ -30,6 +30,7 @@ import { startStepsWatcher, stopStepsWatcher, readStepsForWorktree } from './ste
 import { initPrChecks, startPrChecksWatcher, stopPrChecksWatcher, isPrUrl } from './pr-checks.js';
 import { readCoverageSummary } from './coverage.js';
 import { startRemoteServer, getMCPLogs } from '../remote/server.js';
+import { atomicWriteFileSync } from '../mcp/atomic.js';
 import {
   getGitIgnoredDirs,
   getMainBranch,
@@ -1361,24 +1362,64 @@ export function registerAllHandlers(win: BrowserWindow): void {
         remoteServerStartedForMcp = true;
       }
 
-      // Write temp MCP config file — use the bundled single-file MCP server
+      // Resolve the source MCP server binary path.
       const thisDir = path.dirname(fileURLToPath(import.meta.url));
-      let mcpServerPath = path.join(thisDir, '..', 'mcp-server.cjs');
-
-      // In packaged builds, asar-unpacked files live in app.asar.unpacked/
-      if (mcpServerPath.includes('/app.asar/')) {
-        mcpServerPath = mcpServerPath.replace('/app.asar/', '/app.asar.unpacked/');
+      let hostMcpServerPath = path.join(thisDir, '..', 'mcp-server.cjs');
+      if (hostMcpServerPath.includes('/app.asar/')) {
+        hostMcpServerPath = hostMcpServerPath.replace('/app.asar/', '/app.asar.unpacked/');
       }
+
+      // In Docker mode the server is copied into the worktree so the container can reach it.
+      // Compute the destination path now (pure, no side effects) so we can build mcpConfig
+      // and mergedMcpJson before committing any Docker filesystem writes.
+      const dockerMcpServerPath = args.dockerContainerName
+        ? getDockerMcpServerDestPath(args.worktreePath, args.projectRoot)
+        : undefined;
+      const mcpServerPath = dockerMcpServerPath ?? hostMcpServerPath;
+
       const serverUrl = getMCPRemoteServerUrl(remoteServer.port, args.dockerContainerName);
 
-      // Docker+coordinator: copy the MCP server script into the mounted worktree/project path
-      // so it is accessible inside the container.
-      if (args.dockerContainerName) {
-        const dockerMcpServerPath = getDockerMcpServerDestPath(args.worktreePath, args.projectRoot);
+      // Build mcpConfig and mergedMcpJson (pure computation — no filesystem or state side effects).
+      // Doing this before any Docker copy or coordinator mutation ensures that if .mcp.json
+      // merge logic ever grows fallible, Docker residue is never left behind.
+      const mcpConfig = {
+        mcpServers: {
+          'parallel-code': {
+            type: 'stdio' as const,
+            command: 'node',
+            args: [
+              mcpServerPath,
+              '--url',
+              serverUrl,
+              '--coordinator-id',
+              args.coordinatorTaskId,
+              ...(args.skipPermissions && args.propagateSkipPermissions
+                ? ['--skip-permissions']
+                : []),
+            ],
+            env: { PARALLEL_CODE_MCP_TOKEN: remoteServer.token },
+          },
+        },
+      };
+
+      const configJson = JSON.stringify(mcpConfig, null, 2);
+
+      // Merge mcpConfig into the pre-validated existingMcpContent (parsed above,
+      // before any coordinator state was mutated).
+      let mergedMcpJson: string | undefined;
+      if (mcpJsonDir && worktreeMcpPath) {
+        const existingServers =
+          (existingMcpContent.mcpServers as Record<string, unknown> | undefined) ?? {};
+        existingMcpContent.mcpServers = { ...existingServers, ...mcpConfig.mcpServers };
+        mergedMcpJson = JSON.stringify(existingMcpContent, null, 2);
+      }
+
+      // All pure computation done. Now commit side effects: coordinator state mutations,
+      // Docker filesystem writes, MCP config file writes.
+      if (dockerMcpServerPath) {
         fs.mkdirSync(path.dirname(dockerMcpServerPath), { recursive: true });
-        fs.copyFileSync(mcpServerPath, dockerMcpServerPath);
-        mcpServerPath = dockerMcpServerPath;
-        coordinator.setDockerContainerName(args.coordinatorTaskId, args.dockerContainerName);
+        fs.copyFileSync(hostMcpServerPath, dockerMcpServerPath); // nosemgrep: semgrep.copyfilesync-side-effect -- all pure computation (mcpConfig, mergedMcpJson) is done above; this is correctly ordered
+        coordinator.setDockerContainerName(args.coordinatorTaskId, args.dockerContainerName ?? '');
         coordinator.setDockerImage(args.coordinatorTaskId, args.dockerImage ?? null);
         console.warn('[MCP] Docker mode: copied MCP server to', dockerMcpServerPath);
         // Keep .parallel-code/ out of git status in the sub-task worktree.
@@ -1426,38 +1467,6 @@ export function registerAllHandlers(win: BrowserWindow): void {
         args.agentArgs ?? [],
       );
 
-      const mcpConfig = {
-        mcpServers: {
-          'parallel-code': {
-            type: 'stdio' as const,
-            command: 'node',
-            args: [
-              mcpServerPath,
-              '--url',
-              serverUrl,
-              '--coordinator-id',
-              args.coordinatorTaskId,
-              ...(args.skipPermissions && args.propagateSkipPermissions
-                ? ['--skip-permissions']
-                : []),
-            ],
-            env: { PARALLEL_CODE_MCP_TOKEN: remoteServer.token },
-          },
-        },
-      };
-
-      const configJson = JSON.stringify(mcpConfig, null, 2);
-
-      // Merge mcpConfig into the pre-validated existingMcpContent (parsed above,
-      // before any coordinator state was mutated).
-      let mergedMcpJson: string | undefined;
-      if (mcpJsonDir && worktreeMcpPath) {
-        const existingServers =
-          (existingMcpContent.mcpServers as Record<string, unknown> | undefined) ?? {};
-        existingMcpContent.mcpServers = { ...existingServers, ...mcpConfig.mcpServers };
-        mergedMcpJson = JSON.stringify(existingMcpContent, null, 2);
-      }
-
       // In docker mode the coordinator agent auto-discovers .mcp.json in the project root.
       // No host-temp configPath needed.
       let configPath: string | undefined;
@@ -1466,15 +1475,14 @@ export function registerAllHandlers(win: BrowserWindow): void {
           app.getPath('temp'),
           `parallel-code-mcp-${args.coordinatorTaskId}.json`,
         );
-        fs.writeFileSync(configPath, configJson, { mode: 0o600 });
+        atomicWriteFileSync(configPath, configJson, { mode: 0o600 });
       }
 
       // Write .mcp.json for auto-discovery. Read before writing — merge only the
       // parallel-code key so we don't destroy user-defined entries. Track whether
       // we created the file so deregisterCoordinator can clean up correctly.
       if (mcpJsonDir && worktreeMcpPath && mergedMcpJson !== undefined) {
-        fs.writeFileSync(worktreeMcpPath, mergedMcpJson);
-        fs.chmodSync(worktreeMcpPath, 0o600);
+        atomicWriteFileSync(worktreeMcpPath, mergedMcpJson, { mode: 0o600 });
         coordinator.setMcpJsonInfo(args.coordinatorTaskId, worktreeMcpPath, !mcpFileExistedBefore);
 
         // Append to .git/info/exclude (local-only gitignore, not committed)
