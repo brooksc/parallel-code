@@ -4,6 +4,7 @@ import { store, setStore } from './core';
 import { setActiveTask } from './navigation';
 import { setTaskFocusedPanel } from './focus';
 import type { LookPreset } from '../lib/look';
+import type { CustomTheme } from '../lib/custom-theme';
 import type { PersistedWindowState, TaskViewportVisibility } from './types';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -75,6 +76,26 @@ export function setTerminalFont(terminalFont: string): void {
 
 export function setThemePreset(themePreset: LookPreset): void {
   setStore('themePreset', themePreset);
+}
+
+export function saveCustomTheme(theme: CustomTheme): void {
+  setStore('customThemes', theme.id, theme);
+}
+
+export function deleteCustomTheme(id: string): void {
+  setStore(
+    'customThemes',
+    produce((themes: Record<string, CustomTheme>) => {
+      delete themes[id];
+    }),
+  );
+  if (store.activeCustomThemeId === id) {
+    setStore('activeCustomThemeId', null);
+  }
+}
+
+export function activateCustomTheme(id: string | null): void {
+  setStore('activeCustomThemeId', id);
 }
 
 export function setAutoTrustFolders(autoTrustFolders: boolean): void {
