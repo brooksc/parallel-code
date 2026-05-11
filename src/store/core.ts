@@ -78,6 +78,8 @@ export const [store, setStore] = createStore<AppStore>({
   verboseLogging: false,
   coordinatorModeEnabled: false,
   coordinatorNotificationDelayMs: 60_000,
+  customThemes: {},
+  activeCustomThemeId: null,
 });
 
 type CleanupPanelStore = Pick<
