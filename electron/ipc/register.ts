@@ -80,6 +80,7 @@ import {
 import { warn as logWarn } from '../log.js';
 import { getMCPRemoteServerUrl, detectStaleDockerMCPUrl } from '../mcp/config.js';
 import { validateBranchName as sharedValidateBranchName } from '../mcp/validation.js';
+import { redactServerUrl } from '../remote/server.js';
 
 export function selectMcpJsonDir(worktreePath: string | undefined, projectRoot: string): string {
   return worktreePath ?? projectRoot;
@@ -1027,12 +1028,13 @@ export function registerAllHandlers(win: BrowserWindow): void {
         url: remoteServer.url,
         wifiUrl: remoteServer.wifiUrl,
         tailscaleUrl: remoteServer.tailscaleUrl,
-        token: remoteServer.token,
         port: remoteServer.port,
       };
 
     const thisDir = path.dirname(fileURLToPath(import.meta.url));
     const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
+    // Remote access is an explicit user action — bind to all interfaces so WiFi/Tailscale clients
+    // can reach the SPA. Coordinator MCP-only mode uses 127.0.0.1 by default.
     remoteServer = await startRemoteServer({
       port: args.port ?? 7777,
       host: '0.0.0.0',
@@ -1052,7 +1054,6 @@ export function registerAllHandlers(win: BrowserWindow): void {
       url: remoteServer.url,
       wifiUrl: remoteServer.wifiUrl,
       tailscaleUrl: remoteServer.tailscaleUrl,
-      token: remoteServer.token,
       port: remoteServer.port,
     };
   });
@@ -1083,7 +1084,6 @@ export function registerAllHandlers(win: BrowserWindow): void {
       url: remoteServer.url,
       wifiUrl: remoteServer.wifiUrl,
       tailscaleUrl: remoteServer.tailscaleUrl,
-      token: remoteServer.token,
       port: remoteServer.port,
     };
   });
@@ -1221,6 +1221,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
         assertString(args.projectId, 'projectId');
         validatePath(args.projectRoot, 'projectRoot');
         assertString(args.branchName, 'branchName');
+        sharedValidateBranchName(args.branchName, 'branchName');
+        if (args.baseBranch !== undefined) sharedValidateBranchName(args.baseBranch, 'baseBranch');
         validatePath(args.worktreePath, 'worktreePath');
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
         coordinator?.hydrateTask({
@@ -1340,8 +1342,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
       if (!remoteServer) {
         const thisDir = path.dirname(fileURLToPath(import.meta.url));
         const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
+        // Docker mode requires 0.0.0.0 so the agent inside the container can reach the host.
+        // Without Docker, bind to loopback — sub-agents are local processes.
         remoteServer = await startRemoteServerOnFreePort(7777, 7800, {
-          host: '0.0.0.0',
+          host: args.dockerContainerName ? '0.0.0.0' : '127.0.0.1',
           staticDir: distRemote,
           getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
           getAgentStatus: (agentId: string) => {
@@ -1516,12 +1520,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
         console.warn('[MCP] Config written to:', configPath);
       }
       console.warn('[MCP] Server path:', mcpServerPath);
-      console.warn('[MCP] Remote URL:', serverUrl);
+      console.warn('[MCP] Remote URL:', redactServerUrl(serverUrl));
 
       return {
         configPath,
         serverUrl,
-        token: remoteServer.token,
         port: remoteServer.port,
       };
     },
@@ -1542,7 +1545,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
       remoteRunning,
       coordinatorRoutesAttached: coordinator !== null,
       coordinatorRegistered: coordinator?.hasActiveCoordinator() ?? false,
-      serverUrl: remoteServer?.url ?? null,
+      serverUrl: remoteServer ? getMCPRemoteServerUrl(remoteServer.port) : null,
       mcpConfigPath: lastMcpConfigPath,
     };
   });

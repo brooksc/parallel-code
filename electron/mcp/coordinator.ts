@@ -1387,6 +1387,10 @@ export class Coordinator {
     }
   }
 
+  isRegisteredCoordinator(coordinatorTaskId: string): boolean {
+    return this.coordinators.has(coordinatorTaskId);
+  }
+
   registerCoordinator(
     coordinatorTaskId: string,
     projectId: string,

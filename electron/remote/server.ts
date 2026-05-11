@@ -44,6 +44,17 @@ export function getMCPLogs(): MCPLogEntry[] {
   return mcpLogs.slice();
 }
 
+/** Strip the token query param before logging or displaying a server URL. */
+export function redactServerUrl(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl);
+    u.searchParams.delete('token');
+    return u.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 const MIME: Record<string, string> = {
   '.html': 'text/html',
   '.js': 'application/javascript',
@@ -58,7 +69,9 @@ interface RemoteServer {
   stop: () => Promise<void>;
   token: string;
   subtaskToken: string;
+  mobileToken: string;
   port: number;
+  /** Mobile-scoped URL (embedded mobileToken). Safe to send to the renderer. */
   url: string;
   tailscaleUrl: string | null;
   wifiUrl: string | null;
@@ -132,23 +145,27 @@ export function startRemoteServer(opts: {
 }): Promise<RemoteServer> {
   const token = randomBytes(24).toString('base64url');
   const subtaskToken = randomBytes(24).toString('base64url');
+  const mobileToken = randomBytes(24).toString('base64url');
   const ips = getNetworkIps();
 
   const tokenBuf = Buffer.from(token);
   const subtaskTokenBuf = Buffer.from(subtaskToken);
+  const mobileTokenBuf = Buffer.from(mobileToken);
 
   function classifyCandidate(
     candidate: string | null | undefined,
-  ): 'coordinator' | 'subtask' | null {
+  ): 'coordinator' | 'subtask' | 'mobile' | null {
     if (!candidate) return null;
     const buf = Buffer.from(candidate);
     if (buf.length === tokenBuf.length && timingSafeEqual(buf, tokenBuf)) return 'coordinator';
     if (buf.length === subtaskTokenBuf.length && timingSafeEqual(buf, subtaskTokenBuf))
       return 'subtask';
+    if (buf.length === mobileTokenBuf.length && timingSafeEqual(buf, mobileTokenBuf))
+      return 'mobile';
     return null;
   }
 
-  function classifyToken(req: IncomingMessage): 'coordinator' | 'subtask' | null {
+  function classifyToken(req: IncomingMessage): 'coordinator' | 'subtask' | 'mobile' | null {
     const auth = req.headers.authorization;
     if (auth?.startsWith('Bearer ')) return classifyCandidate(auth.slice(7));
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -174,6 +191,20 @@ export function startRemoteServer(opts: {
       }
       if (tokenClass === 'subtask') {
         const allowed = req.method === 'POST' && /^\/api\/tasks\/[^/]+\/done$/.test(url.pathname);
+        if (!allowed) {
+          res.writeHead(403, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'forbidden' }));
+          return;
+        }
+      }
+      // Mobile token: read-only access to agent and task status.
+      if (tokenClass === 'mobile') {
+        const allowed =
+          req.method === 'GET' &&
+          (url.pathname === '/api/agents' ||
+            /^\/api\/agents\/[^/]+$/.test(url.pathname) ||
+            url.pathname === '/api/tasks' ||
+            /^\/api\/tasks\/[^/]+$/.test(url.pathname));
         if (!allowed) {
           res.writeHead(403, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'forbidden' }));
@@ -328,10 +359,12 @@ export function startRemoteServer(opts: {
         }
 
         // Extract the coordinator ID from the header (set by MCP coordinator clients).
-        // When absent (REST/mobile callers), no scoping is applied.
+        // Only honor it if it is a registered coordinator — prevents a caller from
+        // injecting an arbitrary ID to scope against another coordinator's tasks.
         const callerCoordinatorId = (() => {
           const h = req.headers['x-coordinator-id'];
-          return typeof h === 'string' && h ? h : undefined;
+          if (typeof h !== 'string' || !h) return undefined;
+          return orch.isRegisteredCoordinator(h) ? h : undefined;
         })();
 
         const ownedByCallerOrUnscoped = (taskCoordinatorId: string): boolean =>
@@ -652,7 +685,7 @@ export function startRemoteServer(opts: {
     clientSubs.set(ws, new Map());
 
     // Support legacy URL-based auth (verifyClient accepted all connections).
-    // Subtask tokens are denied WS access — they only need REST signal_done.
+    // Only coordinator token grants WS access; subtask and mobile tokens are denied.
     if (classifyToken(req) === 'coordinator') {
       authenticatedClients.add(ws);
       const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
@@ -671,7 +704,7 @@ export function startRemoteServer(opts: {
       const msg = parseClientMessage(String(raw));
       if (!msg) return;
 
-      // Handle first-message auth. Subtask tokens are denied WS access.
+      // Handle first-message auth. Only coordinator token grants WS access.
       if (msg.type === 'auth') {
         if (classifyCandidate(msg.token) === 'coordinator') {
           authenticatedClients.add(ws);
@@ -779,21 +812,23 @@ export function startRemoteServer(opts: {
   });
 
   const primaryIp = ips.wifi ?? ips.tailscale ?? '127.0.0.1';
-  const url = `http://${primaryIp}:${opts.port}?token=${token}`;
+  // url embeds the mobileToken — safe to surface in UI. Coordinator token never leaves the main process.
+  const url = `http://${primaryIp}:${opts.port}?token=${mobileToken}`;
 
   const result: RemoteServer = {
     token,
     subtaskToken,
+    mobileToken,
     port: opts.port,
     url,
     /** Re-detect network IPs so newly connected interfaces (e.g. Tailscale) are picked up. */
     get wifiUrl() {
       const cur = getNetworkIps();
-      return cur.wifi ? `http://${cur.wifi}:${opts.port}?token=${token}` : null;
+      return cur.wifi ? `http://${cur.wifi}:${opts.port}?token=${mobileToken}` : null;
     },
     get tailscaleUrl() {
       const cur = getNetworkIps();
-      return cur.tailscale ? `http://${cur.tailscale}:${opts.port}?token=${token}` : null;
+      return cur.tailscale ? `http://${cur.tailscale}:${opts.port}?token=${mobileToken}` : null;
     },
     connectedClients: () => authenticatedClients.size,
     stop: () =>

@@ -258,6 +258,8 @@ export function spawnAgent(
     'DYLD_INSERT_LIBRARIES',
     'NODE_OPTIONS',
     'ELECTRON_RUN_AS_NODE',
+    // Prevent renderer from injecting or overriding MCP auth tokens.
+    'PARALLEL_CODE_MCP_TOKEN',
   ]);
   const safeEnvOverrides: Record<string, string> = {};
   for (const [k, v] of Object.entries(args.env ?? {})) {

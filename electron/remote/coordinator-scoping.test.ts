@@ -77,6 +77,7 @@ function makeMockCoordinator(): Coordinator {
   ]);
 
   return {
+    isRegisteredCoordinator: (id: string) => id === COORD_A || id === COORD_B,
     listTasks: () => [summaryA, summaryB],
     getTaskStatus: (id: string) => tasks.get(id) ?? null,
     sendPrompt: vi.fn().mockResolvedValue(undefined),

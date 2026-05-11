@@ -230,7 +230,6 @@ export interface PendingAction {
 
 export interface RemoteAccess {
   enabled: boolean;
-  token: string | null;
   port: number;
   url: string | null;
   wifiUrl: string | null;
