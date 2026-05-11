@@ -13,6 +13,7 @@ import {
   clearTaskGitStatusTracking,
   isAgentBracketedPasteEnabled,
   isAgentIdle,
+  isAgentBracketedPasteEnabled,
   rescheduleTaskStatusPolling,
 } from './taskStatus';
 import { recordMergedLines, recordTaskCompleted } from './completion';
@@ -58,6 +59,20 @@ const BRACKETED_PASTE_END = '\x1b[201~';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
+
+// Delay between writing pasted text and the Enter key.  Claude Code (and other
+// TUI agents) process bracketed paste asynchronously — if \r arrives before
+// the paste is fully consumed, it gets absorbed into the input buffer instead
+// of submitting it.  We scale the delay by line count so large prompts (e.g.
+// initial task prompts of 30+ lines) reliably submit.  Cap at 500ms to avoid
+// noticeable lag on normal sends.
+function pasteDelayMs(text: string): number {
+  const lines = text.split('\n').length;
+  return Math.min(500, Math.max(50, lines * 15));
 }
 
 function isAgentNotFoundError(err: unknown): boolean {
@@ -496,13 +511,12 @@ export async function sendPrompt(taskId: string, agentId: string, text: string):
   // bracketed paste, wrap only the prompt text; this avoids Codex's paste-burst
   // guard treating rapid synthetic keystrokes plus Enter as a paste.
   setTaskLastInputAt(taskId);
+  const useBracketed = isAgentBracketedPasteEnabled(agentId);
   await writeToAgentWhenReady(
     agentId,
-    isAgentBracketedPasteEnabled(agentId)
-      ? `${BRACKETED_PASTE_START}${effectiveText}${BRACKETED_PASTE_END}`
-      : effectiveText,
+    useBracketed ? `${BRACKETED_PASTE_START}${effectiveText}${BRACKETED_PASTE_END}` : effectiveText,
   );
-  await new Promise((r) => setTimeout(r, 50));
+  await new Promise((r) => setTimeout(r, pasteDelayMs(effectiveText)));
   await writeToAgentWhenReady(agentId, '\r');
   setStore('tasks', taskId, 'lastPrompt', text);
   if (task && !hasPromptedAgent) {
