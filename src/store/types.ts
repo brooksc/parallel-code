@@ -2,6 +2,7 @@ import type { AgentDef, StepEntry, WorktreeStatus } from '../ipc/types';
 import type { DockerSource } from '../lib/docker';
 import type { LookPreset } from '../lib/look';
 import type { KeyBinding } from '../lib/keybindings';
+import type { CustomTheme } from '../lib/custom-theme';
 
 /** A user override for a binding: partial key/modifiers to apply, or null to unbind. */
 export type KeybindingOverride = Partial<Pick<KeyBinding, 'key' | 'modifiers'>> | null;
@@ -180,6 +181,8 @@ export interface PersistedState {
   keybindingMigrationDismissed?: boolean;
   focusMode?: boolean;
   verboseLogging?: boolean;
+  customThemes?: Record<string, CustomTheme>;
+  activeCustomThemeId?: string | null;
 }
 
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
@@ -267,4 +270,6 @@ export interface AppStore {
   /** Per-task flag: true when the task is rendering its focus-mode two-column layout. */
   taskSplitMode: Record<string, boolean>;
   verboseLogging: boolean;
+  customThemes: Record<string, CustomTheme>;
+  activeCustomThemeId: string | null;
 }
