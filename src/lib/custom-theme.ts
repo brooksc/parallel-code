@@ -82,6 +82,7 @@ export function validateCustomTheme(input: unknown): Omit<CustomTheme, 'id'> {
 
   const rawVars = obj['vars'] as Record<string, unknown>;
   const vars: Partial<Record<CssVar, string>> = {};
+  // Non-string values are silently ignored; only string-valued known vars are kept
   for (const [key, value] of Object.entries(rawVars)) {
     if (CSS_VAR_SET.has(key) && typeof value === 'string') {
       vars[key as CssVar] = value;
