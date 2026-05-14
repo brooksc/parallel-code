@@ -17,6 +17,8 @@ import type { AgentDef } from '../ipc/types';
 import { inferDockerSource } from '../lib/docker';
 import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
 import { isLookPreset } from '../lib/look';
+import { validateCustomTheme } from '../lib/custom-theme';
+import type { CustomTheme } from '../lib/custom-theme';
 import { syncTerminalCounter } from './terminals';
 
 const RESTORED_AGENT_SPAWN_STAGGER_MS = 1_000;
@@ -119,6 +121,9 @@ export async function saveState(): Promise<void> {
     focusMode: store.focusMode || undefined,
     verboseLogging: store.verboseLogging || undefined,
     shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
+    customThemes:
+      Object.keys(store.customThemes).length > 0 ? { ...store.customThemes } : undefined,
+    activeCustomThemeId: store.activeCustomThemeId ?? undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -331,6 +336,8 @@ interface LegacyPersistedState {
   focusMode?: unknown;
   verboseLogging?: unknown;
   shareDockerAgentAuth?: unknown;
+  customThemes?: unknown;
+  activeCustomThemeId?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -473,6 +480,21 @@ export async function loadState(): Promise<void> {
 
       s.shareDockerAgentAuth = raw.shareDockerAgentAuth === true;
 
+      if (raw.customThemes && typeof raw.customThemes === 'object') {
+        const loaded: Record<string, CustomTheme> = {};
+        for (const [id, entry] of Object.entries(raw.customThemes as Record<string, unknown>)) {
+          try {
+            const validated = validateCustomTheme(entry);
+            loaded[id] = { ...validated, id };
+          } catch {
+            // skip malformed entries
+          }
+        }
+        s.customThemes = loaded;
+      }
+      if (typeof raw.activeCustomThemeId === 'string') {
+        s.activeCustomThemeId = raw.activeCustomThemeId;
+      }
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =
         typeof rawDockerImage === 'string' && rawDockerImage.trim()
