@@ -622,7 +622,9 @@ function App() {
       <div
         ref={mainRef}
         class="app-shell"
-        data-look={store.activeCustomThemeId ? `custom:${store.activeCustomThemeId}` : store.themePreset}
+        data-look={
+          store.activeCustomThemeId ? `custom:${store.activeCustomThemeId}` : store.themePreset
+        }
         data-window-border={!isMac ? 'true' : 'false'}
         data-window-focused={windowFocused() ? 'true' : 'false'}
         data-window-maximized={windowMaximized() ? 'true' : 'false'}

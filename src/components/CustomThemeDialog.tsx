@@ -96,13 +96,24 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
       panelStyle={{ 'max-width': 'calc(100vw - 32px)', padding: '24px', gap: '16px' }}
     >
       <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}>
-        <h2 id={titleId} style={{ margin: '0', 'font-size': '17px', color: theme.fg, 'font-weight': '600' }}>
+        <h2
+          id={titleId}
+          style={{ margin: '0', 'font-size': '17px', color: theme.fg, 'font-weight': '600' }}
+        >
           {props.editId ? 'Edit Theme' : 'New Custom Theme'}
         </h2>
         <button
           onClick={() => props.onClose()}
           aria-label="Close"
-          style={{ background: 'transparent', border: 'none', color: theme.fgMuted, cursor: 'pointer', 'font-size': '19px', padding: '0 4px', 'line-height': '1' }}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: theme.fgMuted,
+            cursor: 'pointer',
+            'font-size': '19px',
+            padding: '0 4px',
+            'line-height': '1',
+          }}
         >
           &times;
         </button>
@@ -110,7 +121,9 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
 
       {/* AI Prompt section */}
       <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
-        <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}>
+        <div
+          style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}
+        >
           <span style={sectionLabelStyle}>AI Prompt</span>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button
@@ -165,9 +178,11 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
             }}
           />
         </Show>
-        <p style={{ margin: '0', 'font-size': '12px', color: theme.fgSubtle, 'line-height': '1.5' }}>
-          Copy the prompt above and paste it into Claude Code (or any AI). The AI will ask about your
-          preferences and generate a YAML theme. Paste the result below.
+        <p
+          style={{ margin: '0', 'font-size': '12px', color: theme.fgSubtle, 'line-height': '1.5' }}
+        >
+          Copy the prompt above and paste it into Claude Code (or any AI). The AI will ask about
+          your preferences and generate a YAML theme. Paste the result below.
         </p>
       </div>
 
@@ -177,7 +192,9 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
         <textarea
           value={yaml()}
           onInput={(e) => setYaml(e.currentTarget.value)}
-          placeholder={'name: My Theme\nterminalBackground: "#1a1a2e"\nvars:\n  --bg: "#0f0e17"\n  --fg: "#fffffe"'}
+          placeholder={
+            'name: My Theme\nterminalBackground: "#1a1a2e"\nvars:\n  --bg: "#0f0e17"\n  --fg: "#fffffe"'
+          }
           spellcheck={false}
           style={{
             width: '100%',
@@ -210,7 +227,9 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
       </div>
 
       {/* Actions */}
-      <div style={{ display: 'flex', 'justify-content': 'flex-end', gap: '8px', 'margin-top': '4px' }}>
+      <div
+        style={{ display: 'flex', 'justify-content': 'flex-end', gap: '8px', 'margin-top': '4px' }}
+      >
         <button
           type="button"
           onClick={() => props.onClose()}

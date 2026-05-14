@@ -112,7 +112,9 @@ export function TerminalView(props: TerminalViewProps) {
       fontFamily: getTerminalFontFamily(store.terminalFont),
       theme: (() => {
         const ct = store.activeCustomThemeId ? store.customThemes[store.activeCustomThemeId] : null;
-        return ct ? getTerminalThemeForCustom(ct.terminalBackground) : getTerminalTheme(store.themePreset);
+        return ct
+          ? getTerminalThemeForCustom(ct.terminalBackground)
+          : getTerminalTheme(store.themePreset);
       })(),
       allowProposedApi: true,
       scrollback: TERMINAL_SCROLLBACK_LINES,

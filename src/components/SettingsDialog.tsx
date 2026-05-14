@@ -141,7 +141,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           'margin-bottom': '2px',
         }}
       >
-        <For each={(['general', 'themes', 'experimental'] as SettingsTab[])}>
+        <For each={['general', 'themes', 'experimental'] as SettingsTab[]}>
           {(tab) => (
             <button
               role="tab"
@@ -776,7 +776,10 @@ export function SettingsDialog(props: SettingsDialogProps) {
                   <button
                     type="button"
                     class={`settings-theme-card${!store.activeCustomThemeId && store.themePreset === preset.id ? ' active' : ''}`}
-                    onClick={() => { setThemePreset(preset.id); activateCustomTheme(null); }}
+                    onClick={() => {
+                      setThemePreset(preset.id);
+                      activateCustomTheme(null);
+                    }}
                   >
                     <span class="settings-theme-title">{preset.label}</span>
                     <span class="settings-theme-desc">{preset.description}</span>
@@ -788,11 +791,20 @@ export function SettingsDialog(props: SettingsDialogProps) {
 
           {/* Custom themes */}
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-            <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}>
+            <div
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                'justify-content': 'space-between',
+              }}
+            >
               <div style={{ ...sectionLabelStyle, 'font-weight': '600' }}>Custom Themes</div>
               <button
                 type="button"
-                onClick={() => { setEditingThemeId(null); setCustomThemeDialogOpen(true); }}
+                onClick={() => {
+                  setEditingThemeId(null);
+                  setCustomThemeDialogOpen(true);
+                }}
                 style={{
                   background: theme.accent,
                   border: 'none',
@@ -825,7 +837,8 @@ export function SettingsDialog(props: SettingsDialogProps) {
                         gap: '10px',
                         padding: '8px 12px',
                         'border-radius': '8px',
-                        background: store.activeCustomThemeId === ct.id ? theme.bgSelected : theme.bgInput,
+                        background:
+                          store.activeCustomThemeId === ct.id ? theme.bgSelected : theme.bgInput,
                         border: `1px solid ${store.activeCustomThemeId === ct.id ? theme.accent : theme.border}`,
                         cursor: 'pointer',
                       }}
@@ -841,18 +854,41 @@ export function SettingsDialog(props: SettingsDialogProps) {
                           'flex-shrink': '0',
                         }}
                       />
-                      <span style={{ flex: '1', 'font-size': '14px', color: theme.fg }}>{ct.name}</span>
+                      <span style={{ flex: '1', 'font-size': '14px', color: theme.fg }}>
+                        {ct.name}
+                      </span>
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); setEditingThemeId(ct.id); setCustomThemeDialogOpen(true); }}
-                        style={{ background: 'transparent', border: 'none', color: theme.fgMuted, cursor: 'pointer', 'font-size': '12px', padding: '2px 8px' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingThemeId(ct.id);
+                          setCustomThemeDialogOpen(true);
+                        }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: theme.fgMuted,
+                          cursor: 'pointer',
+                          'font-size': '12px',
+                          padding: '2px 8px',
+                        }}
                       >
                         Edit
                       </button>
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); deleteCustomTheme(ct.id); }}
-                        style={{ background: 'transparent', border: 'none', color: theme.error, cursor: 'pointer', 'font-size': '12px', padding: '2px 8px' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteCustomTheme(ct.id);
+                        }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: theme.error,
+                          cursor: 'pointer',
+                          'font-size': '12px',
+                          padding: '2px 8px',
+                        }}
                       >
                         Delete
                       </button>
