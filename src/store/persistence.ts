@@ -274,12 +274,9 @@ interface LegacyPersistedState {
   verboseLogging?: unknown;
   coordinatorNotificationDelayMs?: unknown;
   shareDockerAgentAuth?: unknown;
-<<<<<<< HEAD
   coordinatorModeEnabled?: unknown;
-=======
   customThemes?: unknown;
   activeCustomThemeId?: unknown;
->>>>>>> 4739cce (feat(themes): persist custom themes, fix LegacyPersistedState location)
 }
 
 export async function loadState(): Promise<void> {
@@ -430,9 +427,8 @@ export async function loadState(): Promise<void> {
 
       s.shareDockerAgentAuth = raw.shareDockerAgentAuth === true;
 
-<<<<<<< HEAD
       s.coordinatorModeEnabled = raw.coordinatorModeEnabled === true;
-=======
+
       if (raw.customThemes && typeof raw.customThemes === 'object') {
         const loaded: Record<string, CustomTheme> = {};
         for (const [id, entry] of Object.entries(raw.customThemes as Record<string, unknown>)) {
@@ -448,7 +444,6 @@ export async function loadState(): Promise<void> {
       if (typeof raw.activeCustomThemeId === 'string') {
         s.activeCustomThemeId = raw.activeCustomThemeId;
       }
->>>>>>> 4739cce (feat(themes): persist custom themes, fix LegacyPersistedState location)
 
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =
