@@ -1024,21 +1024,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
   ipcMain.handle(IPC.StartRemoteServer, async (_e, args: { port?: number }) => {
     remoteServerRequestedManually = true;
     remoteServerPendingStop = false;
-    if (remoteServer)
-      return {
-        url: remoteServer.url,
-        wifiUrl: remoteServer.wifiUrl,
-        tailscaleUrl: remoteServer.tailscaleUrl,
-        port: remoteServer.port,
-      };
 
     const thisDir = path.dirname(fileURLToPath(import.meta.url));
     const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
-    // Remote access is an explicit user action — bind to all interfaces so WiFi/Tailscale clients
-    // can reach the SPA. Coordinator MCP-only mode uses 127.0.0.1 by default.
-    remoteServer = await startRemoteServer({
-      port: args.port ?? 7777,
-      host: '0.0.0.0',
+    const remoteServerOpts = {
+      host: '0.0.0.0' as const,
       staticDir: distRemote,
       getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
       getAgentStatus: (agentId: string) => {
@@ -1050,7 +1040,33 @@ export function registerAllHandlers(win: BrowserWindow): void {
         };
       },
       getCoordinator: () => coordinator,
-    });
+    };
+
+    if (remoteServer) {
+      // If server was started for MCP-only (loopback), rebind to 0.0.0.0 so WiFi/Tailscale
+      // clients can reach it. Skip rebind while a coordinator is active — restarting the
+      // server would break ongoing MCP connections.
+      if (remoteServerStartedForMcp && !coordinator?.hasActiveCoordinator()) {
+        const prevPort = remoteServer.port;
+        await remoteServer.stop();
+        remoteServer = null;
+        remoteServerStartedForMcp = false;
+        remoteServer = await startRemoteServer({
+          port: args.port ?? prevPort,
+          ...remoteServerOpts,
+        });
+      }
+      return {
+        url: remoteServer.url,
+        wifiUrl: remoteServer.wifiUrl,
+        tailscaleUrl: remoteServer.tailscaleUrl,
+        port: remoteServer.port,
+      };
+    }
+
+    // Remote access is an explicit user action — bind to all interfaces so WiFi/Tailscale clients
+    // can reach the SPA. Coordinator MCP-only mode uses 127.0.0.1 by default.
+    remoteServer = await startRemoteServer({ port: args.port ?? 7777, ...remoteServerOpts });
     return {
       url: remoteServer.url,
       wifiUrl: remoteServer.wifiUrl,
@@ -1226,7 +1242,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
         if (args.baseBranch !== undefined) sharedValidateBranchName(args.baseBranch, 'baseBranch');
         validatePath(args.worktreePath, 'worktreePath');
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
-        coordinator?.hydrateTask({
+        if (!coordinator) throw new Error('coordinator mode not initialized');
+        coordinator.hydrateTask({
           id: args.id,
           name: args.name,
           projectId: args.projectId,
@@ -1406,10 +1423,13 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
       // Merge mcpConfig into the pre-validated existingMcpContent (parsed above,
       // before any coordinator state was mutated).
+      // Capture the previous parallel-code entry so deregistration can restore it instead of
+      // unconditionally deleting it (which would remove a user-owned entry).
+      const existingServers =
+        (existingMcpContent.mcpServers as Record<string, unknown> | undefined) ?? {};
+      const previousMcpParallelCode: unknown = existingServers['parallel-code'];
       let mergedMcpJson: string | undefined;
       if (mcpJsonDir && worktreeMcpPath) {
-        const existingServers =
-          (existingMcpContent.mcpServers as Record<string, unknown> | undefined) ?? {};
         existingMcpContent.mcpServers = { ...existingServers, ...mcpConfig.mcpServers };
         mergedMcpJson = JSON.stringify(existingMcpContent, null, 2);
       }
@@ -1483,7 +1503,12 @@ export function registerAllHandlers(win: BrowserWindow): void {
       // we created the file so deregisterCoordinator can clean up correctly.
       if (mcpJsonDir && worktreeMcpPath && mergedMcpJson !== undefined) {
         atomicWriteFileSync(worktreeMcpPath, mergedMcpJson, { mode: 0o600 });
-        coordinator.setMcpJsonInfo(args.coordinatorTaskId, worktreeMcpPath, !mcpFileExistedBefore);
+        coordinator.setMcpJsonInfo(
+          args.coordinatorTaskId,
+          worktreeMcpPath,
+          !mcpFileExistedBefore,
+          previousMcpParallelCode,
+        );
 
         // Append to .git/info/exclude (local-only gitignore, not committed)
         try {

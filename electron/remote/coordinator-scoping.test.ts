@@ -70,6 +70,12 @@ const summaryB: ApiTaskSummary = {
   coordinatorTaskId: taskB.coordinatorTaskId,
 };
 
+// Per-task done tokens, keyed by taskId
+const DONE_TOKENS: Record<string, string> = {
+  [taskA.id]: 'done-token-a',
+  [taskB.id]: 'done-token-b',
+};
+
 function makeMockCoordinator(): Coordinator {
   const tasks = new Map<string, ApiTaskDetail>([
     [taskA.id, taskA],
@@ -80,6 +86,7 @@ function makeMockCoordinator(): Coordinator {
     isRegisteredCoordinator: (id: string) => id === COORD_A || id === COORD_B,
     listTasks: () => [summaryA, summaryB],
     getTaskStatus: (id: string) => tasks.get(id) ?? null,
+    getTaskDoneToken: (id: string) => DONE_TOKENS[id] ?? null,
     sendPrompt: vi.fn().mockResolvedValue(undefined),
     waitForIdle: vi.fn().mockResolvedValue({ reason: 'idle' }),
     getTaskDiff: vi.fn().mockResolvedValue({ files: [], diff: '' }),
@@ -228,13 +235,30 @@ describe('lazy coordinator lookup — server started before coordinator exists',
     // Set coordinator
     coord = makeMockCoordinator();
 
-    // Now coordinator routes should work
-    const after = await req('GET', '/api/tasks');
+    // Now coordinator routes should work — coordinator token requires X-Coordinator-Id
+    const reqWithHeader = (method: string, path: string, body?: unknown) =>
+      new Promise<{ status: number; json: () => Promise<unknown> }>((resolve, reject) => {
+        const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-Coordinator-Id': COORD_A,
+        };
+        if (bodyStr) headers['Content-Length'] = String(Buffer.byteLength(bodyStr));
+        const r = http.request({ hostname: '127.0.0.1', port, path, method, headers }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => {
+            const raw = Buffer.concat(chunks).toString();
+            resolve({ status: res.statusCode ?? 0, json: () => Promise.resolve(JSON.parse(raw)) });
+          });
+        });
+        r.on('error', reject);
+        if (bodyStr) r.write(bodyStr);
+        r.end();
+      });
+    const after = await reqWithHeader('GET', '/api/tasks');
     expect(after.status).toBe(200);
-
-    // signal_done should work too
-    const done = await req('POST', `/api/tasks/${taskA.id}/done`, {});
-    expect(done.status).toBe(200);
   });
 });
 
@@ -251,11 +275,9 @@ describe('coordinator scoping', () => {
   });
 
   describe('list_tasks', () => {
-    it('returns all tasks when no X-Coordinator-Id header', async () => {
+    it('returns 403 when no X-Coordinator-Id header (coordinator token requires scoping)', async () => {
       const res = await get('/api/tasks');
-      expect(res.status).toBe(200);
-      const tasks = (await res.json()) as ApiTaskSummary[];
-      expect(tasks.map((t) => t.id).sort()).toEqual([taskA.id, taskB.id].sort());
+      expect(res.status).toBe(403);
     });
 
     it('returns only coordinator A tasks when X-Coordinator-Id is coordinator-a', async () => {
@@ -286,11 +308,11 @@ describe('coordinator scoping', () => {
       expect(res.status).toBe(403);
     });
 
-    it('allows unscoped caller to access any task', async () => {
+    it('returns 403 for coordinator token without X-Coordinator-Id', async () => {
       const resA = await get(`/api/tasks/${taskA.id}`);
-      expect(resA.status).toBe(200);
+      expect(resA.status).toBe(403);
       const resB = await get(`/api/tasks/${taskB.id}`);
-      expect(resB.status).toBe(200);
+      expect(resB.status).toBe(403);
     });
   });
 
@@ -366,14 +388,14 @@ describe('coordinator scoping', () => {
     });
   });
 
-  describe('signal_done (called by sub-tasks, no coordinator header)', () => {
-    it('allows signal_done without coordinator header (sub-task flow)', async () => {
+  describe('signal_done (coordinator token requires X-Coordinator-Id)', () => {
+    it('returns 403 for signal_done with coordinator token but no X-Coordinator-Id', async () => {
       const res = await post(`/api/tasks/${taskA.id}/done`, {});
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(403);
     });
 
-    it('allows signal_done for any task when no coordinator header', async () => {
-      const res = await post(`/api/tasks/${taskB.id}/done`, {});
+    it('allows signal_done when coordinator token includes valid X-Coordinator-Id', async () => {
+      const res = await post(`/api/tasks/${taskA.id}/done`, {}, COORD_A);
       expect(res.status).toBe(200);
     });
   });
@@ -400,6 +422,7 @@ describe('subtask token — restricted to signal_done only', () => {
     method: string,
     path: string,
     body?: unknown,
+    doneTokenOverride?: string,
   ): Promise<{ status: number }> {
     return new Promise((resolve, reject) => {
       const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
@@ -407,6 +430,7 @@ describe('subtask token — restricted to signal_done only', () => {
         Authorization: `Bearer ${subtaskToken}`,
         'Content-Type': 'application/json',
       };
+      if (doneTokenOverride !== undefined) headers['X-Done-Token'] = doneTokenOverride;
       if (bodyStr) headers['Content-Length'] = String(Buffer.byteLength(bodyStr));
       const req = http.request(
         { hostname: '127.0.0.1', port: serverPort, path, method, headers },
@@ -426,10 +450,30 @@ describe('subtask token — restricted to signal_done only', () => {
     expect(subtaskToken).not.toBe(serverToken);
   });
 
-  it('POST /api/tasks/{id}/done is allowed with subtaskToken', async () => {
+  it('POST /api/tasks/{id}/done is allowed with correct X-Done-Token header', async () => {
+    const res = await subtaskRequest(
+      'POST',
+      `/api/tasks/${taskA.id}/done`,
+      {},
+      DONE_TOKENS[taskA.id],
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /api/tasks/{id}/done returns 403 without X-Done-Token header', async () => {
     const res = await subtaskRequest('POST', `/api/tasks/${taskA.id}/done`, {});
-    expect(res.status).not.toBe(401);
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /api/tasks/{id}/done returns 403 when X-Done-Token is for wrong task', async () => {
+    // taskB's done token used for taskA's done route
+    const res = await subtaskRequest(
+      'POST',
+      `/api/tasks/${taskA.id}/done`,
+      {},
+      DONE_TOKENS[taskB.id],
+    );
+    expect(res.status).toBe(403);
   });
 
   it('GET /api/tasks returns 403 with subtaskToken', async () => {
@@ -457,8 +501,8 @@ describe('subtask token — restricted to signal_done only', () => {
     expect(res.status).toBe(403);
   });
 
-  it('coordinator token still has full access to task routes', async () => {
-    const res = await get('/api/tasks');
+  it('coordinator token with X-Coordinator-Id has full access to task routes', async () => {
+    const res = await get('/api/tasks', COORD_A);
     expect(res.status).toBe(200);
   });
 });

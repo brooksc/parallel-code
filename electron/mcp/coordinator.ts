@@ -2,7 +2,7 @@
 // Manages task lifecycle independently of the SolidJS renderer,
 // using existing backend primitives (pty, git, tasks).
 
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { unlinkSync, readFileSync, existsSync } from 'fs';
@@ -223,13 +223,18 @@ export class Coordinator {
     for (const task of this.tasks.values()) {
       if (task.coordinatorTaskId !== coordinatorTaskId) continue;
       if (!task.mcpConfigPath) continue;
+      // Preserve existing doneToken; generate a fresh one if not yet set (e.g. older persisted task).
+      if (!task.doneToken) task.doneToken = randomBytes(24).toString('base64url');
       const mcpConfig = {
         mcpServers: {
           'parallel-code': {
             type: 'stdio' as const,
             command: 'node',
             args: [serverPath, '--url', serverUrl, '--task-id', task.id],
-            env: { PARALLEL_CODE_MCP_TOKEN: subtaskToken },
+            env: {
+              PARALLEL_CODE_MCP_TOKEN: subtaskToken,
+              PARALLEL_CODE_MCP_DONE_TOKEN: task.doneToken,
+            },
           },
         },
       };
@@ -583,13 +588,18 @@ export class Coordinator {
       const mcpServerInfoForTask = coordinatorState.mcpServerInfo;
       if (mcpServerInfoForTask) {
         const { serverUrl, subtaskToken, serverPath } = mcpServerInfoForTask;
+        const doneToken = randomBytes(24).toString('base64url');
+        task.doneToken = doneToken;
         const mcpConfig = {
           mcpServers: {
             'parallel-code': {
               type: 'stdio' as const,
               command: 'node',
               args: [serverPath, '--url', serverUrl, '--task-id', task.id],
-              env: { PARALLEL_CODE_MCP_TOKEN: subtaskToken },
+              env: {
+                PARALLEL_CODE_MCP_TOKEN: subtaskToken,
+                PARALLEL_CODE_MCP_DONE_TOKEN: doneToken,
+              },
             },
           },
         };
@@ -733,6 +743,10 @@ export class Coordinator {
       pendingPrompt: task.pendingPrompt,
       signalDoneAt: task.signalDoneAt?.toISOString(),
     };
+  }
+
+  getTaskDoneToken(taskId: string): string | null {
+    return this.tasks.get(taskId)?.doneToken ?? null;
   }
 
   async sendPrompt(taskId: string, prompt: string): Promise<void> {
@@ -1085,6 +1099,9 @@ export class Coordinator {
     mcpConfigPath?: string;
     preambleFileExistedBefore?: boolean;
   }): void {
+    if (!this.coordinators.has(opts.coordinatorTaskId)) {
+      throw new Error(`coordinator ${opts.coordinatorTaskId} is not registered`);
+    }
     if (this.tasks.has(opts.id)) return;
     const task: CoordinatedTask = {
       id: opts.id,
@@ -1130,13 +1147,17 @@ export class Coordinator {
     // agent gets fresh credentials instead of the stale pre-restart values.
     if (safeMcpConfigPath && serverInfo) {
       const { serverUrl, subtaskToken, serverPath } = serverInfo;
+      if (!task.doneToken) task.doneToken = randomBytes(24).toString('base64url');
       const mcpConfig = {
         mcpServers: {
           'parallel-code': {
             type: 'stdio' as const,
             command: 'node',
             args: [serverPath, '--url', serverUrl, '--task-id', task.id],
-            env: { PARALLEL_CODE_MCP_TOKEN: subtaskToken },
+            env: {
+              PARALLEL_CODE_MCP_TOKEN: subtaskToken,
+              PARALLEL_CODE_MCP_DONE_TOKEN: task.doneToken,
+            },
           },
         },
       };
@@ -1222,11 +1243,17 @@ export class Coordinator {
     });
   }
 
-  setMcpJsonInfo(coordinatorTaskId: string, mcpJsonPath: string, createdMcpJson: boolean): void {
+  setMcpJsonInfo(
+    coordinatorTaskId: string,
+    mcpJsonPath: string,
+    createdMcpJson: boolean,
+    previousMcpParallelCode?: unknown,
+  ): void {
     const state = this.coordinators.get(coordinatorTaskId);
     if (state) {
       state.mcpJsonPath = mcpJsonPath;
       state.createdMcpJson = createdMcpJson;
+      state.previousMcpParallelCode = previousMcpParallelCode;
     }
   }
 
@@ -1246,9 +1273,9 @@ export class Coordinator {
       });
     }
 
-    // Clean up coordinator .mcp.json — remove only the parallel-code key.
-    // Always read current contents (user may have added keys while running),
-    // then delete the whole file only if nothing else remains.
+    // Clean up coordinator .mcp.json — restore or remove only the parallel-code key.
+    // Always read current contents (user may have added keys while running).
+    // If there was a pre-existing parallel-code entry, restore it; otherwise delete the key.
     if (coordinator.mcpJsonPath) {
       try {
         const raw = existsSync(coordinator.mcpJsonPath)
@@ -1256,7 +1283,13 @@ export class Coordinator {
           : null;
         if (raw !== null) {
           const content = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
-          if (content.mcpServers) delete content.mcpServers['parallel-code'];
+          if (content.mcpServers) {
+            if (coordinator.previousMcpParallelCode !== undefined) {
+              content.mcpServers['parallel-code'] = coordinator.previousMcpParallelCode;
+            } else {
+              delete content.mcpServers['parallel-code'];
+            }
+          }
           const hasServers = Object.keys(content.mcpServers ?? {}).length > 0;
           const hasOtherKeys = Object.keys(content).filter((k) => k !== 'mcpServers').length > 0;
           if (!hasServers && !hasOtherKeys) {

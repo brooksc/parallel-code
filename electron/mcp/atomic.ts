@@ -1,7 +1,6 @@
 import { writeFileSync, renameSync, unlinkSync } from 'fs';
 import { writeFile, rename, unlink } from 'fs/promises';
-import { join } from 'path';
-import os from 'os';
+import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
 
 /** Write `data` to `filePath` atomically: write to a temp file then rename.
@@ -11,7 +10,7 @@ export function atomicWriteFileSync(
   data: string,
   options?: { mode?: number },
 ): void {
-  const tmp = join(os.tmpdir(), `parallel-code-atomic-${randomUUID()}.tmp`);
+  const tmp = join(dirname(filePath), `.parallel-code-atomic-${randomUUID()}.tmp`);
   try {
     writeFileSync(tmp, data, options);
     renameSync(tmp, filePath);
@@ -31,7 +30,7 @@ export async function atomicWriteFile(
   data: string,
   options?: { mode?: number },
 ): Promise<void> {
-  const tmp = join(os.tmpdir(), `parallel-code-atomic-${randomUUID()}.tmp`);
+  const tmp = join(dirname(filePath), `.parallel-code-atomic-${randomUUID()}.tmp`);
   try {
     await writeFile(tmp, data, options);
     await rename(tmp, filePath);

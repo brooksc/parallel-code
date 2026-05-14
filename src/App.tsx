@@ -378,6 +378,9 @@ function App() {
     for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
       const task = store.tasks[taskId];
       if (!task?.coordinatedBy) continue;
+      // Skip if coordinator restore failed — hydrating into a broken coordinator leaves
+      // children with stale MCP wiring and misleading 'ready' status.
+      if (store.tasks[task.coordinatedBy]?.mcpStartupStatus !== 'ready') continue;
       const projectRoot = store.projects.find((p) => p.id === task.projectId)?.path;
       if (!projectRoot) continue;
       markTaskMcpPending(task.id);

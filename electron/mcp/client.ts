@@ -16,6 +16,7 @@ export class MCPClient {
     private baseUrl: string,
     private token: string,
     private coordinatorId?: string,
+    private doneToken?: string,
   ) {}
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -105,7 +106,19 @@ export class MCPClient {
   }
 
   async signalDone(taskId: string): Promise<void> {
-    await this.request<unknown>('POST', `/api/tasks/${encodeURIComponent(taskId)}/done`, {});
+    const url = `${this.baseUrl}/api/tasks/${encodeURIComponent(taskId)}/done`;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.token}`,
+      'Content-Type': 'application/json',
+    };
+    // Per-task done token is sent as X-Done-Token so the server can verify task ownership
+    // without needing per-task bearer token classification.
+    if (this.doneToken) headers['X-Done-Token'] = this.doneToken;
+    const res = await fetch(url, { method: 'POST', headers, body: '{}' });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`API POST /api/tasks/.../done failed (${res.status}): ${text}`);
+    }
   }
 
   async waitForSignalDone(

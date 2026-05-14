@@ -462,10 +462,11 @@ describe('Layer 5 — Failure modes', () => {
     }
   });
 
-  it('remote server returns 200 with correct Bearer token', async () => {
+  it('remote server returns 200 with correct Bearer token and X-Coordinator-Id', async () => {
     const port = await findFreePort();
     const mockCoordinator = {
       listTasks: () => [],
+      isRegisteredCoordinator: () => true,
     };
     const srv = await startRemoteServer({
       port,
@@ -476,7 +477,7 @@ describe('Layer 5 — Failure modes', () => {
     });
     try {
       const res = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`, {
-        headers: { Authorization: `Bearer ${srv.token}` },
+        headers: { Authorization: `Bearer ${srv.token}`, 'X-Coordinator-Id': 'test-coord' },
       });
       expect(res.status).toBe(200);
     } finally {
@@ -512,7 +513,7 @@ describe('Layer 5 — Failure modes', () => {
 describe('Layer 7 — Remote server bind address', () => {
   it('server bound to 127.0.0.1 is reachable via that address', async () => {
     const port = await findFreePort();
-    const mockCoordinator = { listTasks: () => [] };
+    const mockCoordinator = { listTasks: () => [], isRegisteredCoordinator: () => true };
     const srv = await startRemoteServer({
       port,
       staticDir: os.tmpdir(),
@@ -522,7 +523,7 @@ describe('Layer 7 — Remote server bind address', () => {
     });
     try {
       const res = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`, {
-        headers: { Authorization: `Bearer ${srv.token}` },
+        headers: { Authorization: `Bearer ${srv.token}`, 'X-Coordinator-Id': 'test-coord' },
       });
       expect(res.status).toBe(200);
     } finally {
@@ -671,7 +672,10 @@ describe('Layer 6 — Log assertions (production startup messages)', () => {
 describe('Layer 8 — Coordinator routes available after late coordinator attach', () => {
   it('coordinator routes return 503 before coordinator is set, then 200 after', async () => {
     const port = await findFreePort();
-    let currentCoordinator: { listTasks: () => unknown[] } | null = null;
+    let currentCoordinator: {
+      listTasks: () => unknown[];
+      isRegisteredCoordinator?: () => boolean;
+    } | null = null;
 
     const srv = await startRemoteServer({
       port,
@@ -689,11 +693,11 @@ describe('Layer 8 — Coordinator routes available after late coordinator attach
       expect(res1.status).toBe(503);
 
       // Simulate coordinator being attached later (e.g. StartMCPServer called after StartRemoteServer)
-      currentCoordinator = { listTasks: () => [] };
+      currentCoordinator = { listTasks: () => [], isRegisteredCoordinator: () => true };
 
-      // After coordinator is set: coordinator routes should work
+      // After coordinator is set: coordinator routes should work (coordinator token requires X-Coordinator-Id)
       const res2 = await fetch(`http://127.0.0.1:${srv.port}/api/tasks`, {
-        headers: { Authorization: `Bearer ${srv.token}` },
+        headers: { Authorization: `Bearer ${srv.token}`, 'X-Coordinator-Id': 'test-coord' },
       });
       expect(res2.status).toBe(200);
       const body = (await res2.json()) as unknown[];

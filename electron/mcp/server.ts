@@ -25,6 +25,7 @@ for (let i = 0; i < args.length; i++) {
 }
 
 const token = process.env.PARALLEL_CODE_MCP_TOKEN ?? '';
+const doneToken = process.env.PARALLEL_CODE_MCP_DONE_TOKEN || undefined;
 
 if (!url || !token) {
   console.error(
@@ -34,7 +35,7 @@ if (!url || !token) {
   process.exit(1);
 }
 
-const client = new MCPClient(url, token, coordinatorId || undefined);
+const client = new MCPClient(url, token, coordinatorId || undefined, doneToken);
 
 const server = new Server(
   { name: 'parallel-code', version: '1.0.0' },

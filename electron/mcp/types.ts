@@ -14,6 +14,7 @@ export interface CoordinatedTask {
   exitCode: number | null;
   pendingPrompt?: string;
   mcpConfigPath?: string; // path to per-task tmp config, deleted on cleanup
+  doneToken?: string; // per-task token; only the owning sub-task may call /done
   preambleFileExistedBefore?: boolean; // true if the preamble file existed before injection (even if empty)
   signalDoneAt?: Date; // set when sub-task explicitly calls signal_done
   signalDoneConsumed?: boolean; // true after wait_for_signal_done returns this task's signal
@@ -77,6 +78,8 @@ export interface CoordinatorState {
   mcpJsonPath: string;
   /** True if Parallel Code created .mcp.json from scratch; false if it was pre-existing. */
   createdMcpJson: boolean;
+  /** Previous value of mcpServers["parallel-code"] before this coordinator wrote its entry, if any. */
+  previousMcpParallelCode?: unknown;
 }
 
 // --- MCP tool input schemas ---

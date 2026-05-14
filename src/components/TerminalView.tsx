@@ -644,8 +644,10 @@ export function TerminalView(props: TerminalViewProps) {
 
     // For coordinator and coordinated sub-tasks, defer spawn until MCP is ready.
     // Coordinator tasks wait for StartMCPServer to complete; sub-tasks wait for hydrateTask.
+    // Always install the watcher when MCP lifecycle is present so that Retry (error → ready)
+    // works even when the component mounts in 'error' state.
     const task = store.tasks[taskId];
-    if (task?.mcpStartupStatus === 'pending') {
+    if (task?.mcpStartupStatus !== undefined) {
       let spawned = false;
       createEffect(() => {
         if (spawned) return;
@@ -656,7 +658,7 @@ export function TerminalView(props: TerminalViewProps) {
         }
         // 'error' is handled by the overlay rendered outside onMount
       });
-    } else if (task?.mcpStartupStatus !== 'error') {
+    } else {
       spawnNow();
     }
 

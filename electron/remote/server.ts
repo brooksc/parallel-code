@@ -165,11 +165,15 @@ export function startRemoteServer(opts: {
     return null;
   }
 
-  function classifyToken(req: IncomingMessage): 'coordinator' | 'subtask' | 'mobile' | null {
+  function extractRawToken(req: IncomingMessage): string | null {
     const auth = req.headers.authorization;
-    if (auth?.startsWith('Bearer ')) return classifyCandidate(auth.slice(7));
+    if (auth?.startsWith('Bearer ')) return auth.slice(7);
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    return classifyCandidate(url.searchParams.get('token'));
+    return url.searchParams.get('token');
+  }
+
+  function classifyToken(req: IncomingMessage): 'coordinator' | 'subtask' | 'mobile' | null {
+    return classifyCandidate(extractRawToken(req));
   }
 
   const SECURITY_HEADERS: Record<string, string> = {
@@ -367,6 +371,14 @@ export function startRemoteServer(opts: {
           return orch.isRegisteredCoordinator(h) ? h : undefined;
         })();
 
+        // Coordinator-class tokens must include a valid X-Coordinator-Id so they can
+        // only access their own tasks. Without it, a stolen coordinator token could
+        // list and control all coordinators' tasks.
+        if (tokenClass === 'coordinator' && !callerCoordinatorId) {
+          jsonReply(403, { error: 'X-Coordinator-Id header required for task routes' });
+          return;
+        }
+
         const ownedByCallerOrUnscoped = (taskCoordinatorId: string): boolean =>
           !callerCoordinatorId || taskCoordinatorId === callerCoordinatorId;
 
@@ -524,6 +536,20 @@ export function startRemoteServer(opts: {
           if (!doneDetail) return jsonReply(404, { error: 'task not found' });
           if (!ownedByCallerOrUnscoped(doneDetail.coordinatorTaskId))
             return jsonReply(403, { error: 'forbidden' });
+          // Subtask callers must provide the per-task X-Done-Token header so a compromised
+          // sub-task cannot signal completion for tasks it doesn't own.
+          if (tokenClass === 'subtask') {
+            const expected = orch.getTaskDoneToken(taskId);
+            const incoming = req.headers['x-done-token'];
+            if (
+              !expected ||
+              typeof incoming !== 'string' ||
+              incoming.length !== expected.length ||
+              !timingSafeEqual(Buffer.from(incoming), Buffer.from(expected))
+            ) {
+              return jsonReply(403, { error: 'forbidden' });
+            }
+          }
           mcpLog('info', `signal_done id=${taskId}`);
           orch.signalDone(taskId);
           jsonReply(200, { ok: true });

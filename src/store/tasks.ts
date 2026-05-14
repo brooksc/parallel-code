@@ -193,6 +193,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
         agentCommand: agentDef.command,
         agentArgs: agentDef.args,
         dockerContainerName,
+        dockerImage,
       });
       mcpConfigPath = mcpResult.configPath ?? undefined;
       console.warn('[MCP] Coordinator config path:', mcpConfigPath);
@@ -1236,6 +1237,7 @@ export function retryTaskMcpStartup(taskId: string): Promise<void> {
       agentCommand: agentDef?.command ?? 'claude',
       agentArgs: agentDef?.args ?? [],
       dockerContainerName,
+      dockerImage: task.dockerImage,
     })
       .then(() => markTaskMcpReady(taskId))
       .catch((err: unknown) => markTaskMcpError(taskId, String(err)));
