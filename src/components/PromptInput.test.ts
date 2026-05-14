@@ -26,6 +26,7 @@ describe('processAutoFireTick — userEdited suppression', () => {
       staged: stagedEdited,
       now: pastNow,
       controlledBy: 'coordinator',
+      questionActive: false,
       tail: promptTail,
       currentMissCount: 0,
     });
@@ -37,6 +38,7 @@ describe('processAutoFireTick — userEdited suppression', () => {
       staged: stagedEdited,
       now: pastNow,
       controlledBy: undefined,
+      questionActive: false,
       tail: promptTail,
       currentMissCount: 0,
     });
@@ -48,6 +50,7 @@ describe('processAutoFireTick — userEdited suppression', () => {
       staged: stagedEdited,
       now: pastNow,
       controlledBy: 'human',
+      questionActive: false,
       tail: promptTail,
       currentMissCount: 0,
     });
@@ -59,6 +62,7 @@ describe('processAutoFireTick — userEdited suppression', () => {
       staged,
       now: pastNow,
       controlledBy: 'coordinator',
+      questionActive: false,
       tail: promptTail,
       currentMissCount: 0,
     });

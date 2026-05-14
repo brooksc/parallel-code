@@ -129,7 +129,6 @@ export interface PersistedTask {
   notes: string;
   lastPrompt: string;
   promptedAgentIds?: string[];
-  initialPrompt?: string;
   shellCount: number;
   agentDef: AgentDef | null;
   agentDefs?: AgentDef[];
