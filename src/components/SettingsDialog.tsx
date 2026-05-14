@@ -8,7 +8,8 @@ import {
   LIGATURE_FONTS,
 } from '../lib/fonts';
 import { LOOK_PRESETS } from '../lib/look';
-import { theme, sectionLabelStyle } from '../lib/theme';
+import { theme, sectionLabelStyle, readCssVarsForPreset, terminalBackground } from '../lib/theme';
+import { themeToYaml } from '../lib/custom-theme';
 import {
   store,
   setTerminalFont,
@@ -52,6 +53,15 @@ export function SettingsDialog(props: SettingsDialogProps) {
   const [activeTab, setActiveTab] = createSignal<SettingsTab>('general');
   const [customThemeDialogOpen, setCustomThemeDialogOpen] = createSignal(false);
   const [editingThemeId, setEditingThemeId] = createSignal<string | null>(null);
+  const [cloneYaml, setCloneYaml] = createSignal<string | undefined>(undefined);
+
+  function openCloneDialog(presetId: string, label: string) {
+    const vars = readCssVarsForPreset(presetId);
+    const bg = terminalBackground[presetId as keyof typeof terminalBackground] ?? '#000000';
+    setCloneYaml(themeToYaml(`${label} (copy)`, bg, vars));
+    setEditingThemeId(null);
+    setCustomThemeDialogOpen(true);
+  }
 
   // Fetch system fonts when the dialog opens
   createEffect(
@@ -771,17 +781,44 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <div class="settings-theme-grid">
               <For each={LOOK_PRESETS}>
                 {(preset) => (
-                  <button
-                    type="button"
-                    class={`settings-theme-card${!store.activeCustomThemeId && store.themePreset === preset.id ? ' active' : ''}`}
-                    onClick={() => {
-                      setThemePreset(preset.id);
-                      activateCustomTheme(null);
-                    }}
-                  >
-                    <span class="settings-theme-title">{preset.label}</span>
-                    <span class="settings-theme-desc">{preset.description}</span>
-                  </button>
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      class={`settings-theme-card${!store.activeCustomThemeId && store.themePreset === preset.id ? ' active' : ''}`}
+                      onClick={() => {
+                        setThemePreset(preset.id);
+                        activateCustomTheme(null);
+                      }}
+                    >
+                      <span class="settings-theme-title">{preset.label}</span>
+                      <span class="settings-theme-desc">{preset.description}</span>
+                    </button>
+                    <button
+                      type="button"
+                      title="Clone as custom theme"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openCloneDialog(preset.id, preset.label);
+                      }}
+                      style={{
+                        position: 'absolute',
+                        top: '4px',
+                        right: '4px',
+                        background: theme.bgElevated,
+                        border: `1px solid ${theme.border}`,
+                        'border-radius': '4px',
+                        color: theme.fgMuted,
+                        cursor: 'pointer',
+                        'font-size': '10px',
+                        padding: '2px 6px',
+                        opacity: '0',
+                        transition: 'opacity 0.15s',
+                      }}
+                      class="preset-clone-btn"
+                    >
+                      Clone
+                    </button>
+                  </div>
                 )}
               </For>
             </div>
@@ -800,6 +837,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
               <button
                 type="button"
                 onClick={() => {
+                  setCloneYaml(undefined);
                   setEditingThemeId(null);
                   setCustomThemeDialogOpen(true);
                 }}
@@ -859,6 +897,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          setCloneYaml(undefined);
                           setEditingThemeId(ct.id);
                           setCustomThemeDialogOpen(true);
                         }}
@@ -902,6 +941,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
       <CustomThemeDialog
         open={customThemeDialogOpen()}
         editId={editingThemeId()}
+        initialYaml={cloneYaml()}
         onClose={() => setCustomThemeDialogOpen(false)}
       />
     </Dialog>

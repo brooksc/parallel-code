@@ -112,9 +112,51 @@ export function buildCustomThemeCss(theme: CustomTheme): string {
   return `html[data-look='custom:${theme.id}'] {\n${body}\n}`;
 }
 
-export function generateThemePrompt(): string {
+/** Serializes theme data back to the YAML format the dialog accepts. */
+export function themeToYaml(
+  name: string,
+  terminalBackground: string,
+  vars: Partial<Record<CssVar, string>>,
+): string {
+  const varLines = CSS_VARS.filter((v) => v in vars)
+    .map((v) => `  ${v}: "${vars[v]}"`)
+    .join('\n');
+  return `name: ${name}\nterminalBackground: "${terminalBackground}"\nvars:\n${varLines}\n`;
+}
+
+const RULES = `RULES:
+- All --bg-* and --fg-* values must be hex colors (no gradients)
+- --bg may be a CSS gradient if the aesthetic calls for it
+- --bg-selected-subtle should be the same hue as --bg-selected with ~25% opacity appended (e.g. "#2d2b5840")
+- --island-radius should be "12px", "8px", or "0px"
+- Ensure sufficient contrast: --fg on --bg-elevated should meet WCAG AA (4.5:1 ratio)
+- terminalBackground must be an opaque hex value
+- Wrap any value containing a colon or special characters in double quotes`;
+
+export function generateThemePrompt(existingYaml?: string): string {
   const varList = CSS_VARS.map((v) => `  ${v}: "..." # ${CSS_VAR_DESCRIPTIONS[v]}`).join('\n');
-  return `You are a UI theme designer for Parallel Code, a dark-mode terminal multiplexer and AI coding assistant.
+  const preamble = `You are a UI theme designer for Parallel Code, a dark-mode terminal multiplexer and AI coding assistant.`;
+
+  if (existingYaml) {
+    return `${preamble}
+
+I have an existing theme I'd like to modify. Ask me what I'd like to change, then output the complete updated YAML (keep inline comments where helpful).
+
+CURRENT THEME:
+\`\`\`yaml
+${existingYaml.trim()}
+\`\`\`
+
+VARIABLES AND THEIR ROLES:
+${CSS_VARS.map((v) => `• ${v}: ${CSS_VAR_DESCRIPTIONS[v]}`).join('\n')}
+
+• terminalBackground: Opaque hex color for the terminal emulator (hex only, no gradients)
+
+${RULES}
+`;
+  }
+
+  return `${preamble}
 
 Help me create a custom color theme by asking about my aesthetic preferences, then filling in the YAML template.
 
@@ -132,13 +174,6 @@ terminalBackground: "#hex"
 vars:
 ${varList}
 
-RULES:
-- All --bg-* and --fg-* values must be hex colors (no gradients)
-- --bg may be a CSS gradient if the aesthetic calls for it
-- --bg-selected-subtle should be the same hue as --bg-selected with ~25% opacity appended (e.g. "#2d2b5840")
-- --island-radius should be "12px", "8px", or "0px"
-- Ensure sufficient contrast: --fg on --bg-elevated should meet WCAG AA (4.5:1 ratio)
-- terminalBackground must be an opaque hex value
-- Wrap any value containing a colon or special characters in double quotes
+${RULES}
 `;
 }
