@@ -17,6 +17,8 @@ import type { AgentDef } from '../ipc/types';
 import { inferDockerSource } from '../lib/docker';
 import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
 import { isLookPreset } from '../lib/look';
+import { validateCustomTheme } from '../lib/custom-theme';
+import type { CustomTheme } from '../lib/custom-theme';
 import { syncTerminalCounter } from './terminals';
 
 /** Enrich an agent def with resume/skip-permissions args from fresh defaults. */
@@ -75,6 +77,9 @@ export async function saveState(): Promise<void> {
         : undefined,
     shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
     coordinatorModeEnabled: store.coordinatorModeEnabled || undefined,
+    customThemes:
+      Object.keys(store.customThemes).length > 0 ? { ...store.customThemes } : undefined,
+    activeCustomThemeId: store.activeCustomThemeId ?? undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -269,7 +274,12 @@ interface LegacyPersistedState {
   verboseLogging?: unknown;
   coordinatorNotificationDelayMs?: unknown;
   shareDockerAgentAuth?: unknown;
+<<<<<<< HEAD
   coordinatorModeEnabled?: unknown;
+=======
+  customThemes?: unknown;
+  activeCustomThemeId?: unknown;
+>>>>>>> 4739cce (feat(themes): persist custom themes, fix LegacyPersistedState location)
 }
 
 export async function loadState(): Promise<void> {
@@ -420,7 +430,25 @@ export async function loadState(): Promise<void> {
 
       s.shareDockerAgentAuth = raw.shareDockerAgentAuth === true;
 
+<<<<<<< HEAD
       s.coordinatorModeEnabled = raw.coordinatorModeEnabled === true;
+=======
+      if (raw.customThemes && typeof raw.customThemes === 'object') {
+        const loaded: Record<string, CustomTheme> = {};
+        for (const [id, entry] of Object.entries(raw.customThemes as Record<string, unknown>)) {
+          try {
+            const validated = validateCustomTheme(entry);
+            loaded[id] = { ...validated, id };
+          } catch {
+            // skip malformed entries
+          }
+        }
+        s.customThemes = loaded;
+      }
+      if (typeof raw.activeCustomThemeId === 'string') {
+        s.activeCustomThemeId = raw.activeCustomThemeId;
+      }
+>>>>>>> 4739cce (feat(themes): persist custom themes, fix LegacyPersistedState location)
 
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =
