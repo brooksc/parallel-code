@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { validateCustomTheme, buildCustomThemeCss } from './custom-theme';
+import { validateCustomTheme, buildCustomThemeCss, parseThemeYaml } from './custom-theme';
 
 describe('validateCustomTheme', () => {
-  it('returns a CustomTheme for a valid object', () => {
+  it('returns a theme for a valid object', () => {
     const input = {
       name: 'My Theme',
       terminalBackground: '#1a1a2e',
@@ -36,6 +36,33 @@ describe('validateCustomTheme', () => {
     });
     expect('--bg' in result.vars).toBe(true);
     expect('--unknown-key' in result.vars).toBe(false);
+  });
+});
+
+describe('parseThemeYaml', () => {
+  it('parses valid YAML with comments', () => {
+    const yaml = `
+# My custom theme
+name: Midnight Plum
+terminalBackground: "#1a1a2e"
+vars:
+  # background
+  --bg: "#0f0e17"
+  --fg: "#fffffe" # primary text
+`;
+    const result = parseThemeYaml(yaml);
+    expect(result.name).toBe('Midnight Plum');
+    expect(result.terminalBackground).toBe('#1a1a2e');
+    expect(result.vars['--bg']).toBe('#0f0e17');
+    expect(result.vars['--fg']).toBe('#fffffe');
+  });
+
+  it('throws a readable error for invalid YAML', () => {
+    expect(() => parseThemeYaml('{ bad yaml: [')).toThrow('Invalid YAML');
+  });
+
+  it('propagates validation errors from bad structure', () => {
+    expect(() => parseThemeYaml('name: x\nvars: {}')).toThrow('terminalBackground');
   });
 });
 
