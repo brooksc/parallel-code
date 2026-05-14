@@ -1,5 +1,6 @@
 import { For, Show, createSignal, createEffect, createUniqueId, on } from 'solid-js';
 import { Dialog } from './Dialog';
+import { CustomThemeDialog } from './CustomThemeDialog';
 import {
   getAvailableTerminalFonts,
   fetchAvailableTerminalFonts,
@@ -28,6 +29,8 @@ import {
   setMinimaxApiKey,
   setCoordinatorModeEnabled,
   setCoordinatorNotificationDelayMs,
+  deleteCustomTheme,
+  activateCustomTheme,
 } from '../store/store';
 import { CustomAgentEditor } from './CustomAgentEditor';
 import { mod } from '../lib/platform';
@@ -43,12 +46,14 @@ function ensureSelectedFont(available: string[]): string[] {
   return [store.terminalFont, ...available];
 }
 
-type SettingsTab = 'general' | 'experimental';
+type SettingsTab = 'general' | 'themes' | 'experimental';
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const titleId = createUniqueId();
   const [fonts, setFonts] = createSignal<string[]>(ensureSelectedFont(getAvailableTerminalFonts()));
   const [activeTab, setActiveTab] = createSignal<SettingsTab>('general');
+  const [customThemeDialogOpen, setCustomThemeDialogOpen] = createSignal(false);
+  const [editingThemeId, setEditingThemeId] = createSignal<string | null>(null);
 
   // Fetch system fonts when the dialog opens
   createEffect(
@@ -136,7 +141,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           'margin-bottom': '2px',
         }}
       >
-        <For each={['general', 'experimental'] as SettingsTab[]}>
+        <For each={(['general', 'themes', 'experimental'] as SettingsTab[])}>
           {(tab) => (
             <button
               role="tab"
@@ -145,13 +150,6 @@ export function SettingsDialog(props: SettingsDialogProps) {
               id={`settings-tabbutton-${tab}`}
               type="button"
               onClick={() => setActiveTab(tab)}
-              onKeyDown={(e) => {
-                if (e.key === 'ArrowRight') {
-                  setActiveTab(tab === 'general' ? 'experimental' : 'general');
-                } else if (e.key === 'ArrowLeft') {
-                  setActiveTab(tab === 'experimental' ? 'general' : 'experimental');
-                }
-              }}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -167,7 +165,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                 transition: 'color 0.15s, border-color 0.15s',
               }}
             >
-              {tab === 'general' ? 'General' : 'Experimental'}
+              {tab === 'general' ? 'General' : tab === 'themes' ? 'Themes' : 'Experimental'}
             </button>
           )}
         </For>
@@ -180,31 +178,6 @@ export function SettingsDialog(props: SettingsDialogProps) {
           aria-labelledby="settings-tabbutton-general"
           style={{ display: 'flex', 'flex-direction': 'column', gap: '18px' }}
         >
-          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
-            <div
-              style={{
-                ...sectionLabelStyle,
-                'font-weight': '600',
-              }}
-            >
-              Theme
-            </div>
-            <div class="settings-theme-grid">
-              <For each={LOOK_PRESETS}>
-                {(preset) => (
-                  <button
-                    type="button"
-                    class={`settings-theme-card${store.themePreset === preset.id ? ' active' : ''}`}
-                    onClick={() => setThemePreset(preset.id)}
-                  >
-                    <span class="settings-theme-title">{preset.label}</span>
-                    <span class="settings-theme-desc">{preset.description}</span>
-                  </button>
-                )}
-              </For>
-            </div>
-          </div>
-
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
             <div
               style={{
@@ -787,6 +760,111 @@ export function SettingsDialog(props: SettingsDialogProps) {
         </div>
       </Show>
 
+      <Show when={activeTab() === 'themes'}>
+        <div
+          id="settings-tab-themes"
+          role="tabpanel"
+          aria-labelledby="settings-tabbutton-themes"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '18px' }}
+        >
+          {/* Built-in presets */}
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+            <div style={{ ...sectionLabelStyle, 'font-weight': '600' }}>Built-in Presets</div>
+            <div class="settings-theme-grid">
+              <For each={LOOK_PRESETS}>
+                {(preset) => (
+                  <button
+                    type="button"
+                    class={`settings-theme-card${!store.activeCustomThemeId && store.themePreset === preset.id ? ' active' : ''}`}
+                    onClick={() => { setThemePreset(preset.id); activateCustomTheme(null); }}
+                  >
+                    <span class="settings-theme-title">{preset.label}</span>
+                    <span class="settings-theme-desc">{preset.description}</span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
+
+          {/* Custom themes */}
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+            <div style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}>
+              <div style={{ ...sectionLabelStyle, 'font-weight': '600' }}>Custom Themes</div>
+              <button
+                type="button"
+                onClick={() => { setEditingThemeId(null); setCustomThemeDialogOpen(true); }}
+                style={{
+                  background: theme.accent,
+                  border: 'none',
+                  color: theme.accentText,
+                  cursor: 'pointer',
+                  'font-size': '12px',
+                  'font-weight': '600',
+                  padding: '4px 12px',
+                  'border-radius': '5px',
+                }}
+              >
+                + Create New
+              </button>
+            </div>
+            <Show
+              when={Object.keys(store.customThemes).length > 0}
+              fallback={
+                <p style={{ margin: '0', 'font-size': '13px', color: theme.fgSubtle }}>
+                  No custom themes yet. Click "Create New" to build one with AI.
+                </p>
+              }
+            >
+              <div style={{ display: 'flex', 'flex-direction': 'column', gap: '6px' }}>
+                <For each={Object.values(store.customThemes)}>
+                  {(ct) => (
+                    <div
+                      style={{
+                        display: 'flex',
+                        'align-items': 'center',
+                        gap: '10px',
+                        padding: '8px 12px',
+                        'border-radius': '8px',
+                        background: store.activeCustomThemeId === ct.id ? theme.bgSelected : theme.bgInput,
+                        border: `1px solid ${store.activeCustomThemeId === ct.id ? theme.accent : theme.border}`,
+                        cursor: 'pointer',
+                      }}
+                      onClick={() => activateCustomTheme(ct.id)}
+                    >
+                      <div
+                        style={{
+                          width: '16px',
+                          height: '16px',
+                          'border-radius': '50%',
+                          background: ct.vars['--accent'] ?? ct.terminalBackground,
+                          border: `2px solid ${theme.border}`,
+                          'flex-shrink': '0',
+                        }}
+                      />
+                      <span style={{ flex: '1', 'font-size': '14px', color: theme.fg }}>{ct.name}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setEditingThemeId(ct.id); setCustomThemeDialogOpen(true); }}
+                        style={{ background: 'transparent', border: 'none', color: theme.fgMuted, cursor: 'pointer', 'font-size': '12px', padding: '2px 8px' }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); deleteCustomTheme(ct.id); }}
+                        style={{ background: 'transparent', border: 'none', color: theme.error, cursor: 'pointer', 'font-size': '12px', padding: '2px 8px' }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
+        </div>
+      </Show>
+
       <Show when={activeTab() === 'experimental'}>
         <div
           id="settings-tab-experimental"
@@ -878,6 +956,12 @@ export function SettingsDialog(props: SettingsDialogProps) {
           </div>
         </div>
       </Show>
+
+      <CustomThemeDialog
+        open={customThemeDialogOpen()}
+        editId={editingThemeId()}
+        onClose={() => setCustomThemeDialogOpen(false)}
+      />
     </Dialog>
   );
 }

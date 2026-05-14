@@ -110,9 +110,10 @@ export function TerminalView(props: TerminalViewProps) {
       cursorBlink: true,
       fontSize: initialFontSize,
       fontFamily: getTerminalFontFamily(store.terminalFont),
-      theme: store.activeCustomThemeId && store.customThemes[store.activeCustomThemeId]
-        ? getTerminalThemeForCustom(store.customThemes[store.activeCustomThemeId]!.terminalBackground)
-        : getTerminalTheme(store.themePreset),
+      theme: (() => {
+        const ct = store.activeCustomThemeId ? store.customThemes[store.activeCustomThemeId] : null;
+        return ct ? getTerminalThemeForCustom(ct.terminalBackground) : getTerminalTheme(store.themePreset);
+      })(),
       allowProposedApi: true,
       scrollback: TERMINAL_SCROLLBACK_LINES,
     });
