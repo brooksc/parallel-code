@@ -7,8 +7,10 @@ import { store, saveCustomTheme, activateCustomTheme } from '../store/store';
 
 interface CustomThemeDialogProps {
   open: boolean;
-  /** When set, we're editing an existing theme */
+  /** When set, we're editing an existing custom theme */
   editId?: string | null;
+  /** Pre-filled YAML (e.g. from a cloned built-in preset) */
+  initialYaml?: string;
   onClose: () => void;
 }
 
@@ -29,14 +31,16 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
   // Reset state when dialog opens/closes or switches edit target
   createEffect(
     on(
-      () => [props.open, props.editId] as const,
-      ([open, editId]) => {
+      () => [props.open, props.editId, props.initialYaml] as const,
+      ([open, editId, initialYaml]) => {
         if (!open) return;
         setError(null);
         setCopied(false);
         setShowPrompt(false);
         if (editId && store.customThemes[editId]) {
           setYaml(buildYamlForEdit(store.customThemes[editId]));
+        } else if (initialYaml) {
+          setYaml(initialYaml);
         } else {
           setYaml('');
         }
@@ -78,7 +82,9 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
   }
 
   function handleCopyPrompt() {
-    void navigator.clipboard.writeText(generateThemePrompt()).then(() => {
+    const currentYaml = yaml().trim();
+    const prompt = generateThemePrompt(currentYaml || undefined);
+    void navigator.clipboard.writeText(prompt).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
