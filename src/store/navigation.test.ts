@@ -3,11 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 type MockStore = {
   activeTaskId: string | null;
   activeAgentId: string | null;
-  tasks: Record<string, { id: string; agentIds: string[] }>;
+  tasks: Record<string, { id: string; agentIds: string[]; selectedAgentId?: string }>;
   terminals: Record<string, unknown>;
   taskOrder: string[];
   collapsedTaskOrder: string[];
   projects: Array<{ id: string }>;
+  focusedPanel: Record<string, string>;
 };
 
 let mockStore: MockStore;
@@ -22,9 +23,13 @@ vi.mock('./core', () => ({
     },
   ),
   setStore: vi.fn((...args: unknown[]) => {
-    const key = args[0] as keyof MockStore;
-    const value = args[1];
-    (mockStore as Record<string, unknown>)[key] = value;
+    const value = args[args.length - 1];
+    let target: Record<string, unknown> = mockStore as unknown as Record<string, unknown>;
+    for (let i = 0; i < args.length - 2; i++) {
+      const key = args[i] as string;
+      target = target[key] as Record<string, unknown>;
+    }
+    target[args[args.length - 2] as string] = value;
   }),
 }));
 
@@ -48,6 +53,7 @@ beforeEach(() => {
     taskOrder: ['task-1', 'task-2', 'task-3'],
     collapsedTaskOrder: [],
     projects: [],
+    focusedPanel: {},
   };
 });
 
@@ -80,6 +86,38 @@ describe('jumpToTask', () => {
   it('sets activeAgentId to first agent of the target task', () => {
     jumpToTask(1);
     expect(mockStore.activeAgentId).toBe('agent-b');
+  });
+
+  it('preserves activeAgentId when it already belongs to the target task', () => {
+    mockStore.tasks['task-2'].agentIds = ['agent-b', 'agent-b2'];
+    mockStore.activeAgentId = 'agent-b2';
+    jumpToTask(1);
+    expect(mockStore.activeAgentId).toBe('agent-b2');
+  });
+
+  it('prefers the focused AI pane when switching back to a multi-agent task', () => {
+    mockStore.tasks['task-1'].agentIds = ['agent-a', 'agent-a2'];
+    mockStore.activeTaskId = 'task-2';
+    mockStore.activeAgentId = 'agent-b';
+    mockStore.focusedPanel['task-1'] = 'ai-terminal:agent-a2';
+
+    jumpToTask(0);
+
+    expect(mockStore.activeTaskId).toBe('task-1');
+    expect(mockStore.activeAgentId).toBe('agent-a2');
+  });
+
+  it('restores the per-task selected agent when focus is on a non-agent panel', () => {
+    mockStore.tasks['task-1'].agentIds = ['agent-a', 'agent-a2'];
+    mockStore.tasks['task-1'].selectedAgentId = 'agent-a2';
+    mockStore.activeTaskId = 'task-2';
+    mockStore.activeAgentId = 'agent-b';
+    mockStore.focusedPanel['task-1'] = 'prompt';
+
+    jumpToTask(0);
+
+    expect(mockStore.activeTaskId).toBe('task-1');
+    expect(mockStore.activeAgentId).toBe('agent-a2');
   });
 
   it('indexes taskOrder, not collapsed tasks', () => {

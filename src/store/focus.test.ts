@@ -204,7 +204,7 @@ describe('focus navigation neighbor map', () => {
 
     expect(mockStore.activeTaskId).toBe('task-1');
     expect(mockStore.sidebarFocused).toBe(false);
-    expect(mockStore.focusedPanel['task-1']).toBe('ai-terminal');
+    expect(mockStore.focusedPanel['task-1']).toBe('ai-terminal:agent-1');
   });
 
   it('clamps split shell-toolbar down-moves to the last available shell', () => {
