@@ -51,6 +51,39 @@ export function saveAppState(json: string): void {
   }
 }
 
+function getThemesDir(): string {
+  return path.join(getStateDir(), 'themes');
+}
+
+export function loadCustomThemeFiles(): { id: string; yaml: string }[] {
+  const dir = getThemesDir();
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.yaml'))
+    .flatMap((f) => {
+      try {
+        return [{ id: f.slice(0, -5), yaml: fs.readFileSync(path.join(dir, f), 'utf8') }];
+      } catch {
+        return [];
+      }
+    });
+}
+
+export function saveCustomThemeFile(id: string, yaml: string): void {
+  const dir = getThemesDir();
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${id}.yaml`), yaml, 'utf8');
+}
+
+export function deleteCustomThemeFile(id: string): void {
+  try {
+    fs.unlinkSync(path.join(getThemesDir(), `${id}.yaml`));
+  } catch {
+    /* already gone */
+  }
+}
+
 export function loadAppState(): string | null {
   const statePath = getStatePath();
   const bakPath = statePath + '.bak';

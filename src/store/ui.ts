@@ -5,6 +5,7 @@ import { setActiveTask } from './navigation';
 import { setTaskFocusedPanel } from './focus';
 import type { LookPreset } from '../lib/look';
 import type { CustomTheme } from '../lib/custom-theme';
+import { themeToYaml } from '../lib/custom-theme';
 import type { PersistedWindowState, TaskViewportVisibility } from './types';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -80,6 +81,10 @@ export function setThemePreset(themePreset: LookPreset): void {
 
 export function saveCustomTheme(theme: CustomTheme): void {
   setStore('customThemes', theme.id, theme);
+  const yaml = themeToYaml(theme.name, theme.terminalBackground, theme.vars);
+  invoke(IPC.SaveCustomTheme, { id: theme.id, yaml }).catch((e) =>
+    console.warn('Failed to save custom theme file:', e),
+  );
 }
 
 export function deleteCustomTheme(id: string): void {
@@ -92,6 +97,9 @@ export function deleteCustomTheme(id: string): void {
   if (store.activeCustomThemeId === id) {
     setStore('activeCustomThemeId', null);
   }
+  invoke(IPC.DeleteCustomTheme, { id }).catch((e) =>
+    console.warn('Failed to delete custom theme file:', e),
+  );
 }
 
 export function activateCustomTheme(id: string | null): void {

@@ -17,7 +17,7 @@ import type { AgentDef } from '../ipc/types';
 import { inferDockerSource } from '../lib/docker';
 import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
 import { isLookPreset } from '../lib/look';
-import { validateCustomTheme } from '../lib/custom-theme';
+import { validateCustomTheme, parseThemeYaml, themeToYaml } from '../lib/custom-theme';
 import type { CustomTheme } from '../lib/custom-theme';
 import { syncTerminalCounter } from './terminals';
 
@@ -33,6 +33,20 @@ function enrichAgentDef(agentDef: AgentDef | null | undefined, availableAgents: 
   if (agentDef.id === 'codex' && agentDef.skip_permissions_args?.includes('--full-auto')) {
     agentDef.skip_permissions_args = ['--dangerously-bypass-approvals-and-sandbox'];
   }
+}
+
+export async function loadCustomThemes(): Promise<void> {
+  const files = await invoke<{ id: string; yaml: string }[]>(IPC.LoadCustomThemes).catch(() => []);
+  const loaded: Record<string, CustomTheme> = {};
+  for (const { id, yaml } of files) {
+    try {
+      const validated = parseThemeYaml(yaml);
+      loaded[id] = { ...validated, id };
+    } catch {
+      // skip malformed files
+    }
+  }
+  setStore('customThemes', loaded);
 }
 
 export async function saveState(): Promise<void> {
@@ -77,8 +91,6 @@ export async function saveState(): Promise<void> {
         : undefined,
     shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
     coordinatorModeEnabled: store.coordinatorModeEnabled || undefined,
-    customThemes:
-      Object.keys(store.customThemes).length > 0 ? { ...store.customThemes } : undefined,
     activeCustomThemeId: store.activeCustomThemeId ?? undefined,
   };
 
@@ -429,20 +441,21 @@ export async function loadState(): Promise<void> {
 
       s.coordinatorModeEnabled = raw.coordinatorModeEnabled === true;
 
+      if (typeof raw.activeCustomThemeId === 'string') {
+        s.activeCustomThemeId = raw.activeCustomThemeId;
+      }
+
+      // Migrate any themes still in state.json to individual YAML files
       if (raw.customThemes && typeof raw.customThemes === 'object') {
-        const loaded: Record<string, CustomTheme> = {};
         for (const [id, entry] of Object.entries(raw.customThemes as Record<string, unknown>)) {
           try {
             const validated = validateCustomTheme(entry);
-            loaded[id] = { ...validated, id };
+            const yaml = themeToYaml(validated.name, validated.terminalBackground, validated.vars);
+            invoke(IPC.SaveCustomTheme, { id, yaml }).catch(() => {});
           } catch {
             // skip malformed entries
           }
         }
-        s.customThemes = loaded;
-      }
-      if (typeof raw.activeCustomThemeId === 'string') {
-        s.activeCustomThemeId = raw.activeCustomThemeId;
       }
 
       const rawDockerImage = raw.dockerImage;

@@ -91,7 +91,7 @@ export {
   setSidebarFocusedProjectId,
 } from './focus';
 export type { PanelId, PendingAction, TaskViewportVisibility } from './types';
-export { saveState, loadState } from './persistence';
+export { saveState, loadState, loadCustomThemes } from './persistence';
 export {
   getGlobalScale,
   adjustGlobalScale,
