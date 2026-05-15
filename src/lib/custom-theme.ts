@@ -1,4 +1,8 @@
 import { parse as parseYaml } from 'yaml';
+import { colord, extend } from 'colord';
+import a11yPlugin from 'colord/plugins/a11y';
+
+extend([a11yPlugin]);
 
 export const CSS_VARS = [
   '--bg',
@@ -110,6 +114,41 @@ export function buildCustomThemeCss(theme: CustomTheme): string {
   if (entries.length === 0) return '';
   const body = entries.map(([k, v]) => `  ${k}: ${v};`).join('\n');
   return `html[data-look='custom:${theme.id}'] {\n${body}\n}`;
+}
+
+export interface ContrastWarning {
+  fgVar: CssVar;
+  bgVar: CssVar;
+  fg: string;
+  bg: string;
+  ratio: number;
+  required: number;
+}
+
+/** Pairs to check: [fgVar, bgVar, minimumRatio] */
+const CONTRAST_PAIRS: [CssVar, CssVar, number][] = [
+  ['--fg', '--bg-elevated', 4.5],
+  ['--fg-muted', '--bg-elevated', 3.0],
+  ['--fg', '--bg-selected', 4.5],
+  ['--accent-text', '--accent', 4.5],
+];
+
+export function checkThemeContrast(vars: Partial<Record<CssVar, string>>): ContrastWarning[] {
+  const warnings: ContrastWarning[] = [];
+  for (const [fgVar, bgVar, required] of CONTRAST_PAIRS) {
+    const fg = vars[fgVar];
+    const bg = vars[bgVar];
+    if (!fg || !bg) continue;
+    try {
+      const ratio = colord(fg).contrast(colord(bg));
+      if (isFinite(ratio) && ratio < required) {
+        warnings.push({ fgVar, bgVar, fg, bg, ratio: Math.round(ratio * 100) / 100, required });
+      }
+    } catch {
+      // unparseable color value — skip
+    }
+  }
+  return warnings;
 }
 
 /** Serializes theme data back to the YAML format the dialog accepts. */
