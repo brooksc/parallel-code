@@ -74,7 +74,7 @@ vi.mock('../lib/log', () => ({
   warn: vi.fn(),
 }));
 
-import { sendPrompt } from './tasks';
+import { pasteDelayMs, sendPrompt } from './tasks';
 
 function writePayloads(): string[] {
   return mockInvoke.mock.calls
@@ -178,5 +178,21 @@ describe('sendPrompt', () => {
 
     expect(writePayloads()[1]).toContain('manual replacement');
     expect(writePayloads()[1]).toContain('IMPORTANT: Maintain .claude/steps.json');
+  });
+});
+
+describe('pasteDelayMs', () => {
+  it('returns 50ms for a short single-line prompt', () => {
+    expect(pasteDelayMs('hello')).toBe(50);
+  });
+
+  it('scales by line count for a ~31-line prompt', () => {
+    const text = Array.from({ length: 31 }, (_, i) => `line ${i + 1}`).join('\n');
+    expect(pasteDelayMs(text)).toBe(Math.min(500, Math.max(50, 31 * 15)));
+  });
+
+  it('caps at 500ms for a very large prompt', () => {
+    const text = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join('\n');
+    expect(pasteDelayMs(text)).toBe(500);
   });
 });
