@@ -93,6 +93,11 @@ export function getTerminalTheme(preset: LookPreset) {
   };
 }
 
+/** Returns an xterm-compatible theme object for a custom theme. */
+export function getTerminalThemeForCustom(terminalBackground: string) {
+  return { background: terminalBackground };
+}
+
 /** Generates a styled banner (warning/error/info) using color-mix for background+border. */
 export function bannerStyle(color: string): Record<string, string> {
   return {

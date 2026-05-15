@@ -14,6 +14,7 @@ import { WindowTitleBar } from './components/WindowTitleBar';
 import { FocusModeTaskIndicators } from './components/FocusModeTaskIndicators';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { theme } from './lib/theme';
+import { buildCustomThemeCss } from './lib/custom-theme';
 import * as log from './lib/log';
 import {
   store,
@@ -241,9 +242,27 @@ function App() {
     void syncWindowMaximized();
   };
 
-  // Sync theme preset to <html> so Portal content inherits CSS variables
+  // Sync theme to <html> so Portal content (dialogs, tooltips) inherits CSS variables
   createEffect(() => {
-    document.documentElement.dataset.look = store.themePreset;
+    const customId = store.activeCustomThemeId;
+    document.documentElement.dataset.look = customId ? `custom:${customId}` : store.themePreset;
+  });
+
+  // Inject/update custom theme CSS into a dedicated <style> tag
+  createEffect(() => {
+    const customId = store.activeCustomThemeId;
+    let styleEl = document.getElementById('custom-theme-style') as HTMLStyleElement | null;
+    if (!customId) {
+      if (styleEl) styleEl.textContent = '';
+      return;
+    }
+    const theme = store.customThemes[customId];
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'custom-theme-style';
+      document.head.appendChild(styleEl);
+    }
+    styleEl.textContent = theme ? buildCustomThemeCss(theme) : '';
   });
 
   // Toggle font smoothing CSS class on body
@@ -609,7 +628,9 @@ function App() {
       <div
         ref={mainRef}
         class="app-shell"
-        data-look={store.themePreset}
+        data-look={
+          store.activeCustomThemeId ? `custom:${store.activeCustomThemeId}` : store.themePreset
+        }
         data-window-border={!isMac ? 'true' : 'false'}
         data-window-focused={windowFocused() ? 'true' : 'false'}
         data-window-maximized={windowMaximized() ? 'true' : 'false'}
