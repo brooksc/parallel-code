@@ -20,8 +20,11 @@ export function removePreambleBlock(content: string): string {
   if (startIdx === -1) return content;
   const endIdx = content.indexOf(PREAMBLE_END, startIdx);
   if (endIdx === -1) {
-    // Malformed: end marker missing — return unchanged to avoid data loss.
-    return content;
+    // END marker missing — preamble was not properly closed (likely a truncated write).
+    // Drop everything from the start marker to EOF; returning unchanged would commit
+    // the injected instructions into branch history.
+    console.warn('[preamble] removePreambleBlock: missing END marker, dropping to EOF');
+    return content.slice(0, startIdx).replace(/\n\n$/, '');
   }
   const blockEnd = endIdx + PREAMBLE_END.length;
   const before = content.slice(0, startIdx).replace(/\n\n$/, '');

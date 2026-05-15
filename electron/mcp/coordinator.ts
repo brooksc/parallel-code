@@ -91,11 +91,15 @@ export class Coordinator {
   private readonly MAX_ACKED_BATCH_IDS = 64;
   // Serializes concurrent preamble writes to the same file path.
   private preambleWriteQueue = new Map<string, Promise<void>>();
+  // Retain PTY event unsub handles so listeners can be torn down if needed
+  // (e.g. tests calling the constructor multiple times).
+  private unsubPtyExit: (() => void) | null = null;
+  private unsubPtySpawn: (() => void) | null = null;
   constructor() {
     // Listen for PTY exits to update task status when agents are killed externally
     // (e.g., user closes a child task from the UI).
-    // No cleanup needed — coordinator lives for the entire app lifetime.
-    onPtyEvent('exit', (agentId, data) => {
+    this.unsubPtyExit?.();
+    this.unsubPtyExit = onPtyEvent('exit', (agentId, data) => {
       for (const task of this.tasks.values()) {
         if (task.agentId === agentId) {
           const { exitCode } = (data ?? {}) as { exitCode?: number };
@@ -138,7 +142,8 @@ export class Coordinator {
     // TerminalView kills the existing PTY (clearing all subscribers) then spawns a
     // new one with the same agentId.  Without this, our outputCb is lost and we
     // can never detect idle for that sub-task.
-    onPtyEvent('spawn', (agentId) => {
+    this.unsubPtySpawn?.();
+    this.unsubPtySpawn = onPtyEvent('spawn', (agentId) => {
       const outputCb = this.subscribers.get(agentId);
       if (!outputCb) return; // not a coordinated agent, or initial spawn (not yet subscribed)
       this.tailBuffers.set(agentId, ''); // discard stale data from the killed PTY
@@ -436,6 +441,18 @@ export class Coordinator {
       opts.baseBranch,
     );
 
+    // Re-check after async gap — deregisterCoordinator may have run while we awaited.
+    if (!this.coordinators.has(coordinatorId)) {
+      // Best-effort cleanup of the worktree we just created.
+      deleteTask({
+        agentIds: [],
+        branchName: result.branch_name,
+        deleteBranch: true,
+        projectRoot: root,
+      }).catch(() => {});
+      throw new Error(`Coordinator ${coordinatorId} was deregistered during task creation`);
+    }
+
     const agentId = randomUUID();
     const task: CoordinatedTask = {
       id: result.id,
@@ -689,21 +706,18 @@ export class Coordinator {
 
       return task;
     } catch (err) {
-      // Restore injected preamble file before cleaning up
+      // Restore injected preamble file before cleaning up the worktree.
+      // Must await — fire-and-forget could race with cleanupTask removing the worktree.
       if (preambleFilePath !== undefined) {
-        const restorePath = preambleFilePath;
-        const restoreContent = preambleFileOriginalContent;
-        (async () => {
-          try {
-            if (restoreContent !== null) {
-              await fsWriteFile(restorePath, restoreContent);
-            } else {
-              await fsUnlink(restorePath);
-            }
-          } catch {
-            /* ignore */
+        try {
+          if (preambleFileOriginalContent !== null) {
+            await fsWriteFile(preambleFilePath, preambleFileOriginalContent);
+          } else {
+            await fsUnlink(preambleFilePath);
           }
-        })();
+        } catch {
+          /* ignore — worktree cleanup follows */
+        }
       }
       // Best-effort cleanup: kill agent, remove worktree/branch, clear in-memory state.
       // cleanupTask handles all of this; the task is still in this.tasks so it can find it.
@@ -1171,45 +1185,54 @@ export class Coordinator {
     // Set up output monitoring so wait_for_idle and idle detection work after restart.
     // The agentId matches the one the renderer will use when it respawns the PTY.
     const { agentId } = opts;
-    this.tailBuffers.set(agentId, '');
-    this.decoders.set(agentId, new TextDecoder());
-    const outputCb = (encoded: string) => {
-      const bytes = Buffer.from(encoded, 'base64');
-      const text = (this.decoders.get(agentId) ?? new TextDecoder()).decode(bytes, {
-        stream: true,
-      });
-      const prev = this.tailBuffers.get(agentId) ?? '';
-      const combined = prev + text;
-      this.tailBuffers.set(
-        agentId,
-        combined.length > 4096 ? combined.slice(combined.length - 4096) : combined,
-      );
-      const stripped = stripAnsi(combined)
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\x00-\x1f\x7f]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (chunkContainsAgentPrompt(stripped)) {
-        if (task.status === 'running') {
-          task.status = 'idle';
-          this.maybeQueueReviewNotification(task, 'idle', null);
-        }
-        const resolvers = this.idleResolvers.get(task.id);
-        if (resolvers?.length) {
-          for (const resolve of resolvers) resolve({ reason: 'idle' });
-          this.idleResolvers.delete(task.id);
-        }
-      } else if (task.status === 'idle') {
-        task.status = 'running';
-      }
-    };
-    this.subscribers.set(agentId, outputCb);
-    // Subscribe immediately if the agent is already spawned (restart scenario where
-    // PTY existed before hydration). The spawn handler covers the deferred case.
     try {
-      subscribeToAgent(agentId, outputCb);
-    } catch {
-      /* agent not yet spawned — onPtyEvent('spawn') will subscribe when it starts */
+      this.tailBuffers.set(agentId, '');
+      this.decoders.set(agentId, new TextDecoder());
+      const outputCb = (encoded: string) => {
+        const bytes = Buffer.from(encoded, 'base64');
+        const text = (this.decoders.get(agentId) ?? new TextDecoder()).decode(bytes, {
+          stream: true,
+        });
+        const prev = this.tailBuffers.get(agentId) ?? '';
+        const combined = prev + text;
+        this.tailBuffers.set(
+          agentId,
+          combined.length > 4096 ? combined.slice(combined.length - 4096) : combined,
+        );
+        const stripped = stripAnsi(combined)
+          // eslint-disable-next-line no-control-regex
+          .replace(/[\x00-\x1f\x7f]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (chunkContainsAgentPrompt(stripped)) {
+          if (task.status === 'running') {
+            task.status = 'idle';
+            this.maybeQueueReviewNotification(task, 'idle', null);
+          }
+          const resolvers = this.idleResolvers.get(task.id);
+          if (resolvers?.length) {
+            for (const resolve of resolvers) resolve({ reason: 'idle' });
+            this.idleResolvers.delete(task.id);
+          }
+        } else if (task.status === 'idle') {
+          task.status = 'running';
+        }
+      };
+      this.subscribers.set(agentId, outputCb);
+      // Subscribe immediately if the agent is already spawned (restart scenario where
+      // PTY existed before hydration). The spawn handler covers the deferred case.
+      try {
+        subscribeToAgent(agentId, outputCb);
+      } catch {
+        /* agent not yet spawned — onPtyEvent('spawn') will subscribe when it starts */
+      }
+    } catch (err) {
+      // Clean up partial map entries so the agentId doesn't linger in state.
+      this.tailBuffers.delete(agentId);
+      this.decoders.delete(agentId);
+      this.subscribers.delete(agentId);
+      this.tasks.delete(task.id);
+      throw err;
     }
   }
 
@@ -1248,12 +1271,14 @@ export class Coordinator {
     mcpJsonPath: string,
     createdMcpJson: boolean,
     previousMcpParallelCode?: unknown,
+    writtenMcpParallelCode?: unknown,
   ): void {
     const state = this.coordinators.get(coordinatorTaskId);
     if (state) {
       state.mcpJsonPath = mcpJsonPath;
       state.createdMcpJson = createdMcpJson;
       state.previousMcpParallelCode = previousMcpParallelCode;
+      state.writtenMcpParallelCode = writtenMcpParallelCode;
     }
   }
 
@@ -1284,10 +1309,18 @@ export class Coordinator {
         if (raw !== null) {
           const content = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
           if (content.mcpServers) {
-            if (coordinator.previousMcpParallelCode !== undefined) {
-              content.mcpServers['parallel-code'] = coordinator.previousMcpParallelCode;
-            } else {
-              delete content.mcpServers['parallel-code'];
+            const current = content.mcpServers['parallel-code'];
+            const weWrote = coordinator.writtenMcpParallelCode;
+            // Only restore/delete if the current value still matches what we wrote,
+            // or if we don't have a record of what we wrote (legacy path — always restore).
+            const safeToRestore =
+              weWrote === undefined || JSON.stringify(current) === JSON.stringify(weWrote);
+            if (safeToRestore) {
+              if (coordinator.previousMcpParallelCode !== undefined) {
+                content.mcpServers['parallel-code'] = coordinator.previousMcpParallelCode;
+              } else {
+                delete content.mcpServers['parallel-code'];
+              }
             }
           }
           const hasServers = Object.keys(content.mcpServers ?? {}).length > 0;
@@ -1480,8 +1513,13 @@ export class Coordinator {
       signalDoneAt: (task.signalDoneAt ?? new Date()).toISOString(),
       signalDoneConsumed: false,
     });
-    const state: 'idle' | 'exited' = task.status === 'exited' ? 'exited' : 'idle';
-    this.maybeQueueReviewNotification(task, state, task.exitCode ?? null, 5_000);
+    // Don't queue a review notification if the agent hasn't finished spawning yet —
+    // renderer state is inconsistent while status is 'creating'.
+    // For 'running' and 'idle', the worker explicitly signalled done so treat as idle.
+    if (task.status !== 'creating') {
+      const state: 'idle' | 'exited' = task.status === 'exited' ? 'exited' : 'idle';
+      this.maybeQueueReviewNotification(task, state, task.exitCode ?? null, 5_000);
+    }
     return true;
   }
 

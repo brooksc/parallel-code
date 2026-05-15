@@ -1,5 +1,5 @@
-import { writeFileSync, renameSync, unlinkSync } from 'fs';
-import { writeFile, rename, unlink } from 'fs/promises';
+import { openSync, writeSync, fsyncSync, closeSync, renameSync, unlinkSync } from 'fs';
+import { open, rename, unlink } from 'fs/promises';
 import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
 
@@ -11,10 +11,22 @@ export function atomicWriteFileSync(
   options?: { mode?: number },
 ): void {
   const tmp = join(dirname(filePath), `.parallel-code-atomic-${randomUUID()}.tmp`);
+  let fd = -1;
   try {
-    writeFileSync(tmp, data, options);
+    fd = openSync(tmp, 'w', options?.mode);
+    writeSync(fd, data);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = -1;
     renameSync(tmp, filePath);
   } catch (err) {
+    if (fd !== -1) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
     try {
       unlinkSync(tmp);
     } catch {
@@ -31,10 +43,22 @@ export async function atomicWriteFile(
   options?: { mode?: number },
 ): Promise<void> {
   const tmp = join(dirname(filePath), `.parallel-code-atomic-${randomUUID()}.tmp`);
+  let fh: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    await writeFile(tmp, data, options);
+    fh = await open(tmp, 'w', options?.mode);
+    await fh.writeFile(data);
+    await fh.sync();
+    await fh.close();
+    fh = undefined;
     await rename(tmp, filePath);
   } catch (err) {
+    if (fh) {
+      try {
+        await fh.close();
+      } catch {
+        /* ignore */
+      }
+    }
     try {
       await unlink(tmp);
     } catch {

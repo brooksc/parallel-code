@@ -80,6 +80,8 @@ export interface CoordinatorState {
   createdMcpJson: boolean;
   /** Previous value of mcpServers["parallel-code"] before this coordinator wrote its entry, if any. */
   previousMcpParallelCode?: unknown;
+  /** The value this coordinator wrote into mcpServers["parallel-code"]; used to detect concurrent edits on deregister. */
+  writtenMcpParallelCode?: unknown;
 }
 
 // --- MCP tool input schemas ---

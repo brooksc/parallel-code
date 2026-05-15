@@ -80,7 +80,7 @@ import {
 } from './validate.js';
 import { warn as logWarn } from '../log.js';
 import { getMCPRemoteServerUrl, detectStaleDockerMCPUrl } from '../mcp/config.js';
-import { validateBranchName as sharedValidateBranchName } from '../mcp/validation.js';
+import { validateBranchName as sharedValidateBranchName, validateUUID } from '../mcp/validation.js';
 import { redactServerUrl } from '../remote/server.js';
 
 export function selectMcpJsonDir(worktreePath: string | undefined, projectRoot: string): string {
@@ -1234,6 +1234,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         },
       ) => {
         assertString(args.id, 'id');
+        validateUUID(args.id, 'id');
         assertString(args.name, 'name');
         assertString(args.projectId, 'projectId');
         validatePath(args.projectRoot, 'projectRoot');
@@ -1242,6 +1243,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         if (args.baseBranch !== undefined) sharedValidateBranchName(args.baseBranch, 'baseBranch');
         validatePath(args.worktreePath, 'worktreePath');
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
+        validateUUID(args.coordinatorTaskId, 'coordinatorTaskId');
         if (!coordinator) throw new Error('coordinator mode not initialized');
         coordinator.hydrateTask({
           id: args.id,
@@ -1362,8 +1364,17 @@ export function registerAllHandlers(win: BrowserWindow): void {
         const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
         // Docker mode requires 0.0.0.0 so the agent inside the container can reach the host.
         // Without Docker, bind to loopback — sub-agents are local processes.
+        const bindHost = args.dockerContainerName ? '0.0.0.0' : '127.0.0.1';
+        if (args.dockerContainerName) {
+          // Docker networking requires binding to all interfaces so the container can reach the host.
+          // Log prominently so the user is aware the coordinator API is LAN-reachable.
+          console.warn(
+            '[MCP] Docker mode: coordinator MCP server bound to 0.0.0.0 — reachable from local network. ' +
+              'Access is protected by the coordinator token, but consider firewall rules if on an untrusted network.',
+          );
+        }
         remoteServer = await startRemoteServerOnFreePort(7777, 7800, {
-          host: args.dockerContainerName ? '0.0.0.0' : '127.0.0.1',
+          host: bindHost,
           staticDir: distRemote,
           getTaskName: (taskId: string) => taskNames.get(taskId) ?? taskId,
           getAgentStatus: (agentId: string) => {
@@ -1503,11 +1514,13 @@ export function registerAllHandlers(win: BrowserWindow): void {
       // we created the file so deregisterCoordinator can clean up correctly.
       if (mcpJsonDir && worktreeMcpPath && mergedMcpJson !== undefined) {
         atomicWriteFileSync(worktreeMcpPath, mergedMcpJson, { mode: 0o600 });
+        const writtenMcpParallelCode: unknown = mcpConfig.mcpServers['parallel-code'];
         coordinator.setMcpJsonInfo(
           args.coordinatorTaskId,
           worktreeMcpPath,
           !mcpFileExistedBefore,
           previousMcpParallelCode,
+          writtenMcpParallelCode,
         );
 
         // Append to .git/info/exclude (local-only gitignore, not committed)

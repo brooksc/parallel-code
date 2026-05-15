@@ -146,7 +146,10 @@ export class MCPClient {
         // HTTP errors (4xx/5xx) are application errors and should not be retried.
         const isNetworkError = err instanceof TypeError;
         if (!isNetworkError || attempt === MAX_RETRIES) throw err;
-        const delayMs = Math.min(1_000 * 2 ** attempt, 30_000);
+        const elapsedAfterFail = Date.now() - startedAt;
+        const remainingAfterFail =
+          timeoutMs !== undefined ? timeoutMs - elapsedAfterFail : undefined;
+        const delayMs = Math.min(1_000 * 2 ** attempt, 30_000, remainingAfterFail ?? Infinity);
         await new Promise((r) => setTimeout(r, delayMs));
       }
     }

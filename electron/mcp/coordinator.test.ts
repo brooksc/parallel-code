@@ -3039,9 +3039,9 @@ describe('Coordinator removePreambleBlock', () => {
     expect(result).toBe('');
   });
 
-  it('returns content unchanged when end marker is absent (fail-safe, no data loss)', () => {
+  it('drops from start marker to EOF when end marker is absent (prevents preamble being committed)', () => {
     const content = 'before\n\n<sub-task-mode>\norphaned start';
-    expect(strip(content)).toBe(content);
+    expect(strip(content)).toBe('before');
   });
 
   it('returns content unchanged when no preamble marker present', () => {
@@ -3406,5 +3406,125 @@ describe('preload.cjs MCP channel allowlist', () => {
     for (const channel of required) {
       expect(preload, `preload.cjs missing channel: ${channel}`).toContain(`'${channel}'`);
     }
+  });
+});
+
+// ─── validateUUID / hydrateTask path-traversal rejection ─────────────────────
+
+describe('validateUUID — rejects non-UUID ids in MCP IPC handler', () => {
+  it('rejects ids containing path separators', async () => {
+    const { validateUUID } = await import('./validation.js');
+    expect(() => validateUUID('../../etc/passwd', 'id')).toThrow('must be a valid UUID');
+  });
+
+  it('rejects ids containing slashes', async () => {
+    const { validateUUID } = await import('./validation.js');
+    expect(() => validateUUID('task/1', 'id')).toThrow('must be a valid UUID');
+  });
+
+  it('accepts a valid UUID', async () => {
+    const { validateUUID } = await import('./validation.js');
+    const id = '550e8400-e29b-41d4-a716-446655440000';
+    expect(validateUUID(id, 'id')).toBe(id);
+  });
+});
+
+// ─── validateBranchName — additional git check-ref-format rules ───────────────
+
+describe('validateBranchName — extended git rules', () => {
+  it('rejects names starting with "/"', async () => {
+    const { validateBranchName } = await import('./validation.js');
+    expect(() => validateBranchName('/feat/bad')).toThrow('must not start with "/"');
+  });
+
+  it('rejects names ending with "/"', async () => {
+    const { validateBranchName } = await import('./validation.js');
+    expect(() => validateBranchName('feat/bad/')).toThrow('must not end with "/"');
+  });
+
+  it('rejects names ending with ".lock"', async () => {
+    const { validateBranchName } = await import('./validation.js');
+    expect(() => validateBranchName('feat.lock')).toThrow('must not end with ".lock"');
+  });
+
+  it('rejects names containing "@{"', async () => {
+    const { validateBranchName } = await import('./validation.js');
+    // { is caught by the shell metacharacter check
+    expect(() => validateBranchName('feat@{bad}')).toThrow('invalid characters');
+  });
+
+  it('rejects names containing "//"', async () => {
+    const { validateBranchName } = await import('./validation.js');
+    expect(() => validateBranchName('feat//bad')).toThrow('must not contain "//"');
+  });
+
+  it('rejects names starting with "."', async () => {
+    const { validateBranchName } = await import('./validation.js');
+    expect(() => validateBranchName('.hidden')).toThrow('must not start with "."');
+  });
+
+  it('still accepts normal branch names', async () => {
+    const { validateBranchName } = await import('./validation.js');
+    expect(validateBranchName('feat/my-feature')).toBe('feat/my-feature');
+  });
+});
+
+// ─── createTask vs concurrent deregisterCoordinator ──────────────────────────
+
+describe('Coordinator createTask — deregister race', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+  });
+
+  it('throws and cleans up the worktree when coordinator is deregistered mid-createTask', async () => {
+    const { deleteTask } = await import('../ipc/tasks.js');
+    mockCreateBackendTask.mockImplementation(async () => {
+      coordinator.deregisterCoordinator('coord-1');
+      return { id: 'task-99', branch_name: 'task/test', worktree_path: '/tmp/test-99' };
+    });
+
+    await expect(
+      coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' }),
+    ).rejects.toThrow('deregistered during task creation');
+
+    expect(vi.mocked(deleteTask)).toHaveBeenCalledWith(
+      expect.objectContaining({ branchName: 'task/test' }),
+    );
+    expect(coordinator.listTasks().find((t) => t.id === 'task-99')).toBeUndefined();
+  });
+});
+
+// ─── waitForSignalDone — timeoutMs honored under network flapping ─────────────
+
+describe('MCP client waitForSignalDone — timeout under flapping', () => {
+  it('does not sleep longer than remaining timeout when retrying', async () => {
+    const { MCPClient } = await import('./client.js');
+    const client = new MCPClient('http://localhost:9999', 'tok', 'coord-id');
+
+    const sleepDurations: number[] = [];
+    vi.spyOn(global, 'setTimeout').mockImplementation((cb, ms) => {
+      sleepDurations.push(ms as number);
+      (cb as () => void)();
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    });
+
+    vi.spyOn(client as unknown as { request: () => unknown }, 'request').mockRejectedValue(
+      new TypeError('fetch failed'),
+    );
+
+    await expect(client.waitForSignalDone('coord-id', 500)).rejects.toThrow();
+
+    // No individual sleep should have exceeded the timeout window
+    for (const d of sleepDurations) {
+      expect(d).toBeLessThanOrEqual(600); // small buffer over 500ms timeout
+    }
+
+    vi.restoreAllMocks();
   });
 });
