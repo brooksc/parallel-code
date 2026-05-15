@@ -3,7 +3,8 @@ import { produce } from 'solid-js/store';
 import { store, setStore } from './core';
 import { setActiveTask } from './navigation';
 import { setTaskFocusedPanel } from './focus';
-import type { LookPreset } from '../lib/look';
+import type { LookPreset, AppearanceMode } from '../lib/look';
+import { osIsDark } from '../lib/os-appearance';
 import type { CustomTheme } from '../lib/custom-theme';
 import { themeToYaml } from '../lib/custom-theme';
 import type { PersistedWindowState, TaskViewportVisibility } from './types';
@@ -77,6 +78,37 @@ export function setTerminalFont(terminalFont: string): void {
 
 export function setThemePreset(themePreset: LookPreset): void {
   setStore('themePreset', themePreset);
+}
+
+export function applyAppearanceMode(): void {
+  const isDark = osIsDark();
+  const mode = store.appearanceMode;
+  const slot = mode === 'system' ? (isDark ? 'dark' : 'light') : mode;
+  const preset = slot === 'dark' ? store.darkThemePreset : store.lightThemePreset;
+  const customId = slot === 'dark' ? store.darkThemeCustomId : store.lightThemeCustomId;
+  setStore('themePreset', preset);
+  setStore('activeCustomThemeId', customId);
+}
+
+export function setAppearanceMode(mode: AppearanceMode): void {
+  setStore('appearanceMode', mode);
+  applyAppearanceMode();
+}
+
+export function setLightTheme(preset: LookPreset, customId: string | null): void {
+  batch(() => {
+    setStore('lightThemePreset', preset);
+    setStore('lightThemeCustomId', customId);
+  });
+  applyAppearanceMode();
+}
+
+export function setDarkTheme(preset: LookPreset, customId: string | null): void {
+  batch(() => {
+    setStore('darkThemePreset', preset);
+    setStore('darkThemeCustomId', customId);
+  });
+  applyAppearanceMode();
 }
 
 export function saveCustomTheme(theme: CustomTheme): void {
