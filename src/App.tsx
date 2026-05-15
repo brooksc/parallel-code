@@ -15,6 +15,8 @@ import { FocusModeTaskIndicators } from './components/FocusModeTaskIndicators';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { theme } from './lib/theme';
 import { buildCustomThemeCss } from './lib/custom-theme';
+import { osIsDark } from './lib/os-appearance';
+import { applyAppearanceMode } from './store/store';
 import * as log from './lib/log';
 import {
   store,
@@ -242,6 +244,12 @@ function App() {
 
     void syncWindowMaximized();
   };
+
+  // Re-derive effective theme whenever OS dark mode or appearance mode/slots change
+  createEffect(() => {
+    osIsDark(); // reactive dependency
+    applyAppearanceMode();
+  });
 
   // Sync theme to <html> so Portal content (dialogs, tooltips) inherits CSS variables
   createEffect(() => {

@@ -138,6 +138,12 @@ export async function saveState(): Promise<void> {
     customThemes:
       Object.keys(store.customThemes).length > 0 ? { ...store.customThemes } : undefined,
     activeCustomThemeId: store.activeCustomThemeId ?? undefined,
+    appearanceMode: store.appearanceMode !== 'dark' ? store.appearanceMode : undefined,
+    lightThemePreset:
+      store.lightThemePreset !== 'islands-light' ? store.lightThemePreset : undefined,
+    lightThemeCustomId: store.lightThemeCustomId ?? undefined,
+    darkThemePreset: store.darkThemePreset !== 'islands-dark' ? store.darkThemePreset : undefined,
+    darkThemeCustomId: store.darkThemeCustomId ?? undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -352,6 +358,11 @@ interface LegacyPersistedState {
   shareDockerAgentAuth?: unknown;
   customThemes?: unknown;
   activeCustomThemeId?: unknown;
+  appearanceMode?: unknown;
+  lightThemePreset?: unknown;
+  lightThemeCustomId?: unknown;
+  darkThemePreset?: unknown;
+  darkThemeCustomId?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -496,6 +507,33 @@ export async function loadState(): Promise<void> {
 
       if (typeof raw.activeCustomThemeId === 'string') {
         s.activeCustomThemeId = raw.activeCustomThemeId;
+      }
+
+      // Restore appearance mode and per-mode theme preferences
+      const savedMode = raw.appearanceMode;
+      s.appearanceMode =
+        savedMode === 'light' || savedMode === 'dark' || savedMode === 'system'
+          ? savedMode
+          : 'dark';
+      s.darkThemePreset = isLookPreset(raw.darkThemePreset) ? raw.darkThemePreset : 'islands-dark';
+      s.lightThemePreset = isLookPreset(raw.lightThemePreset)
+        ? raw.lightThemePreset
+        : 'islands-light';
+      s.darkThemeCustomId =
+        typeof raw.darkThemeCustomId === 'string' ? raw.darkThemeCustomId : null;
+      s.lightThemeCustomId =
+        typeof raw.lightThemeCustomId === 'string' ? raw.lightThemeCustomId : null;
+
+      // Backward compat: if no appearanceMode was persisted, mirror the loaded
+      // themePreset into the appropriate slot so the user's choice isn't lost.
+      if (!savedMode && isLookPreset(raw.themePreset)) {
+        if (raw.themePreset === 'islands-light') {
+          s.appearanceMode = 'light';
+          s.lightThemePreset = raw.themePreset;
+        } else {
+          s.appearanceMode = 'dark';
+          s.darkThemePreset = raw.themePreset;
+        }
       }
 
       // Migrate any themes still in state.json to individual YAML files
