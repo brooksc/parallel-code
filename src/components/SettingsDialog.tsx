@@ -799,8 +799,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                       padding: '6px',
                       'border-radius': '6px',
                       border: 'none',
-                      background:
-                        store.appearanceMode === mode ? theme.bgElevated : 'transparent',
+                      background: store.appearanceMode === mode ? theme.bgElevated : 'transparent',
                       color: store.appearanceMode === mode ? theme.fg : theme.fgMuted,
                       cursor: 'pointer',
                       'font-size': '13px',
@@ -825,10 +824,8 @@ export function SettingsDialog(props: SettingsDialogProps) {
                   {(preset) => {
                     const isActive = () =>
                       store.appearanceMode === 'light'
-                        ? store.lightThemeCustomId === null &&
-                          store.lightThemePreset === preset.id
-                        : store.darkThemeCustomId === null &&
-                          store.darkThemePreset === preset.id;
+                        ? store.lightThemeCustomId === null && store.lightThemePreset === preset.id
+                        : store.darkThemeCustomId === null && store.darkThemePreset === preset.id;
                     return (
                       <div style={{ position: 'relative' }}>
                         <button
@@ -880,7 +877,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
 
           {/* Built-in presets — dual picker (System mode) */}
           <Show when={store.appearanceMode === 'system'}>
-            <For each={(['dark', 'light'] as const)}>
+            <For each={['dark', 'light'] as const}>
               {(slot) => (
                 <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
                   <div style={{ ...sectionLabelStyle, 'font-weight': '600' }}>

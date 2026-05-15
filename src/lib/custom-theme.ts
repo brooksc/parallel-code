@@ -157,8 +157,7 @@ export function checkThemeContrast(vars: Partial<Record<CssVar, string>>): Contr
       // If the bg has alpha, composite it over --bg-elevated before checking.
       // Without blending, rgba(x,y,z,0.2) would be compared against white,
       // producing false positives for intentionally translucent selected states.
-      const resolvedBg =
-        bgElevated && colord(bg).alpha() < 1 ? blendOver(bg, bgElevated) : bg;
+      const resolvedBg = bgElevated && colord(bg).alpha() < 1 ? blendOver(bg, bgElevated) : bg;
 
       const ratio = colord(fg).contrast(colord(resolvedBg));
       if (isFinite(ratio) && ratio < required) {
