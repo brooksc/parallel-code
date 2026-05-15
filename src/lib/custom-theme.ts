@@ -133,14 +133,34 @@ const CONTRAST_PAIRS: [CssVar, CssVar, number][] = [
   ['--accent-text', '--accent', 4.5],
 ];
 
+/** Alpha-blend a color over an opaque background, returning the composited hex. */
+function blendOver(color: string, backdrop: string): string {
+  const c = colord(color).toRgb();
+  const b = colord(backdrop).toRgb();
+  const a = c.a ?? 1;
+  return colord({
+    r: Math.round(c.r * a + b.r * (1 - a)),
+    g: Math.round(c.g * a + b.g * (1 - a)),
+    b: Math.round(c.b * a + b.b * (1 - a)),
+  }).toHex();
+}
+
 export function checkThemeContrast(vars: Partial<Record<CssVar, string>>): ContrastWarning[] {
   const warnings: ContrastWarning[] = [];
+  const bgElevated = vars['--bg-elevated'];
+
   for (const [fgVar, bgVar, required] of CONTRAST_PAIRS) {
     const fg = vars[fgVar];
     const bg = vars[bgVar];
     if (!fg || !bg) continue;
     try {
-      const ratio = colord(fg).contrast(colord(bg));
+      // If the bg has alpha, composite it over --bg-elevated before checking.
+      // Without blending, rgba(x,y,z,0.2) would be compared against white,
+      // producing false positives for intentionally translucent selected states.
+      const resolvedBg =
+        bgElevated && colord(bg).alpha() < 1 ? blendOver(bg, bgElevated) : bg;
+
+      const ratio = colord(fg).contrast(colord(resolvedBg));
       if (isFinite(ratio) && ratio < required) {
         warnings.push({ fgVar, bgVar, fg, bg, ratio: Math.round(ratio * 100) / 100, required });
       }
