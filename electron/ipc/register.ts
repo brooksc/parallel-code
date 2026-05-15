@@ -563,10 +563,12 @@ export function registerAllHandlers(win: BrowserWindow): void {
   ipcMain.handle(IPC.SaveCustomTheme, (_e, args) => {
     assertString(args.id, 'id');
     assertString(args.yaml, 'yaml');
+    if (!/^[\w-]+$/.test(args.id)) throw new Error('Invalid theme id');
     saveCustomThemeFile(args.id, args.yaml);
   });
   ipcMain.handle(IPC.DeleteCustomTheme, (_e, args) => {
     assertString(args.id, 'id');
+    if (!/^[\w-]+$/.test(args.id)) throw new Error('Invalid theme id');
     deleteCustomThemeFile(args.id);
   });
 
