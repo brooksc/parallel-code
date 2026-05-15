@@ -75,7 +75,13 @@ vi.mock('../lib/os-appearance', () => ({
   },
 }));
 
-import { applyAppearanceMode, setAppearanceMode, setDarkTheme, setLightTheme, deleteCustomTheme } from './ui';
+import {
+  applyAppearanceMode,
+  setAppearanceMode,
+  setDarkTheme,
+  setLightTheme,
+  deleteCustomTheme,
+} from './ui';
 
 function makeTheme(id: string): CustomTheme {
   return { id, name: id, terminalBackground: '#000000', vars: {} };
@@ -223,8 +229,8 @@ describe('deleteCustomTheme slot cleanup', () => {
 
   it('does not affect other themes in slots', () => {
     mockStore.customThemes = {
-      'gone': makeTheme('gone'),
-      'kept': makeTheme('kept'),
+      gone: makeTheme('gone'),
+      kept: makeTheme('kept'),
     };
     mockStore.darkThemeCustomId = 'kept';
     mockStore.lightThemeCustomId = 'kept';
