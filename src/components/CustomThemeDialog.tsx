@@ -3,7 +3,8 @@ import { Dialog } from './Dialog';
 import { theme, sectionLabelStyle } from '../lib/theme';
 import { generateThemePrompt, parseThemeYaml, checkThemeContrast } from '../lib/custom-theme';
 import type { CustomTheme, ContrastWarning } from '../lib/custom-theme';
-import { store, saveCustomTheme, activateCustomTheme } from '../store/store';
+import { store, saveCustomTheme, setDarkTheme, setLightTheme } from '../store/store';
+import { osIsDark } from '../lib/os-appearance';
 
 interface CustomThemeDialogProps {
   open: boolean;
@@ -81,7 +82,15 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
     const id = props.editId ?? crypto.randomUUID();
     const newTheme: CustomTheme = { id, ...result };
     saveCustomTheme(newTheme);
-    activateCustomTheme(id);
+    // Record the new theme in the appropriate slot so applyAppearanceMode()
+    // restores it correctly on OS switches and relaunches.
+    const mode = store.appearanceMode;
+    const slot = mode === 'system' ? (osIsDark() ? 'dark' : 'light') : mode;
+    if (slot === 'light') {
+      setLightTheme(store.lightThemePreset, id);
+    } else {
+      setDarkTheme(store.darkThemePreset, id);
+    }
     props.onClose();
   }
 

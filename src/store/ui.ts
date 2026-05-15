@@ -126,9 +126,12 @@ export function deleteCustomTheme(id: string): void {
       delete themes[id];
     }),
   );
-  if (store.activeCustomThemeId === id) {
-    setStore('activeCustomThemeId', null);
-  }
+  batch(() => {
+    if (store.darkThemeCustomId === id) setStore('darkThemeCustomId', null);
+    if (store.lightThemeCustomId === id) setStore('lightThemeCustomId', null);
+    if (store.activeCustomThemeId === id) setStore('activeCustomThemeId', null);
+  });
+  applyAppearanceMode();
   invoke(IPC.DeleteCustomTheme, { id }).catch((e) =>
     console.warn('Failed to delete custom theme file:', e),
   );

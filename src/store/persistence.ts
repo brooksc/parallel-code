@@ -472,14 +472,18 @@ export async function loadState(): Promise<void> {
         typeof raw.lightThemeCustomId === 'string' ? raw.lightThemeCustomId : null;
 
       // Backward compat: if no appearanceMode was persisted, mirror the loaded
-      // themePreset into the appropriate slot so the user's choice isn't lost.
-      if (!savedMode && isLookPreset(raw.themePreset)) {
-        if (raw.themePreset === 'islands-light') {
+      // themePreset (and any active custom theme) into the appropriate slot.
+      if (!savedMode) {
+        const migratedCustomId =
+          typeof raw.activeCustomThemeId === 'string' ? raw.activeCustomThemeId : null;
+        if (isLookPreset(raw.themePreset) && raw.themePreset === 'islands-light') {
           s.appearanceMode = 'light';
           s.lightThemePreset = raw.themePreset;
+          s.lightThemeCustomId = migratedCustomId;
         } else {
           s.appearanceMode = 'dark';
-          s.darkThemePreset = raw.themePreset;
+          if (isLookPreset(raw.themePreset)) s.darkThemePreset = raw.themePreset;
+          s.darkThemeCustomId = migratedCustomId;
         }
       }
 
