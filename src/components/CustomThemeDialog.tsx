@@ -1,8 +1,8 @@
-import { createSignal, createEffect, Show, createUniqueId, on } from 'solid-js';
+import { createSignal, createEffect, Show, For, createUniqueId, on } from 'solid-js';
 import { Dialog } from './Dialog';
 import { theme, sectionLabelStyle } from '../lib/theme';
-import { generateThemePrompt, parseThemeYaml } from '../lib/custom-theme';
-import type { CustomTheme } from '../lib/custom-theme';
+import { generateThemePrompt, parseThemeYaml, checkThemeContrast } from '../lib/custom-theme';
+import type { CustomTheme, ContrastWarning } from '../lib/custom-theme';
 import { store, saveCustomTheme, activateCustomTheme } from '../store/store';
 
 interface CustomThemeDialogProps {
@@ -25,6 +25,7 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
   const titleId = createUniqueId();
   const [yaml, setYaml] = createSignal('');
   const [error, setError] = createSignal<string | null>(null);
+  const [warnings, setWarnings] = createSignal<ContrastWarning[]>([]);
   const [copied, setCopied] = createSignal(false);
   const [showPrompt, setShowPrompt] = createSignal(false);
 
@@ -48,18 +49,21 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
     ),
   );
 
-  // Live validation
+  // Live validation + contrast check
   createEffect(() => {
     const text = yaml().trim();
     if (!text) {
       setError(null);
+      setWarnings([]);
       return;
     }
     try {
-      parseThemeYaml(text);
+      const parsed = parseThemeYaml(text);
       setError(null);
+      setWarnings(checkThemeContrast(parsed.vars));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setWarnings([]);
     }
   });
 
@@ -206,7 +210,7 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
             width: '100%',
             height: '200px',
             background: theme.bgInput,
-            border: `1px solid ${error() ? theme.error : isValid() ? theme.success : theme.border}`,
+            border: `1px solid ${error() ? theme.error : warnings().length > 0 ? theme.warning : isValid() ? theme.success : theme.border}`,
             color: theme.fg,
             'font-family': "'JetBrains Mono', monospace",
             'font-size': '12px',
@@ -225,10 +229,47 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
         </Show>
         <Show when={parsed()} keyed>
           {(p) => (
-            <p style={{ margin: '0', 'font-size': '12px', color: theme.success }}>
+            <p
+              style={{
+                margin: '0',
+                'font-size': '12px',
+                color: warnings().length > 0 ? theme.warning : theme.success,
+              }}
+            >
               Theme is valid — {Object.keys(p.vars).length} variable(s) defined.
+              {warnings().length > 0 ? ` ${warnings().length} contrast warning(s).` : ''}
             </p>
           )}
+        </Show>
+        <Show when={warnings().length > 0}>
+          <div
+            style={{
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '4px',
+              padding: '8px 10px',
+              background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${theme.warning} 25%, transparent)`,
+              'border-radius': '6px',
+            }}
+          >
+            <span style={{ 'font-size': '11px', 'font-weight': '600', color: theme.warning }}>
+              Contrast warnings (theme will still save)
+            </span>
+            <For each={warnings()}>
+              {(w) => (
+                <span
+                  style={{
+                    'font-size': '11px',
+                    color: theme.fgMuted,
+                    'font-family': "'JetBrains Mono', monospace",
+                  }}
+                >
+                  {w.fgVar} on {w.bgVar}: {w.ratio.toFixed(2)}:1 (need {w.required}:1)
+                </span>
+              )}
+            </For>
+          </div>
         </Show>
       </div>
 
