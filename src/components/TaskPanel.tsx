@@ -38,6 +38,7 @@ import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { SubTaskStrip } from './SubTaskStrip';
 import { theme } from '../lib/theme';
+import { isMac } from '../lib/platform';
 import type { Task } from '../store/types';
 import type { CommitInfo } from '../ipc/types';
 
@@ -549,6 +550,19 @@ export function TaskPanel(props: TaskPanelProps) {
             >
               Release Control
             </button>
+          </div>
+        </Show>
+        <Show when={props.task.coordinatorMode && props.task.dockerMode && isMac}>
+          <div
+            style={{
+              'border-bottom': `1px solid ${theme.border}`,
+              background: `color-mix(in srgb, ${theme.warning} 8%, transparent)`,
+              padding: '4px 12px',
+              'font-size': '11px',
+              color: theme.warning,
+            }}
+          >
+            MCP server bound to all interfaces (macOS + Docker) — port reachable on local network
           </div>
         </Show>
       </Show>

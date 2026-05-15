@@ -1362,15 +1362,18 @@ export function registerAllHandlers(win: BrowserWindow): void {
       if (!remoteServer) {
         const thisDir = path.dirname(fileURLToPath(import.meta.url));
         const distRemote = path.join(thisDir, '..', '..', 'dist-remote');
-        // Docker mode requires 0.0.0.0 so the agent inside the container can reach the host.
-        // Without Docker, bind to loopback — sub-agents are local processes.
-        const bindHost = args.dockerContainerName ? '0.0.0.0' : '127.0.0.1';
-        if (args.dockerContainerName) {
-          // Docker networking requires binding to all interfaces so the container can reach the host.
-          // Log prominently so the user is aware the coordinator API is LAN-reachable.
+        // Docker mode on macOS requires 0.0.0.0: sub-task containers connect via
+        // host.docker.internal which routes through Docker Desktop's virtual network adapter,
+        // so the host must listen on all interfaces.  On Linux, --network host puts containers
+        // in the host's own network namespace, so 127.0.0.1 reaches the host loopback directly.
+        const isLinux = process.platform === 'linux';
+        const bindHost = args.dockerContainerName && !isLinux ? '0.0.0.0' : '127.0.0.1';
+        if (args.dockerContainerName && !isLinux) {
           console.warn(
-            '[MCP] Docker mode: coordinator MCP server bound to 0.0.0.0 — reachable from local network. ' +
-              'Access is protected by the coordinator token, but consider firewall rules if on an untrusted network.',
+            '[MCP] Docker mode (macOS): coordinator MCP server bound to 0.0.0.0 — reachable from ' +
+              'local network interfaces. Traffic from sub-task containers uses Docker Desktop internal ' +
+              'networking and does not traverse the physical LAN, but the port is reachable from other ' +
+              'LAN hosts. Access is token-protected. Consider firewall rules on untrusted networks.',
           );
         }
         remoteServer = await startRemoteServerOnFreePort(7777, 7800, {

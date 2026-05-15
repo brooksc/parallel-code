@@ -25,6 +25,7 @@ import { SegmentedButtons } from './SegmentedButtons';
 import { autoTaskNameFromPrompt } from '../lib/clean-task-name';
 import { extractGitHubUrl } from '../lib/github-url';
 import { theme, sectionLabelStyle, bannerStyle } from '../lib/theme';
+import { isMac } from '../lib/platform';
 import { AgentSelector } from './AgentSelector';
 import { BranchPrefixField } from './BranchPrefixField';
 import { ProjectSelect } from './ProjectSelect';
@@ -923,6 +924,13 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
                       Agent credentials are shared across containers.
                     </Show>
                   </div>
+                  <Show when={coordinatorMode() && isMac}>
+                    <div style={{ ...bannerStyle(theme.warning), 'font-size': '12px' }}>
+                      Coordinator + Docker on macOS: the MCP server binds to all network interfaces
+                      so sub-task containers can reach it via host.docker.internal. The port is
+                      reachable from other hosts on your local network (token-protected).
+                    </div>
+                  </Show>
                   <Show when={projectDockerfile()}>
                     <div
                       style={{
