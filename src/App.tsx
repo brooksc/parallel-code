@@ -20,6 +20,7 @@ import {
   store,
   loadAgents,
   loadState,
+  loadCustomThemes,
   saveState,
   toggleNewTaskDialog,
   toggleSidebar,
@@ -342,6 +343,7 @@ function App() {
       () => setDockerAvailable(false),
     );
     await loadState();
+    await loadCustomThemes();
     await loadKeybindings();
 
     // Restore plan content for tasks that had a plan file before restart
