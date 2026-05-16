@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LOOK_PRESETS, presetsForTone, defaultPresetForTone } from './look';
+import { LOOK_PRESETS, presetsForTone, defaultPresetForTone, isLookPreset } from './look';
 
 describe('presetsForTone', () => {
   it('returns only dark presets for tone dark', () => {
@@ -33,5 +33,24 @@ describe('defaultPresetForTone', () => {
 
   it('returns islands-dark for dark', () => {
     expect(defaultPresetForTone('dark')).toBe('islands-dark');
+  });
+});
+
+describe('isLookPreset', () => {
+  it('returns true for every known preset id', () => {
+    for (const preset of LOOK_PRESETS) {
+      expect(isLookPreset(preset.id)).toBe(true);
+    }
+  });
+
+  it('returns false for an unknown string', () => {
+    expect(isLookPreset('not-a-theme')).toBe(false);
+  });
+
+  it('returns false for non-string values', () => {
+    expect(isLookPreset(null)).toBe(false);
+    expect(isLookPreset(undefined)).toBe(false);
+    expect(isLookPreset(42)).toBe(false);
+    expect(isLookPreset({})).toBe(false);
   });
 });

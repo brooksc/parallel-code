@@ -363,3 +363,124 @@ describe('loadState agent definition migrations', () => {
     expect(restored.skip_permissions_args).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
   });
 });
+
+// Minimal valid payload — no theme fields — used as a base for theme migration tests.
+function basePayload(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    projects: [{ id: 'p1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
+    lastProjectId: 'p1',
+    lastAgentId: null,
+    taskOrder: [],
+    collapsedTaskOrder: [],
+    tasks: {},
+    activeTaskId: null,
+    sidebarVisible: true,
+    ...overrides,
+  });
+}
+
+describe('loadState theme persistence', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setStore('projects', []);
+    setStore('taskOrder', []);
+    setStore('collapsedTaskOrder', []);
+    setStore('tasks', {});
+    setStore('agents', {});
+    setStore('activeTaskId', null);
+    setStore('activeAgentId', null);
+    setStore('availableAgents', []);
+    setStore('customAgents', []);
+  });
+
+  it('defaults to dark mode with islands-dark/islands-light when no theme fields saved', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload());
+    await loadState();
+
+    expect(store.appearanceMode).toBe('dark');
+    expect(store.darkThemePreset).toBe('islands-dark');
+    expect(store.lightThemePreset).toBe('islands-light');
+    expect(store.darkThemeCustomId).toBeNull();
+    expect(store.lightThemeCustomId).toBeNull();
+  });
+
+  it('restores explicit appearanceMode values', async () => {
+    for (const mode of ['light', 'dark', 'system'] as const) {
+      mockInvoke.mockResolvedValueOnce(basePayload({ appearanceMode: mode }));
+      await loadState();
+      expect(store.appearanceMode).toBe(mode);
+    }
+  });
+
+  it('falls back to dark for an invalid appearanceMode value', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload({ appearanceMode: 'solarized' }));
+    await loadState();
+    expect(store.appearanceMode).toBe('dark');
+  });
+
+  it('restores a valid darkThemePreset', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      basePayload({ appearanceMode: 'dark', darkThemePreset: 'classic' }),
+    );
+    await loadState();
+    expect(store.darkThemePreset).toBe('classic');
+  });
+
+  it('falls back to islands-dark for an invalid darkThemePreset', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      basePayload({ appearanceMode: 'dark', darkThemePreset: 'not-a-theme' }),
+    );
+    await loadState();
+    expect(store.darkThemePreset).toBe('islands-dark');
+  });
+
+  it('restores a valid lightThemePreset', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      basePayload({ appearanceMode: 'light', lightThemePreset: 'islands-light' }),
+    );
+    await loadState();
+    expect(store.lightThemePreset).toBe('islands-light');
+  });
+
+  it('falls back to islands-light for an invalid lightThemePreset', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      basePayload({ appearanceMode: 'light', lightThemePreset: 'bogus' }),
+    );
+    await loadState();
+    expect(store.lightThemePreset).toBe('islands-light');
+  });
+
+  it('restores customId strings and nulls non-strings', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      basePayload({
+        appearanceMode: 'dark',
+        darkThemeCustomId: 'my-custom',
+        lightThemeCustomId: 42,
+      }),
+    );
+    await loadState();
+    expect(store.darkThemeCustomId).toBe('my-custom');
+    expect(store.lightThemeCustomId).toBeNull();
+  });
+
+  it('backward compat: old themePreset=islands-light migrates to light mode', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload({ themePreset: 'islands-light' }));
+    await loadState();
+    expect(store.appearanceMode).toBe('light');
+    expect(store.lightThemePreset).toBe('islands-light');
+  });
+
+  it('backward compat: old themePreset=classic (dark) migrates to dark mode', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload({ themePreset: 'classic' }));
+    await loadState();
+    expect(store.appearanceMode).toBe('dark');
+    expect(store.darkThemePreset).toBe('classic');
+  });
+
+  it('backward compat: invalid old themePreset leaves dark mode with islands-dark', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload({ themePreset: 'legacy-unknown' }));
+    await loadState();
+    expect(store.appearanceMode).toBe('dark');
+    expect(store.darkThemePreset).toBe('islands-dark');
+  });
+});
