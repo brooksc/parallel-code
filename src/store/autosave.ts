@@ -34,6 +34,11 @@ function persistedSnapshot(): string {
     customAgents: store.customAgents,
     focusMode: store.focusMode,
     shareDockerAgentAuth: store.shareDockerAgentAuth,
+    appearanceMode: store.appearanceMode,
+    lightThemePreset: store.lightThemePreset,
+    lightThemeCustomId: store.lightThemeCustomId,
+    darkThemePreset: store.darkThemePreset,
+    darkThemeCustomId: store.darkThemeCustomId,
     tasks: Object.fromEntries(
       [...store.taskOrder, ...store.collapsedTaskOrder]
         .filter((id) => store.tasks[id])

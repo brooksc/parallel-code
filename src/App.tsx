@@ -60,6 +60,8 @@ import {
 } from './lib/shortcuts';
 import { resolvedBindings, loadKeybindings, dismissMigrationBanner } from './store/keybindings';
 import { setupAutosave } from './store/autosave';
+import { osIsDark } from './lib/os-appearance';
+import { applyAppearanceMode } from './store/store';
 import { isMac, mod } from './lib/platform';
 import { createCtrlWheelZoomHandler } from './lib/wheelZoom';
 import { ArenaOverlay } from './arena/ArenaOverlay';
@@ -242,7 +244,13 @@ function App() {
     void syncWindowMaximized();
   };
 
-  // Sync theme preset to <html> so Portal content inherits CSS variables
+  // Re-derive effective theme whenever OS dark mode or appearance mode/slots change
+  createEffect(() => {
+    osIsDark(); // reactive dependency
+    applyAppearanceMode();
+  });
+
+  // Sync theme to <html> so Portal content (dialogs, tooltips) inherits CSS variables
   createEffect(() => {
     document.documentElement.dataset.look = store.themePreset;
   });

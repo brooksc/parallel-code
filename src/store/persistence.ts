@@ -119,6 +119,12 @@ export async function saveState(): Promise<void> {
     focusMode: store.focusMode || undefined,
     verboseLogging: store.verboseLogging || undefined,
     shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
+    appearanceMode: store.appearanceMode !== 'dark' ? store.appearanceMode : undefined,
+    lightThemePreset:
+      store.lightThemePreset !== 'islands-light' ? store.lightThemePreset : undefined,
+    lightThemeCustomId: store.lightThemeCustomId ?? undefined,
+    darkThemePreset: store.darkThemePreset !== 'islands-dark' ? store.darkThemePreset : undefined,
+    darkThemeCustomId: store.darkThemeCustomId ?? undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -331,6 +337,11 @@ interface LegacyPersistedState {
   focusMode?: unknown;
   verboseLogging?: unknown;
   shareDockerAgentAuth?: unknown;
+  appearanceMode?: unknown;
+  lightThemePreset?: unknown;
+  lightThemeCustomId?: unknown;
+  darkThemePreset?: unknown;
+  darkThemeCustomId?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -472,6 +483,33 @@ export async function loadState(): Promise<void> {
       s.verboseLogging = typeof raw.verboseLogging === 'boolean' ? raw.verboseLogging : false;
 
       s.shareDockerAgentAuth = raw.shareDockerAgentAuth === true;
+
+      // Restore appearance mode and per-mode theme preferences
+      const savedMode = raw.appearanceMode;
+      s.appearanceMode =
+        savedMode === 'light' || savedMode === 'dark' || savedMode === 'system'
+          ? savedMode
+          : 'dark';
+      s.darkThemePreset = isLookPreset(raw.darkThemePreset) ? raw.darkThemePreset : 'islands-dark';
+      s.lightThemePreset = isLookPreset(raw.lightThemePreset)
+        ? raw.lightThemePreset
+        : 'islands-light';
+      s.darkThemeCustomId =
+        typeof raw.darkThemeCustomId === 'string' ? raw.darkThemeCustomId : null;
+      s.lightThemeCustomId =
+        typeof raw.lightThemeCustomId === 'string' ? raw.lightThemeCustomId : null;
+
+      // Backward compat: if no appearanceMode was persisted, mirror the loaded
+      // themePreset into the appropriate slot.
+      if (!savedMode) {
+        if (isLookPreset(raw.themePreset) && raw.themePreset === 'islands-light') {
+          s.appearanceMode = 'light';
+          s.lightThemePreset = raw.themePreset;
+        } else {
+          s.appearanceMode = 'dark';
+          if (isLookPreset(raw.themePreset)) s.darkThemePreset = raw.themePreset;
+        }
+      }
 
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =

@@ -99,20 +99,21 @@ class AppWindow {
     handler: (event: { preventDefault: () => void }) => Promise<void> | void,
   ): Promise<UnlistenFn> {
     return window.electron.ipcRenderer.on(IPC.WindowCloseRequested, () => {
-      // Tell the backend we're handling this close interactively so it cancels
-      // its 5s force-destroy fallback. From here the renderer owns the
-      // outcome: WindowForceClose to quit, hide to background, or nothing to
-      // abort. (Crash before this point still hits the backend fallback.)
-      // Best-effort: a failed ack must never abort the close handler below.
-      try {
-        void window.electron.ipcRenderer.invoke(IPC.WindowCloseHandling).catch(() => {});
-      } catch {
-        /* ack is best-effort; the backend fallback still protects us */
-      }
       let prevented = false;
       const result = handler({
         preventDefault: () => {
           prevented = true;
+          // Tell the backend we're showing an interactive dialog so it cancels
+          // its 5s force-destroy fallback. Sent only here, after the renderer
+          // has done its async pre-work (captureWindowState, saveState,
+          // CountRunningAgents) — the fallback stays armed until then so a hang
+          // in that path still gets cleaned up. Best-effort: failure must not
+          // abort the close flow.
+          try {
+            void window.electron.ipcRenderer.invoke(IPC.WindowCloseHandling).catch(() => {});
+          } catch {
+            /* ack is best-effort */
+          }
         },
       });
       // Handle async handlers
