@@ -17,9 +17,28 @@ import type { AgentDef } from '../ipc/types';
 import { inferDockerSource } from '../lib/docker';
 import { DEFAULT_TERMINAL_FONT } from '../lib/fonts';
 import { isLookPreset } from '../lib/look';
+import { validateCustomTheme, parseThemeCss, themeToCss } from '../lib/custom-theme';
+import type { CustomTheme } from '../lib/custom-theme';
 import { syncTerminalCounter } from './terminals';
 
 const RESTORED_AGENT_SPAWN_STAGGER_MS = 1_000;
+
+export async function loadCustomThemes(): Promise<void> {
+  const files = await invoke<{ id: string; css: string }[]>(IPC.LoadCustomThemes).catch(() => []);
+  const loaded: Record<string, CustomTheme> = {};
+  for (const { id, css } of files) {
+    try {
+      const validated = parseThemeCss(css);
+      loaded[id] = { ...validated, id };
+    } catch (e) {
+      console.warn(
+        `[themes] Skipping malformed theme file "${id}":`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+  setStore('customThemes', loaded);
+}
 
 /** Enrich an agent def with resume/skip-permissions args from fresh defaults. */
 function enrichAgentDef(agentDef: AgentDef | null | undefined, availableAgents: AgentDef[]): void {
@@ -180,6 +199,7 @@ export async function saveState(): Promise<void> {
     focusMode: store.focusMode || undefined,
     verboseLogging: store.verboseLogging || undefined,
     shareDockerAgentAuth: store.shareDockerAgentAuth || undefined,
+    activeCustomThemeId: store.activeCustomThemeId ?? undefined,
     appearanceMode: store.appearanceMode !== 'dark' ? store.appearanceMode : undefined,
     lightThemePreset:
       store.lightThemePreset !== 'islands-light' ? store.lightThemePreset : undefined,
@@ -406,6 +426,8 @@ interface LegacyPersistedState {
   focusMode?: unknown;
   verboseLogging?: unknown;
   shareDockerAgentAuth?: unknown;
+  customThemes?: unknown;
+  activeCustomThemeId?: unknown;
   appearanceMode?: unknown;
   lightThemePreset?: unknown;
   lightThemeCustomId?: unknown;
@@ -556,6 +578,10 @@ export async function loadState(): Promise<void> {
 
       s.shareDockerAgentAuth = raw.shareDockerAgentAuth === true;
 
+      if (typeof raw.activeCustomThemeId === 'string') {
+        s.activeCustomThemeId = raw.activeCustomThemeId;
+      }
+
       // Restore appearance mode and per-mode theme preferences
       const savedMode = raw.appearanceMode;
       s.appearanceMode =
@@ -572,14 +598,18 @@ export async function loadState(): Promise<void> {
         typeof raw.lightThemeCustomId === 'string' ? raw.lightThemeCustomId : null;
 
       // Backward compat: if no appearanceMode was persisted, mirror the loaded
-      // themePreset into the appropriate slot.
+      // themePreset (and any active custom theme) into the appropriate slot.
       if (!savedMode) {
+        const migratedCustomId =
+          typeof raw.activeCustomThemeId === 'string' ? raw.activeCustomThemeId : null;
         if (isLookPreset(raw.themePreset) && raw.themePreset === 'islands-light') {
           s.appearanceMode = 'light';
           s.lightThemePreset = raw.themePreset;
+          s.lightThemeCustomId = migratedCustomId;
         } else {
           s.appearanceMode = 'dark';
           if (isLookPreset(raw.themePreset)) s.darkThemePreset = raw.themePreset;
+          s.darkThemeCustomId = migratedCustomId;
         }
       }
 
@@ -800,4 +830,26 @@ export async function loadState(): Promise<void> {
   }
 
   syncTerminalCounter();
+
+  // Await migration of any customThemes found in state.json to individual CSS files.
+  // Runs after the produce block so it can be properly awaited. loadCustomThemes() in
+  // App.tsx runs after loadState() returns, so the files will exist before the load.
+  if (raw.customThemes && typeof raw.customThemes === 'object') {
+    const migrations: Promise<unknown>[] = [];
+    for (const [id, entry] of Object.entries(raw.customThemes as Record<string, unknown>)) {
+      try {
+        const validated = validateCustomTheme(entry);
+        const css = themeToCss(
+          validated.name,
+          validated.description ?? '',
+          validated.terminalBackground,
+          validated.vars,
+        );
+        migrations.push(invoke(IPC.SaveCustomTheme, { id, css }));
+      } catch {
+        // skip malformed entries
+      }
+    }
+    if (migrations.length > 0) await Promise.allSettled(migrations);
+  }
 }

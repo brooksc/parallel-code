@@ -7,7 +7,7 @@ import { invoke, fireAndForget, Channel } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import { getTerminalFontFamily } from '../lib/fonts';
 import { TERMINAL_SCROLLBACK_LINES } from '../lib/terminalConstants';
-import { getTerminalTheme } from '../lib/theme';
+import { getTerminalTheme, getTerminalThemeForCustom } from '../lib/theme';
 import { matchesGlobalShortcut } from '../lib/shortcuts';
 import { isMac } from '../lib/platform';
 import { resolvedBindings } from '../store/keybindings';
@@ -108,6 +108,14 @@ export function TerminalView(props: TerminalViewProps) {
   let fitAddon: FitAddon | undefined;
   let webglAddon: WebglAddon | undefined;
 
+  function activeTerminalTheme() {
+    const id = store.activeCustomThemeId;
+    const custom = id ? store.customThemes[id] : undefined;
+    return custom
+      ? getTerminalThemeForCustom(custom.terminalBackground)
+      : getTerminalTheme(store.themePreset);
+  }
+
   onMount(() => {
     // Capture props eagerly so cleanup/callbacks always use the original values
     const taskId = props.taskId;
@@ -129,7 +137,7 @@ export function TerminalView(props: TerminalViewProps) {
       cursorBlink: true,
       fontSize: initialFontSize,
       fontFamily: getTerminalFontFamily(store.terminalFont),
-      theme: getTerminalTheme(store.themePreset),
+      theme: activeTerminalTheme(),
       allowProposedApi: true,
       scrollback: TERMINAL_SCROLLBACK_LINES,
     });
@@ -711,9 +719,8 @@ export function TerminalView(props: TerminalViewProps) {
   });
 
   createEffect(() => {
-    const preset = store.themePreset;
     if (!term) return;
-    term.options.theme = getTerminalTheme(preset);
+    term.options.theme = activeTerminalTheme();
     markDirty(props.agentId);
   });
 

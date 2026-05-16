@@ -5,6 +5,8 @@ import { setActiveTask } from './navigation';
 import { setTaskFocusedPanel } from './focus';
 import type { LookPreset, AppearanceMode } from '../lib/look';
 import { osIsDark } from '../lib/os-appearance';
+import type { CustomTheme } from '../lib/custom-theme';
+import { themeToCss } from '../lib/custom-theme';
 import type { PersistedWindowState, TaskViewportVisibility } from './types';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -82,8 +84,17 @@ export function applyAppearanceMode(): void {
   const isDark = osIsDark();
   const mode = store.appearanceMode;
   const slot = mode === 'system' ? (isDark ? 'dark' : 'light') : mode;
+
+  // Sanitize both slots so the inactive grid in System mode also shows a selected card
+  const rawDark = store.darkThemeCustomId;
+  if (rawDark && !store.customThemes[rawDark]) setStore('darkThemeCustomId', null);
+  const rawLight = store.lightThemeCustomId;
+  if (rawLight && !store.customThemes[rawLight]) setStore('lightThemeCustomId', null);
+
   const preset = slot === 'dark' ? store.darkThemePreset : store.lightThemePreset;
+  const customId = slot === 'dark' ? store.darkThemeCustomId : store.lightThemeCustomId;
   setStore('themePreset', preset);
+  setStore('activeCustomThemeId', customId);
 }
 
 export function setAppearanceMode(mode: AppearanceMode): void {
@@ -105,6 +116,32 @@ export function setDarkTheme(preset: LookPreset, customId: string | null): void 
     setStore('darkThemeCustomId', customId);
   });
   applyAppearanceMode();
+}
+
+export async function saveCustomTheme(theme: CustomTheme): Promise<void> {
+  const css = themeToCss(theme.name, theme.description, theme.terminalBackground, theme.vars);
+  await invoke(IPC.SaveCustomTheme, { id: theme.id, css });
+  setStore('customThemes', theme.id, theme);
+}
+
+export async function deleteCustomTheme(id: string): Promise<void> {
+  await invoke(IPC.DeleteCustomTheme, { id });
+  setStore(
+    'customThemes',
+    produce((themes: Record<string, CustomTheme>) => {
+      delete themes[id];
+    }),
+  );
+  batch(() => {
+    if (store.darkThemeCustomId === id) setStore('darkThemeCustomId', null);
+    if (store.lightThemeCustomId === id) setStore('lightThemeCustomId', null);
+    if (store.activeCustomThemeId === id) setStore('activeCustomThemeId', null);
+  });
+  applyAppearanceMode();
+}
+
+export function activateCustomTheme(id: string | null): void {
+  setStore('activeCustomThemeId', id);
 }
 
 export function setAutoTrustFolders(autoTrustFolders: boolean): void {
