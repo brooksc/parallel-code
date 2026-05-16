@@ -62,7 +62,7 @@ import { resolvedBindings, loadKeybindings, dismissMigrationBanner } from './sto
 import { setupAutosave } from './store/autosave';
 import { buildCustomThemeCss } from './lib/custom-theme';
 import { osIsDark } from './lib/os-appearance';
-import { applyAppearanceMode, loadCustomThemes } from './store/store';
+import { applyAppearanceMode, markCustomThemesReady, loadCustomThemes } from './store/store';
 import { isMac, mod } from './lib/platform';
 import { createCtrlWheelZoomHandler } from './lib/wheelZoom';
 import { ArenaOverlay } from './arena/ArenaOverlay';
@@ -358,10 +358,10 @@ function App() {
       () => setDockerAvailable(false),
     );
     await loadState();
-    await loadCustomThemes();
-    // Re-apply appearance mode now that custom themes are populated in the store,
-    // so activeCustomThemeId resolves to an actual theme object.
-    applyAppearanceMode();
+    const themesLoaded = await loadCustomThemes();
+    // Only unlock slot-ID sanitization when the IPC call succeeded. On failure
+    // customThemes remains {} and we must not null out the user's persisted selections.
+    if (themesLoaded) markCustomThemesReady();
     await loadKeybindings();
 
     // Restore plan content for tasks that had a plan file before restart

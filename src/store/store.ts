@@ -107,6 +107,7 @@ export {
   setTerminalFont,
   setThemePreset,
   applyAppearanceMode,
+  markCustomThemesReady,
   setAppearanceMode,
   setLightTheme,
   setDarkTheme,

@@ -23,8 +23,14 @@ import { syncTerminalCounter } from './terminals';
 
 const RESTORED_AGENT_SPAWN_STAGGER_MS = 1_000;
 
-export async function loadCustomThemes(): Promise<void> {
-  const files = await invoke<{ id: string; css: string }[]>(IPC.LoadCustomThemes).catch(() => []);
+export async function loadCustomThemes(): Promise<boolean> {
+  let files: { id: string; css: string }[];
+  try {
+    files = await invoke<{ id: string; css: string }[]>(IPC.LoadCustomThemes);
+  } catch {
+    // IPC failure — don't touch store and signal failure so caller skips sanitization.
+    return false;
+  }
   const loaded: Record<string, CustomTheme> = {};
   for (const { id, css } of files) {
     try {
@@ -38,6 +44,7 @@ export async function loadCustomThemes(): Promise<void> {
     }
   }
   setStore('customThemes', loaded);
+  return true;
 }
 
 /** Enrich an agent def with resume/skip-permissions args from fresh defaults. */

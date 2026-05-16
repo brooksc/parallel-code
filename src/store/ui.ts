@@ -11,6 +11,20 @@ import type { PersistedWindowState, TaskViewportVisibility } from './types';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 
+// Set to true after loadCustomThemes() resolves. Sanitization of persisted slot
+// IDs is skipped until then so the startup reactive effect cannot null them out
+// before the theme files have been loaded into the store.
+let customThemesReady = false;
+
+export function markCustomThemesReady(): void {
+  customThemesReady = true;
+  applyAppearanceMode();
+}
+
+export function _resetCustomThemesReadyForTest(): void {
+  customThemesReady = false;
+}
+
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.0;
 const SCALE_STEP = 0.1;
@@ -85,11 +99,15 @@ export function applyAppearanceMode(): void {
   const mode = store.appearanceMode;
   const slot = mode === 'system' ? (isDark ? 'dark' : 'light') : mode;
 
-  // Sanitize both slots so the inactive grid in System mode also shows a selected card
-  const rawDark = store.darkThemeCustomId;
-  if (rawDark && !store.customThemes[rawDark]) setStore('darkThemeCustomId', null);
-  const rawLight = store.lightThemeCustomId;
-  if (rawLight && !store.customThemes[rawLight]) setStore('lightThemeCustomId', null);
+  // Sanitize both slots so the inactive grid in System mode also shows a selected card.
+  // Skip before customThemesReady: theme files aren't in the store yet, and nulling
+  // the persisted IDs now would permanently lose the user's selection.
+  if (customThemesReady) {
+    const rawDark = store.darkThemeCustomId;
+    if (rawDark && !store.customThemes[rawDark]) setStore('darkThemeCustomId', null);
+    const rawLight = store.lightThemeCustomId;
+    if (rawLight && !store.customThemes[rawLight]) setStore('lightThemeCustomId', null);
+  }
 
   const preset = slot === 'dark' ? store.darkThemePreset : store.lightThemePreset;
   const customId = slot === 'dark' ? store.darkThemeCustomId : store.lightThemeCustomId;

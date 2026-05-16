@@ -103,19 +103,34 @@ export function getTerminalTheme(preset: LookPreset) {
  */
 export function readCssVarsForPreset(presetId: string): Partial<Record<CssVar, string>> {
   const el = document.documentElement;
-  const saved = el.dataset.look;
+  const savedLook = el.dataset.look;
+  const savedCustomTheme = el.dataset.customTheme;
+  // Suppress the active custom-theme overlay so computed vars come from the
+  // built-in preset alone, not from any custom stylesheet on top of it.
+  const styleEl = document.getElementById('custom-theme-style') as HTMLStyleElement | null;
+  const savedStyleContent = styleEl?.textContent ?? null;
+
   el.dataset.look = presetId;
+  delete el.dataset.customTheme;
+  if (styleEl) styleEl.textContent = '';
+
   const style = getComputedStyle(el);
   const result: Partial<Record<CssVar, string>> = {};
   for (const v of CSS_VARS) {
     const val = style.getPropertyValue(v).trim();
     if (val) result[v as CssVar] = val;
   }
-  if (saved !== undefined) {
-    el.dataset.look = saved;
+
+  if (savedLook !== undefined) {
+    el.dataset.look = savedLook;
   } else {
     delete el.dataset.look;
   }
+  if (savedCustomTheme !== undefined) {
+    el.dataset.customTheme = savedCustomTheme;
+  }
+  if (styleEl && savedStyleContent !== null) styleEl.textContent = savedStyleContent;
+
   return result;
 }
 

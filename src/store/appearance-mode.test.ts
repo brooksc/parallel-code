@@ -77,6 +77,8 @@ vi.mock('../lib/os-appearance', () => ({
 
 import {
   applyAppearanceMode,
+  markCustomThemesReady,
+  _resetCustomThemesReadyForTest,
   setAppearanceMode,
   setDarkTheme,
   setLightTheme,
@@ -103,6 +105,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  _resetCustomThemesReadyForTest();
 });
 
 describe('applyAppearanceMode', () => {
@@ -149,11 +152,19 @@ describe('applyAppearanceMode', () => {
     expect(mockStore.activeCustomThemeId).toBe('my-custom-id');
   });
 
+  it('before themes are loaded, stale custom IDs are preserved (startup race guard)', () => {
+    mockStore.appearanceMode = 'dark';
+    mockStore.darkThemeCustomId = 'restored-from-disk';
+    mockStore.customThemes = {}; // themes not yet loaded
+    applyAppearanceMode(); // fires reactively before markCustomThemesReady()
+    expect(mockStore.darkThemeCustomId).toBe('restored-from-disk');
+  });
+
   it('missing custom theme ID clears the slot and activeCustomThemeId', () => {
     mockStore.appearanceMode = 'dark';
     mockStore.darkThemeCustomId = 'deleted-theme';
     mockStore.customThemes = {};
-    applyAppearanceMode();
+    markCustomThemesReady(); // simulates post-load sanitization pass
     expect(mockStore.activeCustomThemeId).toBeNull();
     expect(mockStore.darkThemeCustomId).toBeNull();
   });
@@ -164,7 +175,7 @@ describe('applyAppearanceMode', () => {
     mockStore.darkThemeCustomId = null;
     mockStore.lightThemeCustomId = 'deleted-light-theme'; // stale ID in inactive slot
     mockStore.customThemes = {};
-    applyAppearanceMode();
+    markCustomThemesReady(); // simulates post-load sanitization pass
     expect(mockStore.lightThemeCustomId).toBeNull(); // inactive slot also cleared
     expect(mockStore.activeCustomThemeId).toBeNull(); // active slot unaffected
   });
