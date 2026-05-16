@@ -1579,6 +1579,7 @@ body.dragging-task * {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  width: 100%;
 }
 
 .settings-theme-card:hover {

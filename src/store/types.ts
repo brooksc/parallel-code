@@ -1,6 +1,6 @@
 import type { AgentDef, StepEntry, WorktreeStatus } from '../ipc/types';
 import type { DockerSource } from '../lib/docker';
-import type { LookPreset } from '../lib/look';
+import type { LookPreset, AppearanceMode } from '../lib/look';
 import type { KeyBinding } from '../lib/keybindings';
 
 /** A user override for a binding: partial key/modifiers to apply, or null to unbind. */
@@ -180,6 +180,11 @@ export interface PersistedState {
   keybindingMigrationDismissed?: boolean;
   focusMode?: boolean;
   verboseLogging?: boolean;
+  appearanceMode?: AppearanceMode;
+  lightThemePreset?: LookPreset;
+  lightThemeCustomId?: string | null;
+  darkThemePreset?: LookPreset;
+  darkThemeCustomId?: string | null;
 }
 
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
@@ -267,4 +272,9 @@ export interface AppStore {
   /** Per-task flag: true when the task is rendering its focus-mode two-column layout. */
   taskSplitMode: Record<string, boolean>;
   verboseLogging: boolean;
+  appearanceMode: AppearanceMode;
+  lightThemePreset: LookPreset;
+  lightThemeCustomId: string | null;
+  darkThemePreset: LookPreset;
+  darkThemeCustomId: string | null;
 }
