@@ -1582,6 +1582,10 @@ body.dragging-task * {
   width: 100%;
 }
 
+.settings-theme-grid > div:hover .preset-clone-btn {
+  opacity: 1 !important;
+}
+
 .settings-theme-card:hover {
   border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-input));

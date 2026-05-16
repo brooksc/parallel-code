@@ -33,6 +33,7 @@
     "@xterm/addon-web-links": "^0.13.0-beta.195",
     "@xterm/addon-webgl": "^0.20.0-beta.194",
     "@xterm/xterm": "^6.1.0-beta.195",
+    "colord": "^2.9.3",
     "dompurify": "^3.4.2",
     "marked": "^17.0.3",
     "mermaid": "^11.15.0",
@@ -41,16 +42,17 @@
     "qrcode": "^1.5.4",
     "shiki": "^4.0.2",
     "solid-js": "^1.9.11",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.3",
-    "@vitest/coverage-v8": "^4.0.18",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^25.3.0",
     "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/parser": "^8.56.0",
+    "@vitest/coverage-v8": "^4.0.18",
     "concurrently": "^9.2.1",
     "electron": "^40.8.5",
     "electron-builder": "^26.8.1",

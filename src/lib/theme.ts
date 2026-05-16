@@ -1,4 +1,6 @@
 import type { LookPreset } from './look';
+import { CSS_VARS } from './custom-theme';
+import type { CssVar } from './custom-theme';
 
 /** Theme tokens referencing CSS variables defined in styles.css */
 export const theme = {
@@ -40,7 +42,7 @@ export const theme = {
 } as const;
 
 /** Opaque terminal background per preset — matches --task-panel-bg */
-const terminalBackground: Record<LookPreset, string> = {
+export const terminalBackground: Record<LookPreset, string> = {
   classic: '#2d2e32',
   graphite: '#1c2630',
   midnight: '#000000',
@@ -91,6 +93,34 @@ export function getTerminalTheme(preset: LookPreset) {
   return {
     background: terminalBackground[preset],
   };
+}
+
+/**
+ * Reads all CSS custom property values for a built-in preset by temporarily
+ * switching data-look on the root element. No repaint occurs between the switch
+ * and restore since getComputedStyle is synchronous within a single JS task.
+ */
+export function readCssVarsForPreset(presetId: string): Partial<Record<CssVar, string>> {
+  const el = document.documentElement;
+  const saved = el.dataset.look;
+  el.dataset.look = presetId;
+  const style = getComputedStyle(el);
+  const result: Partial<Record<CssVar, string>> = {};
+  for (const v of CSS_VARS) {
+    const val = style.getPropertyValue(v).trim();
+    if (val) result[v as CssVar] = val;
+  }
+  if (saved !== undefined) {
+    el.dataset.look = saved;
+  } else {
+    delete el.dataset.look;
+  }
+  return result;
+}
+
+/** Returns an xterm-compatible theme object for a custom theme. */
+export function getTerminalThemeForCustom(terminalBackground: string) {
+  return { background: terminalBackground };
 }
 
 /** Generates a styled banner (warning/error/info) using color-mix for background+border. */

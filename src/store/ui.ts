@@ -5,6 +5,8 @@ import { setActiveTask } from './navigation';
 import { setTaskFocusedPanel } from './focus';
 import type { LookPreset, AppearanceMode } from '../lib/look';
 import { osIsDark } from '../lib/os-appearance';
+import type { CustomTheme } from '../lib/custom-theme';
+import { themeToYaml } from '../lib/custom-theme';
 import type { PersistedWindowState, TaskViewportVisibility } from './types';
 import { invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
@@ -83,7 +85,9 @@ export function applyAppearanceMode(): void {
   const mode = store.appearanceMode;
   const slot = mode === 'system' ? (isDark ? 'dark' : 'light') : mode;
   const preset = slot === 'dark' ? store.darkThemePreset : store.lightThemePreset;
+  const customId = slot === 'dark' ? store.darkThemeCustomId : store.lightThemeCustomId;
   setStore('themePreset', preset);
+  setStore('activeCustomThemeId', customId);
 }
 
 export function setAppearanceMode(mode: AppearanceMode): void {
@@ -105,6 +109,36 @@ export function setDarkTheme(preset: LookPreset, customId: string | null): void 
     setStore('darkThemeCustomId', customId);
   });
   applyAppearanceMode();
+}
+
+export function saveCustomTheme(theme: CustomTheme): void {
+  setStore('customThemes', theme.id, theme);
+  const yaml = themeToYaml(theme.name, theme.terminalBackground, theme.vars);
+  invoke(IPC.SaveCustomTheme, { id: theme.id, yaml }).catch((e) =>
+    console.warn('Failed to save custom theme file:', e),
+  );
+}
+
+export function deleteCustomTheme(id: string): void {
+  setStore(
+    'customThemes',
+    produce((themes: Record<string, CustomTheme>) => {
+      delete themes[id];
+    }),
+  );
+  batch(() => {
+    if (store.darkThemeCustomId === id) setStore('darkThemeCustomId', null);
+    if (store.lightThemeCustomId === id) setStore('lightThemeCustomId', null);
+    if (store.activeCustomThemeId === id) setStore('activeCustomThemeId', null);
+  });
+  applyAppearanceMode();
+  invoke(IPC.DeleteCustomTheme, { id }).catch((e) =>
+    console.warn('Failed to delete custom theme file:', e),
+  );
+}
+
+export function activateCustomTheme(id: string | null): void {
+  setStore('activeCustomThemeId', id);
 }
 
 export function setAutoTrustFolders(autoTrustFolders: boolean): void {

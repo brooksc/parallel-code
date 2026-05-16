@@ -60,8 +60,9 @@ import {
 } from './lib/shortcuts';
 import { resolvedBindings, loadKeybindings, dismissMigrationBanner } from './store/keybindings';
 import { setupAutosave } from './store/autosave';
+import { buildCustomThemeCss } from './lib/custom-theme';
 import { osIsDark } from './lib/os-appearance';
-import { applyAppearanceMode } from './store/store';
+import { applyAppearanceMode, loadCustomThemes } from './store/store';
 import { isMac, mod } from './lib/platform';
 import { createCtrlWheelZoomHandler } from './lib/wheelZoom';
 import { ArenaOverlay } from './arena/ArenaOverlay';
@@ -252,7 +253,25 @@ function App() {
 
   // Sync theme to <html> so Portal content (dialogs, tooltips) inherits CSS variables
   createEffect(() => {
-    document.documentElement.dataset.look = store.themePreset;
+    const customId = store.activeCustomThemeId;
+    document.documentElement.dataset.look = customId ? `custom:${customId}` : store.themePreset;
+  });
+
+  // Inject/update custom theme CSS into a dedicated <style> tag
+  createEffect(() => {
+    const customId = store.activeCustomThemeId;
+    let styleEl = document.getElementById('custom-theme-style') as HTMLStyleElement | null;
+    if (!customId) {
+      if (styleEl) styleEl.textContent = '';
+      return;
+    }
+    const theme = store.customThemes[customId];
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'custom-theme-style';
+      document.head.appendChild(styleEl);
+    }
+    styleEl.textContent = theme ? buildCustomThemeCss(theme) : '';
   });
 
   // Toggle font smoothing CSS class on body
@@ -332,6 +351,7 @@ function App() {
       () => setDockerAvailable(false),
     );
     await loadState();
+    await loadCustomThemes();
     await loadKeybindings();
 
     // Restore plan content for tasks that had a plan file before restart
