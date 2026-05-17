@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseThemeCss, buildCustomThemeCss, themeToCss } from './custom-theme';
+import { parseThemeCss, buildCustomThemeCss, themeToCss, detectThemeTone } from './custom-theme';
 
 describe('parseThemeCss', () => {
   it('parses a valid CSS theme with header comment', () => {
@@ -162,5 +162,91 @@ describe('buildCustomThemeCss', () => {
       vars: {},
     });
     expect(css).toBe('');
+  });
+});
+
+describe('parseThemeCss — value validation', () => {
+  const header = `/*\n  name: T\n  terminalBackground: #000\n*/\n`;
+
+  it('strips url() values to prevent resource loads', () => {
+    const result = parseThemeCss(
+      `${header}:root { --bg: url("https://example.com"); --fg: #fff; }`,
+    );
+    expect(result.vars['--bg']).toBeUndefined();
+    expect(result.vars['--fg']).toBe('#fff');
+  });
+
+  it('strips @-containing values to prevent at-rule injection', () => {
+    const result = parseThemeCss(`${header}:root { --fg: @import "evil"; --bg: #000; }`);
+    expect(result.vars['--fg']).toBeUndefined();
+    expect(result.vars['--bg']).toBe('#000');
+  });
+
+  it('strips values containing control characters', () => {
+    const result = parseThemeCss(`${header}:root { --bg: #000\x01; --fg: #fff; }`);
+    expect(result.vars['--bg']).toBeUndefined();
+    expect(result.vars['--fg']).toBe('#fff');
+  });
+
+  it('accepts --island-radius with valid px values', () => {
+    const r = parseThemeCss(`${header}:root { --island-radius: 12px; --fg: #fff; }`);
+    expect(r.vars['--island-radius']).toBe('12px');
+    const r2 = parseThemeCss(`${header}:root { --island-radius: 0; --fg: #fff; }`);
+    expect(r2.vars['--island-radius']).toBe('0');
+  });
+
+  it('strips --island-radius with non-px values', () => {
+    const r = parseThemeCss(`${header}:root { --island-radius: 50%; --fg: #fff; }`);
+    expect(r.vars['--island-radius']).toBeUndefined();
+    const r2 = parseThemeCss(`${header}:root { --island-radius: 12em; --fg: #fff; }`);
+    expect(r2.vars['--island-radius']).toBeUndefined();
+  });
+
+  it('passes valid hex colors through unchanged', () => {
+    const result = parseThemeCss(`${header}:root { --bg: #1a1a2e; --accent: #4267ff; }`);
+    expect(result.vars['--bg']).toBe('#1a1a2e');
+    expect(result.vars['--accent']).toBe('#4267ff');
+  });
+
+  it('passes CSS gradients through unchanged', () => {
+    const css = `${header}:root { --bg: radial-gradient(130% 120% at 18% 0%, #202044 0%, #12151f 100%); --fg: #fff; }`;
+    const result = parseThemeCss(css);
+    expect(result.vars['--bg']).toBe(
+      'radial-gradient(130% 120% at 18% 0%, #202044 0%, #12151f 100%)',
+    );
+  });
+});
+
+describe('detectThemeTone', () => {
+  it('returns dark for a dark background', () => {
+    expect(detectThemeTone({ '--bg-elevated': '#1a1a2e' })).toBe('dark');
+  });
+
+  it('returns light for a light background', () => {
+    expect(detectThemeTone({ '--bg-elevated': '#ffffff' })).toBe('light');
+  });
+
+  it('prefers --bg-elevated over --bg', () => {
+    // --bg-elevated is light, --bg is dark — should pick light
+    expect(detectThemeTone({ '--bg-elevated': '#ffffff', '--bg': '#000000' })).toBe('light');
+  });
+
+  it('falls back to --bg when --bg-elevated is missing', () => {
+    expect(detectThemeTone({ '--bg': '#ffffff' })).toBe('light');
+    expect(detectThemeTone({ '--bg': '#111111' })).toBe('dark');
+  });
+
+  it('returns dark when both vars are missing', () => {
+    expect(detectThemeTone({})).toBe('dark');
+  });
+
+  it('returns dark for an unparseable color string', () => {
+    expect(detectThemeTone({ '--bg-elevated': 'not-a-color' })).toBe('dark');
+  });
+
+  it('returns dark for a gradient in --bg with no --bg-elevated', () => {
+    expect(
+      detectThemeTone({ '--bg': 'radial-gradient(130% 120% at 18% 0%, #202044 0%, #12151f 100%)' }),
+    ).toBe('dark');
   });
 });

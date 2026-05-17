@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show, For, createUniqueId, on } from 'solid-js';
+import { createSignal, createEffect, Show, For, createUniqueId, on, createMemo } from 'solid-js';
 import { Dialog } from './Dialog';
 import { theme, sectionLabelStyle } from '../lib/theme';
 import {
@@ -16,6 +16,7 @@ import {
   setDarkTheme,
   setLightTheme,
 } from '../store/store';
+import { osIsDark } from '../lib/os-appearance';
 
 interface CustomThemeDialogProps {
   open: boolean;
@@ -38,6 +39,18 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
   const [warnings, setWarnings] = createSignal<ContrastWarning[]>([]);
   const [copied, setCopied] = createSignal(false);
   const [showPrompt, setShowPrompt] = createSignal(false);
+
+  // Label for the save button: "Save & Apply" only when the detected tone
+  // matches the currently-active slot; otherwise "Save to {tone} slot".
+  const saveLabel = createMemo(() => {
+    if (props.editId) return 'Update Theme';
+    const result = parsed();
+    if (!result) return 'Save & Apply';
+    const tone = detectThemeTone(result.vars);
+    const currentSlot =
+      store.appearanceMode === 'system' ? (osIsDark() ? 'dark' : 'light') : store.appearanceMode;
+    return tone === currentSlot ? 'Save & Apply' : `Save to ${tone} slot`;
+  });
 
   // Reset state when dialog opens/closes or switches edit target
   createEffect(
@@ -384,7 +397,7 @@ export function CustomThemeDialog(props: CustomThemeDialogProps) {
               transition: 'background 0.15s, border-color 0.15s',
             }}
           >
-            {props.editId ? 'Update Theme' : 'Save & Apply'}
+            {saveLabel()}
           </button>
         </div>
       </div>

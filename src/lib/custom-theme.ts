@@ -42,6 +42,17 @@ export interface CustomTheme {
 
 const CSS_VAR_SET = new Set<string>(CSS_VARS);
 
+// Rejects CSS values that could trigger resource loads, inject at-rules, or
+// smuggle control characters. Legitimate values (hex, gradients, px) all pass.
+// eslint-disable-next-line no-control-regex
+const DANGEROUS_CSS_RE = /url\s*\(|image-set\s*\(|@|[\x00-\x1f]/i;
+
+function isAllowedCssValue(varName: string, value: string): boolean {
+  if (DANGEROUS_CSS_RE.test(value)) return false;
+  if (varName === '--island-radius') return /^\d+px$|^0$/.test(value);
+  return true;
+}
+
 const CSS_VAR_DESCRIPTIONS: Record<CssVar, string> = {
   '--bg':
     'App-wide page background. Can be a hex color or CSS gradient (e.g. radial-gradient(130% 120% at 18% 0%, #202044 0%, #171c30 58%, #12151f 100%))',
@@ -184,7 +195,7 @@ export function parseThemeCss(cssString: string): Omit<CustomTheme, 'id'> {
     while ((declMatch = declRe.exec(blockContent)) !== null) {
       const key = declMatch[1];
       const value = declMatch[2].trim();
-      if (CSS_VAR_SET.has(key) && value) {
+      if (CSS_VAR_SET.has(key) && value && isAllowedCssValue(key, value)) {
         vars[key as CssVar] = value;
       }
     }
