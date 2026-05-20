@@ -63,12 +63,19 @@ export const [store, setStore] = createStore<AppStore>({
   missingProjectIds: {},
   remoteAccess: {
     enabled: false,
-    token: null,
     port: 7777,
     url: null,
     wifiUrl: null,
     tailscaleUrl: null,
     connectedClients: 0,
+  },
+  mcpStatus: {
+    mcpRunning: false,
+    remoteRunning: false,
+    coordinatorRoutesAttached: false,
+    coordinatorRegistered: false,
+    serverUrl: null,
+    mcpConfigPath: null,
   },
   showArena: false,
   keybindingPreset: 'default',
@@ -77,6 +84,9 @@ export const [store, setStore] = createStore<AppStore>({
   focusMode: false,
   taskSplitMode: {},
   verboseLogging: false,
+  coordinatorModeEnabled: false,
+  coordinatorNotificationDelayMs: 60_000,
+  coordinatorControlHintDismissed: false,
 });
 
 type CleanupPanelStore = Pick<

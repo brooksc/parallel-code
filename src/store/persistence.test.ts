@@ -160,6 +160,57 @@ describe('resolveIncomingPanelUserSize', () => {
 });
 
 describe('loadState agent definition migrations', () => {
+  it('restores coordinator global and per-task fields', async () => {
+    const codex = agentDef({ id: 'codex', name: 'Codex CLI' });
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [{ id: 'project-1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
+        lastProjectId: 'project-1',
+        lastAgentId: null,
+        taskOrder: ['task-1'],
+        collapsedTaskOrder: [],
+        coordinatorModeEnabled: true,
+        coordinatorNotificationDelayMs: 12_345,
+        coordinatorControlHintDismissed: true,
+        tasks: {
+          'task-1': {
+            ...persistedTask(codex),
+            coordinatorMode: true,
+            propagateSkipPermissions: true,
+            coordinatedBy: 'coord-1',
+            controlledBy: 'human',
+            mcpConfigPath: '/tmp/parallel-code-subtask-task-1.json',
+            preambleFileExistedBefore: true,
+            signalDoneReceived: true,
+            signalDoneAt: '2026-05-19T10:00:00.000Z',
+            signalDoneConsumed: true,
+            needsReview: true,
+          },
+        },
+        activeTaskId: 'task-1',
+        sidebarVisible: true,
+      }),
+    );
+
+    await loadState();
+
+    expect(store.coordinatorModeEnabled).toBe(true);
+    expect(store.coordinatorNotificationDelayMs).toBe(12_345);
+    expect(store.coordinatorControlHintDismissed).toBe(true);
+    expect(store.tasks['task-1']).toMatchObject({
+      coordinatorMode: true,
+      propagateSkipPermissions: true,
+      coordinatedBy: 'coord-1',
+      controlledBy: 'human',
+      mcpConfigPath: '/tmp/parallel-code-subtask-task-1.json',
+      preambleFileExistedBefore: true,
+      signalDoneReceived: true,
+      signalDoneAt: '2026-05-19T10:00:00.000Z',
+      signalDoneConsumed: true,
+      needsReview: true,
+    });
+  });
+
   it('restores multiple persisted agents for one task', async () => {
     const codex = agentDef({ id: 'codex', name: 'Codex CLI' });
     const claude = agentDef({

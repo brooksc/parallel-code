@@ -82,6 +82,67 @@ function validAgentIndex(value: unknown): number | undefined {
     : undefined;
 }
 
+function serializeCoordinatorFields(
+  task: Task,
+): Pick<
+  PersistedTask,
+  | 'coordinatorMode'
+  | 'propagateSkipPermissions'
+  | 'coordinatedBy'
+  | 'controlledBy'
+  | 'mcpConfigPath'
+  | 'preambleFileExistedBefore'
+  | 'signalDoneReceived'
+  | 'signalDoneAt'
+  | 'signalDoneConsumed'
+  | 'needsReview'
+> {
+  return {
+    coordinatorMode: task.coordinatorMode,
+    propagateSkipPermissions: task.propagateSkipPermissions,
+    coordinatedBy: task.coordinatedBy,
+    controlledBy: task.controlledBy,
+    mcpConfigPath: task.mcpConfigPath,
+    preambleFileExistedBefore: task.preambleFileExistedBefore,
+    signalDoneReceived: task.signalDoneReceived,
+    signalDoneAt: task.signalDoneAt,
+    signalDoneConsumed: task.signalDoneConsumed,
+    needsReview: task.needsReview,
+  };
+}
+
+function restoreCoordinatorFields(
+  pt: PersistedTask,
+): Pick<
+  Task,
+  | 'coordinatorMode'
+  | 'propagateSkipPermissions'
+  | 'coordinatedBy'
+  | 'controlledBy'
+  | 'mcpConfigPath'
+  | 'preambleFileExistedBefore'
+  | 'signalDoneReceived'
+  | 'signalDoneAt'
+  | 'signalDoneConsumed'
+  | 'needsReview'
+> {
+  return {
+    coordinatorMode: pt.coordinatorMode === true ? true : undefined,
+    propagateSkipPermissions: pt.propagateSkipPermissions === true ? true : undefined,
+    coordinatedBy: typeof pt.coordinatedBy === 'string' ? pt.coordinatedBy : undefined,
+    controlledBy:
+      pt.controlledBy === 'coordinator' || pt.controlledBy === 'human'
+        ? pt.controlledBy
+        : undefined,
+    mcpConfigPath: typeof pt.mcpConfigPath === 'string' ? pt.mcpConfigPath : undefined,
+    preambleFileExistedBefore: pt.preambleFileExistedBefore === true ? true : undefined,
+    signalDoneReceived: pt.signalDoneReceived === true ? true : undefined,
+    signalDoneAt: typeof pt.signalDoneAt === 'string' ? pt.signalDoneAt : undefined,
+    signalDoneConsumed: pt.signalDoneConsumed === true ? true : undefined,
+    needsReview: pt.needsReview === true ? true : undefined,
+  };
+}
+
 export async function saveState(): Promise<void> {
   const persisted: PersistedState = {
     projects: store.projects.map((p) => ({ ...p })),
@@ -125,6 +186,12 @@ export async function saveState(): Promise<void> {
     lightThemeCustomId: store.lightThemeCustomId ?? undefined,
     darkThemePreset: store.darkThemePreset !== 'islands-dark' ? store.darkThemePreset : undefined,
     darkThemeCustomId: store.darkThemeCustomId ?? undefined,
+    coordinatorModeEnabled: store.coordinatorModeEnabled || undefined,
+    coordinatorNotificationDelayMs:
+      store.coordinatorNotificationDelayMs !== 60_000
+        ? store.coordinatorNotificationDelayMs
+        : undefined,
+    coordinatorControlHintDismissed: store.coordinatorControlHintDismissed || undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -164,6 +231,7 @@ export async function saveState(): Promise<void> {
       savedPromptedAgentIndexes: task.savedPromptedAgentIndexes,
       planFileName: task.planFileName,
       stepsEnabled: task.stepsEnabled,
+      ...serializeCoordinatorFields(task),
     };
   }
 
@@ -210,6 +278,7 @@ export async function saveState(): Promise<void> {
       planFileName: task.planFileName,
       stepsEnabled: task.stepsEnabled,
       collapsed: true,
+      ...serializeCoordinatorFields(task),
     };
   }
 
@@ -342,6 +411,9 @@ interface LegacyPersistedState {
   lightThemeCustomId?: unknown;
   darkThemePreset?: unknown;
   darkThemeCustomId?: unknown;
+  coordinatorModeEnabled?: unknown;
+  coordinatorNotificationDelayMs?: unknown;
+  coordinatorControlHintDismissed?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -535,6 +607,15 @@ export async function loadState(): Promise<void> {
         s.keybindingMigrationDismissed = raw.keybindingMigrationDismissed;
       }
 
+      s.coordinatorModeEnabled = raw.coordinatorModeEnabled === true;
+      s.coordinatorNotificationDelayMs =
+        typeof raw.coordinatorNotificationDelayMs === 'number' &&
+        Number.isFinite(raw.coordinatorNotificationDelayMs) &&
+        raw.coordinatorNotificationDelayMs >= 0
+          ? raw.coordinatorNotificationDelayMs
+          : 60_000;
+      s.coordinatorControlHintDismissed = raw.coordinatorControlHintDismissed === true;
+
       // Make custom agents findable during task restoration
       for (const ca of s.customAgents) {
         if (!s.availableAgents.some((a) => a.id === ca.id)) {
@@ -591,6 +672,7 @@ export async function loadState(): Promise<void> {
           savedPromptedAgentIndexes: validPromptedAgentIndexes(pt.savedPromptedAgentIndexes),
           planFileName: pt.planFileName,
           stepsEnabled: pt.stepsEnabled,
+          ...restoreCoordinatorFields(pt),
         };
 
         s.tasks[taskId] = task;
@@ -678,6 +760,7 @@ export async function loadState(): Promise<void> {
           collapsed: true,
           savedAgentDef: agentDefs[0],
           savedAgentDefs: agentDefs.length > 0 ? agentDefs : undefined,
+          ...restoreCoordinatorFields(pt),
         };
 
         s.tasks[taskId] = task;

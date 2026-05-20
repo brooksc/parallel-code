@@ -26,7 +26,7 @@ import {
 } from '../store/store';
 import type { Project } from '../store/types';
 import type { TaskAttentionState } from '../store/store';
-import { computeGroupedTasks } from '../store/sidebar-order';
+import { computeGroupedTasks, getCoordinatorChildren } from '../store/sidebar-order';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
@@ -672,16 +672,34 @@ export function Sidebar() {
                   </span>
                   <For each={activeTasks()}>
                     {(taskId) => (
-                      <TaskRow
-                        taskId={taskId}
-                        globalIndex={globalIndex}
-                        dragFromIndex={dragFromIndex}
-                        dropTargetIndex={dropTargetIndex}
-                      />
+                      <>
+                        <TaskRow
+                          taskId={taskId}
+                          globalIndex={globalIndex}
+                          dragFromIndex={dragFromIndex}
+                          dropTargetIndex={dropTargetIndex}
+                        />
+                        <CoordinatorChildRows
+                          taskId={taskId}
+                          globalIndex={globalIndex}
+                          dragFromIndex={dragFromIndex}
+                          dropTargetIndex={dropTargetIndex}
+                        />
+                      </>
                     )}
                   </For>
                   <For each={collapsedTasks()}>
-                    {(taskId) => <CollapsedTaskRow taskId={taskId} />}
+                    {(taskId) => (
+                      <>
+                        <CollapsedTaskRow taskId={taskId} />
+                        <CoordinatorChildRows
+                          taskId={taskId}
+                          globalIndex={globalIndex}
+                          dragFromIndex={dragFromIndex}
+                          dropTargetIndex={dropTargetIndex}
+                        />
+                      </>
+                    )}
                   </For>
                 </Show>
               );
@@ -710,16 +728,34 @@ export function Sidebar() {
             </span>
             <For each={groupedTasks().orphanedActive}>
               {(taskId) => (
-                <TaskRow
-                  taskId={taskId}
-                  globalIndex={globalIndex}
-                  dragFromIndex={dragFromIndex}
-                  dropTargetIndex={dropTargetIndex}
-                />
+                <>
+                  <TaskRow
+                    taskId={taskId}
+                    globalIndex={globalIndex}
+                    dragFromIndex={dragFromIndex}
+                    dropTargetIndex={dropTargetIndex}
+                  />
+                  <CoordinatorChildRows
+                    taskId={taskId}
+                    globalIndex={globalIndex}
+                    dragFromIndex={dragFromIndex}
+                    dropTargetIndex={dropTargetIndex}
+                  />
+                </>
               )}
             </For>
             <For each={groupedTasks().orphanedCollapsed}>
-              {(taskId) => <CollapsedTaskRow taskId={taskId} />}
+              {(taskId) => (
+                <>
+                  <CollapsedTaskRow taskId={taskId} />
+                  <CoordinatorChildRows
+                    taskId={taskId}
+                    globalIndex={globalIndex}
+                    dragFromIndex={dragFromIndex}
+                    dropTargetIndex={dropTargetIndex}
+                  />
+                </>
+              )}
             </For>
           </Show>
 
@@ -957,6 +993,37 @@ interface TaskRowProps {
   globalIndex: (taskId: string) => number;
   dragFromIndex: () => number | null;
   dropTargetIndex: () => number | null;
+}
+
+function CoordinatorChildRows(props: TaskRowProps) {
+  const children = () => getCoordinatorChildren(props.taskId);
+  const totalCount = () => children().active.length + children().collapsed.length;
+  return (
+    <Show when={totalCount() > 0}>
+      <div
+        style={{
+          'margin-left': '12px',
+          'padding-left': '8px',
+          'border-left': `1px solid color-mix(in srgb, ${theme.border} 70%, transparent)`,
+          display: 'flex',
+          'flex-direction': 'column',
+          gap: '1px',
+        }}
+      >
+        <For each={children().active}>
+          {(taskId) => (
+            <TaskRow
+              taskId={taskId}
+              globalIndex={props.globalIndex}
+              dragFromIndex={props.dragFromIndex}
+              dropTargetIndex={props.dropTargetIndex}
+            />
+          )}
+        </For>
+        <For each={children().collapsed}>{(taskId) => <CollapsedTaskRow taskId={taskId} />}</For>
+      </div>
+    </Show>
+  );
 }
 
 function TaskRow(props: TaskRowProps) {

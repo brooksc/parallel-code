@@ -17,6 +17,8 @@ export interface AgentDef {
   /** Per-agent override for the stability-check delay (ms) used before auto-sending
    *  the initial prompt.  Agents with multi-step init dialogs need a longer wait. */
   prompt_ready_delay_ms?: number;
+  /** CLI flag used to pass an MCP config path to this agent. Omit when unsupported. */
+  mcp_config_flag?: string;
 }
 
 export interface CreateTaskResult {

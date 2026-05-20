@@ -2,6 +2,7 @@ import * as pty from 'node-pty';
 import { execFileSync, execFile, spawn as cpSpawn } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { BrowserWindow } from 'electron';
@@ -140,7 +141,40 @@ export function validateCommand(command: string): void {
   }
 }
 
-export function spawnAgent(
+/** Returns `-v mainGitDir:mainGitDir` mount args so git works inside the container.
+ *  Walks up from startPath to find the .git file (worktrees may be nested directories). */
+function resolveWorktreeGitDirMount(startPath: string): string[] {
+  try {
+    let dir = startPath;
+    while (true) {
+      const gitFile = path.join(dir, '.git');
+      if (fs.existsSync(gitFile)) {
+        if (!fs.statSync(gitFile).isFile()) return []; // real .git dir, no extra mount needed
+        const content = fs.readFileSync(gitFile, 'utf8').trim();
+        const match = content.match(/^gitdir:\s*(.+)$/m);
+        if (!match) return [];
+        // Walk up from the gitdir pointer until we find the dir containing objects/
+        // (the main .git dir). Avoids hard-coding a fixed number of levels.
+        let candidate = path.resolve(match[1].trim());
+        while (true) {
+          if (fs.existsSync(path.join(candidate, 'objects'))) {
+            return ['-v', `${candidate}:${candidate}`];
+          }
+          const parent = path.dirname(candidate);
+          if (parent === candidate) return [];
+          candidate = parent;
+        }
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) return []; // filesystem root
+      dir = parent;
+    }
+  } catch {
+    return [];
+  }
+}
+
+export async function spawnAgent(
   win: BrowserWindow,
   args: {
     taskId: string;
@@ -156,9 +190,12 @@ export function spawnAgent(
     dockerImage?: string;
     shareDockerAgentAuth?: boolean;
     attachExisting?: boolean;
+    /** When true (coordinator tasks), also mount the parent of cwd so sub-task
+     *  worktrees created later are immediately visible inside the container. */
+    dockerMountWorktreeParent?: boolean;
     onOutput: { __CHANNEL_ID__: string };
   },
-): void {
+): Promise<void> {
   const channelId = args.onOutput.__CHANNEL_ID__;
   const command = args.command || resolveUserShell();
   const cwd = args.cwd || process.env.HOME || '/';
@@ -222,6 +259,8 @@ export function spawnAgent(
     'DYLD_INSERT_LIBRARIES',
     'NODE_OPTIONS',
     'ELECTRON_RUN_AS_NODE',
+    // Prevent renderer from injecting or overriding MCP auth tokens.
+    'PARALLEL_CODE_MCP_TOKEN',
   ]);
   const safeEnvOverrides: Record<string, string> = {};
   for (const [k, v] of Object.entries(args.env ?? {})) {
@@ -280,19 +319,37 @@ export function spawnAgent(
       // Run as host user so container files are owned by the host user
       '--user',
       `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
-      // Mount the project directory as the only writable volume
+      // Mount the coordinator worktree. For coordinator tasks, also mount the
+      // parent directory so sub-task worktrees created later are immediately
+      // visible via bind mount (VirtioFS propagation is too slow for new dirs).
+      // Also mount the main .git directory so git commands work inside the
+      // container (worktree .git files point to the main git dir by path).
+      ...(args.dockerMountWorktreeParent
+        ? ['-v', `${path.dirname(cwd)}:${path.dirname(cwd)}`, ...resolveWorktreeGitDirMount(cwd)]
+        : []),
       '-v',
       `${cwd}:${cwd}`,
       '-w',
       cwd,
       // Forward env vars the agent needs (API keys, git config, etc.)
       ...buildDockerEnvFlags(spawnEnv),
-      // Writable HOME for agent config files (host HOME is blocked above)
+      // Per-agent writable HOME so concurrent sub-tasks don't collide on config files.
       '-e',
-      `HOME=${DOCKER_CONTAINER_HOME}`,
+      `HOME=${DOCKER_CONTAINER_HOME}/agent-${args.agentId}`,
       // Mount SSH and git config read-only for git operations
-      ...buildDockerCredentialMounts(args.command, args.shareDockerAgentAuth === true),
+      ...(await buildDockerCredentialMounts(
+        args.command,
+        args.shareDockerAgentAuth === true,
+        cwd,
+        `${DOCKER_CONTAINER_HOME}/agent-${args.agentId}`,
+      )),
       image,
+      // Pre-create the per-agent HOME directory then exec the real command.
+      // $HOME is already set by the -e flag above; using it here avoids repeating the path.
+      'sh',
+      '-c',
+      'mkdir -p "$HOME" && exec "$@"',
+      '--',
       command,
       ...args.args,
     ];
@@ -617,6 +674,12 @@ const DOCKER_ENV_BLOCK_LIST = new Set([
   'SSH_AUTH_SOCK',
   'GPG_AGENT_INFO',
   'KUBECONFIG',
+  // macOS-specific temp dir (/var/folders/…) does not exist in Linux containers.
+  // Shell init scripts and tools that use $TMPDIR will fail to mkdir on Linux.
+  'TMPDIR',
+  'TEMPDIR',
+  'TMP',
+  'TEMP',
 ]);
 
 /** Returns true for env var names that should be blocked from Docker forwarding. */
@@ -655,7 +718,68 @@ const AGENT_CONFIG_FILES: Record<string, string[]> = {
   claude: ['.claude.json'],
 };
 
-function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boolean): string[] {
+const claudeTrustSeedQueues = new Map<string, Promise<void>>();
+
+async function queueClaudeProjectTrustSeed(hostFile: string, worktreePath: string): Promise<void> {
+  const previous = claudeTrustSeedQueues.get(hostFile) ?? Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(() => seedClaudeProjectTrust(hostFile, worktreePath));
+  claudeTrustSeedQueues.set(hostFile, current);
+
+  try {
+    await current;
+  } finally {
+    if (claudeTrustSeedQueues.get(hostFile) === current) {
+      claudeTrustSeedQueues.delete(hostFile);
+    }
+  }
+}
+
+async function seedClaudeProjectTrust(hostFile: string, worktreePath: string): Promise<void> {
+  let config: Record<string, unknown> = {};
+  const stat = await fsPromises.stat(hostFile).catch(() => null);
+  if (stat && stat.size > 0) {
+    try {
+      config = JSON.parse(await fsPromises.readFile(hostFile, 'utf8')) as Record<string, unknown>;
+    } catch {
+      console.warn(`[docker-auth] Could not parse ${hostFile}, skipping Claude trust seed`);
+      return;
+    }
+  }
+
+  const projects =
+    config.projects && typeof config.projects === 'object' && !Array.isArray(config.projects)
+      ? (config.projects as Record<string, Record<string, unknown>>)
+      : {};
+  const existing =
+    projects[worktreePath] &&
+    typeof projects[worktreePath] === 'object' &&
+    !Array.isArray(projects[worktreePath])
+      ? projects[worktreePath]
+      : {};
+
+  projects[worktreePath] = {
+    ...existing,
+    hasTrustDialogAccepted: true,
+    hasCompletedProjectOnboarding: true,
+  };
+  config.projects = projects;
+
+  // Atomic write: write to a temp file first, then rename over the original.
+  // The per-file queue above serializes read-modify-write updates so concurrent
+  // spawns do not drop each other's project entries.
+  const tmpFile = `${hostFile}.tmp.${process.pid}.${Date.now()}.${crypto.randomUUID()}`;
+  await fsPromises.writeFile(tmpFile, JSON.stringify(config, null, 2), { mode: 0o600 });
+  await fsPromises.rename(tmpFile, hostFile);
+}
+
+async function buildDockerCredentialMounts(
+  agentCommand: string,
+  shareAgentAuth: boolean,
+  worktreePath: string,
+  containerHome: string,
+): Promise<string[]> {
   const mounts: string[] = [];
   const home = process.env.HOME;
   if (!home) return mounts;
@@ -671,19 +795,19 @@ function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boole
   };
 
   // SSH keys for git push/pull
-  mountIfExists(`${home}/.ssh`, `${DOCKER_CONTAINER_HOME}/.ssh`);
+  mountIfExists(`${home}/.ssh`, `${containerHome}/.ssh`);
 
   // Git identity / config
-  mountIfExists(`${home}/.gitconfig`, `${DOCKER_CONTAINER_HOME}/.gitconfig`);
+  mountIfExists(`${home}/.gitconfig`, `${containerHome}/.gitconfig`);
 
   // GitHub CLI auth tokens (~/.config/gh/)
-  mountIfExists(`${home}/.config/gh`, `${DOCKER_CONTAINER_HOME}/.config/gh`);
+  mountIfExists(`${home}/.config/gh`, `${containerHome}/.config/gh`);
 
   // npm auth token
-  mountIfExists(`${home}/.npmrc`, `${DOCKER_CONTAINER_HOME}/.npmrc`);
+  mountIfExists(`${home}/.npmrc`, `${containerHome}/.npmrc`);
 
   // General HTTP/git HTTPS credentials (used by git credential helper)
-  mountIfExists(`${home}/.netrc`, `${DOCKER_CONTAINER_HOME}/.netrc`);
+  mountIfExists(`${home}/.netrc`, `${containerHome}/.netrc`);
 
   // Google Application Credentials file (for Vertex AI / gcloud) — mounted
   // at its original path since the env var points there.
@@ -703,8 +827,8 @@ function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boole
     for (const relDir of AGENT_CONFIG_DIRS[baseCommand] ?? []) {
       const hostDir = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relDir);
       try {
-        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
-        mounts.push('-v', `${hostDir}:${DOCKER_CONTAINER_HOME}/${relDir}`);
+        await fsPromises.mkdir(hostDir, { recursive: true, mode: 0o700 });
+        mounts.push('-v', `${hostDir}:${containerHome}/${relDir}`);
       } catch {
         console.warn(`[docker-auth] Could not create host auth dir ${hostDir}, skipping mount`);
       }
@@ -713,11 +837,15 @@ function buildDockerCredentialMounts(agentCommand: string, shareAgentAuth: boole
       const hostFile = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relFile);
       try {
         const hostDir = path.dirname(hostFile);
-        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
-        if (!fs.existsSync(hostFile) || fs.statSync(hostFile).size === 0) {
-          fs.writeFileSync(hostFile, '{}', { mode: 0o600 });
+        await fsPromises.mkdir(hostDir, { recursive: true, mode: 0o700 });
+        const stat = await fsPromises.stat(hostFile).catch(() => null);
+        if (!stat || stat.size === 0) {
+          await fsPromises.writeFile(hostFile, '{}', { mode: 0o600 });
         }
-        mounts.push('-v', `${hostFile}:${DOCKER_CONTAINER_HOME}/${relFile}`);
+        if (baseCommand === 'claude' && relFile === '.claude.json') {
+          await queueClaudeProjectTrustSeed(hostFile, worktreePath);
+        }
+        mounts.push('-v', `${hostFile}:${containerHome}/${relFile}`);
       } catch {
         console.warn(`[docker-auth] Could not create host auth file ${hostFile}, skipping mount`);
       }
@@ -830,28 +958,27 @@ export async function dockerImageExists(
     return false;
   }
 
+  // Docker Desktop's containerd image store breaks `docker image inspect <tag>` —
+  // tag-based inspection fails even when the image exists. Work around by fetching
+  // the image ID via `docker image ls --filter` first, then inspecting by ID.
+  const imageId = await new Promise<string | null>((resolve) => {
+    execFile(
+      'docker',
+      ['image', 'ls', '--filter', `reference=${image}`, '--format', '{{.ID}}'],
+      { encoding: 'utf8', timeout: 5000 },
+      (err, stdout) => resolve(err ? null : stdout.trim() || null),
+    );
+  });
+
+  if (!imageId) return false;
+  if (!expectedHash) return true;
+
   return new Promise((resolve) => {
     execFile(
       'docker',
-      [
-        'image',
-        'inspect',
-        '--format',
-        `{{index .Config.Labels "${DOCKERFILE_HASH_LABEL}"}}`,
-        image,
-      ],
+      ['inspect', '--format', `{{index .Config.Labels "${DOCKERFILE_HASH_LABEL}"}}`, imageId],
       { encoding: 'utf8', timeout: 5000 },
-      (err, stdout) => {
-        if (err) {
-          resolve(false);
-          return;
-        }
-        if (!expectedHash) {
-          resolve(true);
-          return;
-        }
-        resolve(stdout.trim() === expectedHash);
-      },
+      (err, stdout) => resolve(!err && stdout.trim() === expectedHash),
     );
   });
 }
