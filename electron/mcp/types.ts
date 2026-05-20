@@ -28,11 +28,12 @@ export interface CoordinatedTask {
 }
 
 export interface WaitForSignalDoneResult {
-  taskId: string;
-  name: string;
-  status: string;
-  signalDoneAt: string; // ISO timestamp
+  taskId?: string;
+  name?: string;
+  status?: string;
+  signalDoneAt?: string; // ISO timestamp
   remaining: number; // unconsumed signals + still-running tasks for this coordinator
+  timedOut?: true; // set when no signal arrived before the timeout
 }
 
 export interface PendingNotification {
@@ -46,13 +47,6 @@ export interface PendingNotification {
 }
 
 export type CoordinatorLifecycle = 'starting' | 'ready' | 'closing' | 'closed';
-
-export interface CoordinatorSpawnDefaults {
-  command: string;
-  args: string[];
-  skipPermissionsArgs?: string[];
-  mcpConfigFlag?: string;
-}
 
 export interface CoordinatorState {
   taskId: string;
@@ -72,7 +66,7 @@ export interface CoordinatorState {
     serverPath: string;
   } | null;
   /** Per-coordinator agent spawn defaults; set when the coordinator registers. */
-  spawnDefaults: CoordinatorSpawnDefaults;
+  spawnDefaults: { command: string; args: string[] };
   pendingNotifications: PendingNotification[];
   /** batchId → array of pendingNotification IDs included in that batch */
   stagedBatches: Map<string, string[]>;

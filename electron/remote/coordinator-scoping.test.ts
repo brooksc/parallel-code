@@ -3,11 +3,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import http from 'http';
-import { WebSocket } from 'ws';
 import type { Coordinator } from '../mcp/coordinator.js';
 import type { ApiTaskSummary, ApiTaskDetail } from '../mcp/types.js';
-import { parseClientMessage } from './protocol.js';
-import { subscribeToAgent, writeToAgent } from '../ipc/pty.js';
 
 vi.mock('../ipc/pty.js', () => ({
   writeToAgent: vi.fn(),
@@ -26,11 +23,7 @@ vi.mock('./protocol.js', () => ({
   parseClientMessage: vi.fn(() => null),
 }));
 
-const { shouldCloseWsForBackpressure, startRemoteServer } = await import('./server.js');
-
-const parseClientMessageMock = vi.mocked(parseClientMessage);
-const subscribeToAgentMock = vi.mocked(subscribeToAgent);
-const writeToAgentMock = vi.mocked(writeToAgent);
+const { startRemoteServer } = await import('./server.js');
 
 // --- Minimal task fixtures ---
 
@@ -178,26 +171,6 @@ const post = (path: string, body: unknown, coordinatorId?: string) =>
   httpRequest('POST', path, body, coordinatorId);
 const del = (path: string, coordinatorId?: string) =>
   httpRequest('DELETE', path, undefined, coordinatorId);
-
-function waitForWsOpen(ws: WebSocket): Promise<void> {
-  return new Promise((resolve, reject) => {
-    ws.once('open', resolve);
-    ws.once('error', reject);
-  });
-}
-
-function waitForWsMessage(ws: WebSocket): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    ws.once('message', (raw) => resolve(JSON.parse(String(raw))));
-    ws.once('error', reject);
-  });
-}
-
-function waitForWsClose(ws: WebSocket): Promise<{ code: number; reason: string }> {
-  return new Promise((resolve) => {
-    ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
-  });
-}
 
 // --- Tests ---
 
@@ -573,8 +546,6 @@ describe('mobile token — restricted to agent routes only', () => {
   let stop: () => Promise<void>;
 
   beforeEach(async () => {
-    vi.clearAllMocks();
-    parseClientMessageMock.mockImplementation((raw: string) => JSON.parse(raw) as never);
     const coord = makeMockCoordinator();
     const srv = await startServer(coord);
     mobileToken = srv.mobileToken;
@@ -583,7 +554,6 @@ describe('mobile token — restricted to agent routes only', () => {
 
   afterEach(async () => {
     await stop();
-    parseClientMessageMock.mockImplementation(() => null);
   });
 
   function mobileRequest(method: string, path: string): Promise<{ status: number }> {
@@ -632,42 +602,5 @@ describe('mobile token — restricted to agent routes only', () => {
   it('POST /api/tasks returns 403', async () => {
     const res = await mobileRequest('POST', '/api/tasks');
     expect(res.status).toBe(403);
-  });
-
-  it('closes mobile WebSocket clients that send mutating commands', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${serverPort}`);
-    await waitForWsOpen(ws);
-    ws.send(JSON.stringify({ type: 'auth', token: mobileToken }));
-    await waitForWsMessage(ws);
-
-    ws.send(JSON.stringify({ type: 'input', agentId: 'agent-a', data: 'x' }));
-
-    await expect(waitForWsClose(ws)).resolves.toMatchObject({
-      code: 4003,
-      reason: 'Forbidden',
-    });
-    expect(writeToAgentMock).not.toHaveBeenCalled();
-  });
-
-  it('allows mobile WebSocket subscription messages', async () => {
-    subscribeToAgentMock.mockReturnValue(true);
-    const ws = new WebSocket(`ws://127.0.0.1:${serverPort}`);
-    await waitForWsOpen(ws);
-    ws.send(JSON.stringify({ type: 'auth', token: mobileToken }));
-    await waitForWsMessage(ws);
-
-    ws.send(JSON.stringify({ type: 'subscribe', agentId: 'agent-a' }));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(subscribeToAgentMock).toHaveBeenCalledWith('agent-a', expect.any(Function));
-    expect(ws.readyState).toBe(WebSocket.OPEN);
-    ws.close();
-  });
-});
-
-describe('remote WebSocket output backpressure', () => {
-  it('uses a bounded send-buffer threshold for slow clients', () => {
-    expect(shouldCloseWsForBackpressure(1_000_000)).toBe(false);
-    expect(shouldCloseWsForBackpressure(1_000_001)).toBe(true);
   });
 });

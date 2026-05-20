@@ -29,6 +29,8 @@ import {
   setAppearanceMode,
   setLightTheme,
   setDarkTheme,
+  setCoordinatorModeEnabled,
+  setCoordinatorNotificationDelayMs,
 } from '../store/store';
 import { CustomAgentEditor } from './CustomAgentEditor';
 import { mod } from '../lib/platform';
@@ -44,7 +46,7 @@ function ensureSelectedFont(available: string[]): string[] {
   return [store.terminalFont, ...available];
 }
 
-type SettingsTab = 'general' | 'themes';
+type SettingsTab = 'general' | 'themes' | 'experimental';
 
 export function SettingsDialog(props: SettingsDialogProps) {
   const titleId = createUniqueId();
@@ -137,7 +139,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           'margin-bottom': '2px',
         }}
       >
-        <For each={['general', 'themes'] as SettingsTab[]}>
+        <For each={['general', 'themes', 'experimental'] as SettingsTab[]}>
           {(tab) => (
             <button
               role="tab"
@@ -146,6 +148,13 @@ export function SettingsDialog(props: SettingsDialogProps) {
               id={`settings-tabbutton-${tab}`}
               type="button"
               onClick={() => setActiveTab(tab)}
+              onKeyDown={(e) => {
+                const tabs: SettingsTab[] = ['general', 'themes', 'experimental'];
+                const idx = tabs.indexOf(tab);
+                if (e.key === 'ArrowRight') setActiveTab(tabs[(idx + 1) % tabs.length]);
+                else if (e.key === 'ArrowLeft')
+                  setActiveTab(tabs[(idx + tabs.length - 1) % tabs.length]);
+              }}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -161,7 +170,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
                 transition: 'color 0.15s, border-color 0.15s',
               }}
             >
-              {tab === 'general' ? 'General' : 'Themes'}
+              {tab === 'general' ? 'General' : tab === 'themes' ? 'Themes' : 'Experimental'}
             </button>
           )}
         </For>
@@ -874,6 +883,98 @@ export function SettingsDialog(props: SettingsDialogProps) {
               )}
             </For>
           </Show>
+        </div>
+      </Show>
+
+      <Show when={activeTab() === 'experimental'}>
+        <div
+          id="settings-tab-experimental"
+          role="tabpanel"
+          aria-labelledby="settings-tabbutton-experimental"
+          style={{ display: 'flex', 'flex-direction': 'column', gap: '18px' }}
+        >
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+            <div style={{ ...sectionLabelStyle, 'font-weight': '600' }}>Coordinator</div>
+            <label
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '10px',
+                cursor: 'pointer',
+                padding: '8px 12px',
+                'border-radius': '8px',
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={store.coordinatorModeEnabled}
+                onChange={(e) => setCoordinatorModeEnabled(e.currentTarget.checked)}
+                style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+              />
+              <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+                <span style={{ 'font-size': '14px', color: theme.fg }}>Coordinator mode</span>
+                <span style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+                  Enable the Coordinator option when creating tasks. Coordinators can spawn
+                  sub-tasks, send prompts, and merge branches automatically via MCP tools. Requires
+                  app restart to fully disable.
+                </span>
+              </div>
+            </label>
+            <div
+              style={{
+                display: 'flex',
+                'flex-direction': 'column',
+                gap: '6px',
+                padding: '8px 12px',
+                'border-radius': '8px',
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+              }}
+            >
+              <label
+                style={{
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '10px',
+                }}
+              >
+                <span style={{ 'font-size': '14px', color: theme.fg, 'white-space': 'nowrap' }}>
+                  Coordinator notification delay (seconds)
+                </span>
+                <input
+                  type="number"
+                  min="5"
+                  max="300"
+                  step="5"
+                  value={Math.round(store.coordinatorNotificationDelayMs / 1000)}
+                  onInput={(e) => {
+                    const seconds = Number(e.currentTarget.value);
+                    if (Number.isFinite(seconds)) {
+                      setCoordinatorNotificationDelayMs(seconds * 1000);
+                    }
+                  }}
+                  style={{
+                    width: '80px',
+                    background: theme.taskPanelBg,
+                    border: `1px solid ${theme.border}`,
+                    'border-radius': '6px',
+                    padding: '6px 10px',
+                    color: theme.fg,
+                    'font-size': '14px',
+                    'font-family': "'JetBrains Mono', monospace",
+                    outline: 'none',
+                    'text-align': 'right',
+                  }}
+                />
+              </label>
+              <span style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+                How long the coordinator waits before firing a notification after a sub-task
+                completes. Default: 60s. Failed sub-tasks use max(10s, delay ÷ 4).
+              </span>
+            </div>
+          </div>
         </div>
       </Show>
     </Dialog>

@@ -49,6 +49,11 @@ import {
   setStepsContent,
   setDockerAvailable,
   toggleTaskFocusMode,
+  initMCPListeners,
+  markTaskMcpPending,
+  markTaskMcpReady,
+  setTaskMcpLaunchArgs,
+  markTaskMcpError,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
 import type { PersistedWindowState } from './store/types';
@@ -334,6 +339,91 @@ function App() {
     await loadState();
     await loadKeybindings();
 
+    // Rewrite MCP config files for persisted coordinator tasks so the new
+    // session's port/token are in effect before any agent resumes.
+    // Docker coordinator tasks have no persisted mcpConfigPath (their .mcp.json
+    // lives in the worktree, not a temp file), but they still need StartMCPServer
+    // called so the remote server starts and the container name is registered.
+    const mcpRestorePromises: Promise<unknown>[] = [];
+    for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
+      const task = store.tasks[taskId];
+      if (!task?.coordinatorMode) continue;
+      const projectRoot = store.projects.find((p) => p.id === task.projectId)?.path;
+      if (!projectRoot) continue;
+      const agentDef = task.agentIds[0] ? store.agents[task.agentIds[0]]?.def : undefined;
+      // Reconstruct Docker container name from the coordinator's PTY agent id.
+      // The container may be dead after restart, but this wires up docker exec for sub-tasks
+      // when the user manually restarts the coordinator agent.
+      const dockerContainerName =
+        task.dockerMode && task.agentIds[0]
+          ? `parallel-code-${task.agentIds[0].slice(0, 12)}`
+          : undefined;
+      markTaskMcpPending(taskId);
+      mcpRestorePromises.push(
+        invoke<{ mcpLaunchArgs?: string[] }>(IPC.StartMCPServer, {
+          coordinatorTaskId: task.id,
+          projectId: task.projectId,
+          projectRoot,
+          worktreePath: task.gitIsolation === 'worktree' ? task.worktreePath : undefined,
+          skipPermissions: task.skipPermissions ?? false,
+          propagateSkipPermissions: task.propagateSkipPermissions ?? false,
+          agentCommand: agentDef?.command ?? 'claude',
+          agentArgs: agentDef?.args ?? [],
+          dockerContainerName,
+          dockerImage: task.dockerMode ? task.dockerImage : undefined,
+        })
+          .then((result) => {
+            setTaskMcpLaunchArgs(taskId, result?.mcpLaunchArgs);
+            markTaskMcpReady(taskId);
+          })
+          .catch((err) => {
+            console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
+            markTaskMcpError(taskId, String(err));
+          }),
+      );
+    }
+    // Wait for all coordinators to register before hydrating their children —
+    // hydrateTask() needs the coordinator entry to exist in the backend registry.
+    await Promise.allSettled(mcpRestorePromises);
+
+    // Hydrate backend coordinator task registry with persisted child tasks so MCP
+    // tools (list_tasks, send_prompt, close_task, etc.) work after app restart.
+    const hydratePromises: Promise<void>[] = [];
+    for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
+      const task = store.tasks[taskId];
+      if (!task?.coordinatedBy) continue;
+      // Skip if coordinator restore failed — hydrating into a broken coordinator leaves
+      // children with stale MCP wiring and misleading 'ready' status.
+      if (store.tasks[task.coordinatedBy]?.mcpStartupStatus !== 'ready') continue;
+      const projectRoot = store.projects.find((p) => p.id === task.projectId)?.path;
+      if (!projectRoot) continue;
+      markTaskMcpPending(task.id);
+      hydratePromises.push(
+        invoke(IPC.MCP_HydrateCoordinatedTask, {
+          id: task.id,
+          name: task.name,
+          projectId: task.projectId,
+          projectRoot,
+          branchName: task.branchName,
+          baseBranch: task.baseBranch,
+          worktreePath: task.worktreePath,
+          coordinatorTaskId: task.coordinatedBy,
+          controlledBy: task.controlledBy,
+          agentId: task.agentIds[0],
+          signalDoneAt: task.signalDoneAt,
+          signalDoneConsumed: task.signalDoneConsumed,
+          mcpConfigPath: task.mcpConfigPath,
+          preambleFileExistedBefore: task.preambleFileExistedBefore,
+        })
+          .then(() => markTaskMcpReady(task.id))
+          .catch((err) => {
+            console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
+            markTaskMcpError(task.id, String(err));
+          }),
+      );
+    }
+    await Promise.allSettled(hydratePromises);
+
     // Restore plan content for tasks that had a plan file before restart
     for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
       const task = store.tasks[taskId];
@@ -370,6 +460,7 @@ function App() {
     await captureWindowState();
     setupAutosave();
     startTaskStatusPolling();
+    const stopMCPListeners = initMCPListeners();
     const stopNotificationWatcher = startDesktopNotificationWatcher(windowFocused);
     const stopPrChecksSubscription = startPrChecksSubscription();
 
@@ -560,6 +651,7 @@ function App() {
       unlistenCloseRequested();
       cleanupShortcuts();
       stopTaskStatusPolling();
+      stopMCPListeners();
       stopNotificationWatcher();
       stopPrChecksSubscription();
       offPlanContent();

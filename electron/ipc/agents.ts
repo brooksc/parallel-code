@@ -14,7 +14,6 @@ interface AgentDef {
   description: string;
   available?: boolean;
   prompt_ready_delay_ms?: number;
-  mcp_config_flag?: string; // CLI flag to pass MCP config file path; omit if agent doesn't support it
 }
 
 const DEFAULT_AGENTS: AgentDef[] = [
@@ -26,7 +25,6 @@ const DEFAULT_AGENTS: AgentDef[] = [
     resume_args: ['--continue'],
     skip_permissions_args: ['--dangerously-skip-permissions'],
     description: "Anthropic's Claude Code CLI agent",
-    mcp_config_flag: '--mcp-config',
   },
   {
     id: 'codex',
@@ -36,7 +34,6 @@ const DEFAULT_AGENTS: AgentDef[] = [
     resume_args: ['resume', '--last'],
     skip_permissions_args: ['--dangerously-bypass-approvals-and-sandbox'],
     description: "OpenAI's Codex CLI agent",
-    mcp_config_flag: '--config',
   },
   {
     id: 'gemini',
@@ -88,14 +85,7 @@ const AGENT_CACHE_TTL = 30_000;
 export function getSkipPermissionsArgs(command: string): string[] {
   const base = path.basename(command);
   const agent = DEFAULT_AGENTS.find((a) => a.command === base || a.command === command);
-  return agent ? [...agent.skip_permissions_args] : [];
-}
-
-export function getMcpConfigArgs(command: string, configPath: string): string[] {
-  const base = path.basename(command);
-  const agent = DEFAULT_AGENTS.find((a) => a.command === base || a.command === command);
-  if (!agent?.mcp_config_flag) return [];
-  return [agent.mcp_config_flag, configPath];
+  return agent ? agent.skip_permissions_args : [];
 }
 
 export async function listAgents(): Promise<AgentDef[]> {

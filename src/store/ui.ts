@@ -139,6 +139,18 @@ export function setVerboseLogging(enabled: boolean): void {
   setStore('verboseLogging', enabled);
 }
 
+export function setCoordinatorModeEnabled(enabled: boolean): void {
+  setStore('coordinatorModeEnabled', enabled);
+  invoke(IPC.SetCoordinatorModeEnabled, { enabled }).catch((e) =>
+    console.warn('Failed to set coordinator mode backend:', e),
+  );
+}
+
+export function setCoordinatorNotificationDelayMs(ms: number): void {
+  const clamped = Math.max(5_000, Math.min(300_000, Math.round(ms)));
+  setStore('coordinatorNotificationDelayMs', clamped);
+}
+
 export function setInactiveColumnOpacity(opacity: number): void {
   setStore('inactiveColumnOpacity', Math.round(Math.max(0.3, Math.min(1.0, opacity)) * 100) / 100);
 }

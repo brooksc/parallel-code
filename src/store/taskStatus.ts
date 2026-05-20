@@ -849,6 +849,8 @@ export function getTaskAttentionState(taskId: string): TaskAttentionState {
 
   if (hasTaskAgentError(taskId)) return 'error';
 
+  if (task.needsReview) return 'review';
+
   const hasQuestion = hasRunningTaskActivity(taskId, isAgentAskingQuestion);
   if (hasQuestion) return 'needs_input';
 

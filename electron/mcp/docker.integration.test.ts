@@ -556,10 +556,12 @@ describeDocker('Layer 4 — Production-path coordinator Docker scenario', () => 
 // and per-sub-task containers).
 
 describe('Docker per-container sub-tasks — StartMCPServer arg validation', () => {
+  const VALID_UUID = '00000000-0000-4000-8000-000000000001';
+
   it('validateStartMCPServerArgs accepts a valid dockerImage', () => {
     expect(() =>
       validateStartMCPServerArgs({
-        coordinatorTaskId: 'coord-1',
+        coordinatorTaskId: VALID_UUID,
         projectId: 'proj-1',
         projectRoot: '/tmp/project',
         dockerContainerName: 'parallel-code-abc123',
@@ -571,7 +573,7 @@ describe('Docker per-container sub-tasks — StartMCPServer arg validation', () 
   it('validateStartMCPServerArgs rejects a blank dockerImage', () => {
     expect(() =>
       validateStartMCPServerArgs({
-        coordinatorTaskId: 'coord-1',
+        coordinatorTaskId: VALID_UUID,
         projectId: 'proj-1',
         projectRoot: '/tmp/project',
         dockerImage: '   ',

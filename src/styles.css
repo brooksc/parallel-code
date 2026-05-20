@@ -606,6 +606,9 @@ html[data-look^='islands-'] .task-column.focus-mode .rp-cell:has(> .focusable-pa
 
 html[data-look^='islands-']
   .task-column.focus-mode
+  .rp-cell:has(> .focusable-panel:focus-within)::after,
+html[data-look^='islands-']
+  .task-column.focus-mode
   .rp-cell:has(> .focusable-panel[data-panel-focused='true'])::after {
   content: '';
   position: absolute;

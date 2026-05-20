@@ -8,6 +8,15 @@ export type KeybindingOverride = Partial<Pick<KeyBinding, 'key' | 'modifiers'>> 
 
 export type GitIsolationMode = 'worktree' | 'direct' | 'none';
 
+export interface StagedNotification {
+  batchId: string;
+  notificationIds: string[];
+  text: string;
+  autoFireAt: number;
+  userEdited: boolean;
+  hiddenCompletionCount?: number;
+}
+
 export interface TaskGitStatusSnapshot extends WorktreeStatus {
   refreshedAt: number;
   error?: string;
@@ -51,15 +60,6 @@ export interface Agent {
   attachExisting?: boolean;
 }
 
-export interface StagedNotification {
-  batchId: string;
-  notificationIds: string[];
-  text: string;
-  autoFireAt: number; // epoch ms
-  userEdited: boolean;
-  hiddenCompletionCount?: number; // completions not reflected in text due to batching
-}
-
 export interface Task {
   id: string;
   name: string;
@@ -76,7 +76,6 @@ export interface Task {
   initialPrompt?: string; // auto-sends when agent is ready
   savedInitialPrompt?: string;
   prefillPrompt?: string; // fills prompt input without sending
-  stagedNotification?: StagedNotification; // coordinator review notification pending auto-fire
   closingStatus?: 'closing' | 'removing' | 'error';
   closingError?: string;
   gitIsolation: GitIsolationMode;
@@ -97,17 +96,19 @@ export interface Task {
   stepsEnabled?: boolean;
   stepsContent?: StepEntry[];
   lastInputAt?: string;
+  stagedNotification?: StagedNotification;
+  // Coordinator fields
   coordinatorMode?: boolean;
-  propagateSkipPermissions?: boolean; // coordinator setting: sub-tasks inherit skipPermissions
-  coordinatedBy?: string; // taskId of the coordinator that created this task
-  controlledBy?: 'coordinator' | 'human'; // coordinator control state — set on coordinator tasks and coordinated sub-tasks
-  mcpConfigPath?: string; // path to MCP config file (for coordinator tasks)
-  preambleFileExistedBefore?: boolean; // true if the preamble file existed before injection (so merge doesn't delete it)
-  signalDoneReceived?: boolean; // set when sub-task called signal_done
-  signalDoneAt?: string; // ISO timestamp from backend when signal_done was called
-  signalDoneConsumed?: boolean; // true after wait_for_signal_done consumed this task's signal
-  needsReview?: boolean; // set when sub-task is reviewable but coordinator is closed
-  /** Runtime-only. 'pending': awaiting StartMCPServer/HydrateCoordinatedTask; 'ready': spawn allowed; 'error': show retry UI. */
+  propagateSkipPermissions?: boolean;
+  coordinatedBy?: string;
+  controlledBy?: 'coordinator' | 'human';
+  mcpConfigPath?: string;
+  mcpLaunchArgs?: string[];
+  preambleFileExistedBefore?: boolean;
+  signalDoneReceived?: boolean;
+  signalDoneAt?: string;
+  signalDoneConsumed?: boolean;
+  needsReview?: boolean;
   mcpStartupStatus?: 'pending' | 'ready' | 'error';
   mcpStartupError?: string;
 }
@@ -129,6 +130,7 @@ export interface PersistedTask {
   notes: string;
   lastPrompt: string;
   promptedAgentIds?: string[];
+  initialPrompt?: string;
   shellCount: number;
   agentDef: AgentDef | null;
   agentDefs?: AgentDef[];
@@ -142,13 +144,13 @@ export interface PersistedTask {
   dockerSource?: DockerSource;
   dockerImage?: string;
   githubUrl?: string;
-  initialPrompt?: string;
   savedInitialPrompt?: string;
   collapsed?: boolean;
   savedSelectedAgentIndex?: number;
   savedPromptedAgentIndexes?: number[];
   planFileName?: string;
   stepsEnabled?: boolean;
+  // Coordinator fields
   coordinatorMode?: boolean;
   propagateSkipPermissions?: boolean;
   coordinatedBy?: string;
@@ -223,6 +225,15 @@ export interface PersistedState {
   coordinatorControlHintDismissed?: boolean;
 }
 
+export interface MCPStatus {
+  mcpRunning: boolean;
+  remoteRunning: boolean;
+  coordinatorRoutesAttached: boolean;
+  coordinatorRegistered: boolean;
+  serverUrl: string | null;
+  mcpConfigPath: string | null;
+}
+
 // Panel cell IDs. Shell terminals use "shell:0", "shell:1", etc.
 // Shell toolbar buttons use "shell-toolbar:0", "shell-toolbar:1", etc.
 export type PanelId = string;
@@ -234,6 +245,7 @@ export interface PendingAction {
 
 export interface RemoteAccess {
   enabled: boolean;
+  token: string | null;
   port: number;
   url: string | null;
   wifiUrl: string | null;
@@ -241,21 +253,10 @@ export interface RemoteAccess {
   connectedClients: number;
 }
 
-export interface MCPStatus {
-  mcpRunning: boolean;
-  remoteRunning: boolean;
-  coordinatorRoutesAttached: boolean;
-  coordinatorRegistered: boolean;
-  serverUrl: string | null;
-  mcpConfigPath: string | null;
-}
-
 export interface AppStore {
   projects: Project[];
   lastProjectId: string | null;
   lastAgentId: string | null;
-  /** Ordered active task IDs. Coordinated children are present here but filtered
-   *  out of the sidebar's flat list — they render nested under their coordinator. */
   taskOrder: string[];
   collapsedTaskOrder: string[];
   tasks: Record<string, Task>;
@@ -309,7 +310,6 @@ export interface AppStore {
   newTaskPrefillPrompt: { prompt: string; projectId: string | null } | null;
   missingProjectIds: Record<string, true>;
   remoteAccess: RemoteAccess;
-  mcpStatus: MCPStatus;
   showArena: boolean;
   keybindingPreset: string;
   /** Per-preset user overrides. Outer key = preset ID, inner = binding ID → override. */
@@ -327,4 +327,5 @@ export interface AppStore {
   coordinatorModeEnabled: boolean;
   coordinatorNotificationDelayMs: number;
   coordinatorControlHintDismissed: boolean;
+  mcpStatus: MCPStatus;
 }

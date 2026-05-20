@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFileSync, existsSync, unlinkSync } from 'fs';
-import { readFile as fsReadFile, writeFile as fsWriteFile, unlink as fsUnlink } from 'fs/promises';
+import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
+import { readFile as fsReadFile, unlink as fsUnlink } from 'fs/promises';
 import { atomicWriteFile } from './atomic.js';
 import { join } from 'path';
 import os from 'os';
@@ -127,8 +127,8 @@ export async function buildNormalizedPreambleFileDiff(
   const tmpBase = join(os.tmpdir(), `parallel-code-base-${id}`);
   const tmpNorm = join(os.tmpdir(), `parallel-code-norm-${id}`);
   try {
-    await fsWriteFile(tmpBase, baseContent);
-    await fsWriteFile(tmpNorm, normalizedContent);
+    writeFileSync(tmpBase, baseContent);
+    writeFileSync(tmpNorm, normalizedContent);
     let diffOut = '';
     try {
       const { stdout } = await execAsync('git', ['diff', '--no-index', '-U3', tmpBase, tmpNorm]);

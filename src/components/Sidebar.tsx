@@ -7,7 +7,7 @@ import {
   toggleNewTaskDialog,
   setActiveTask,
   toggleSidebar,
-  reorderTask,
+  reorderTaskVisually,
   getTaskDotStatus,
   getTaskAttentionState,
   getTaskViewportVisibility,
@@ -26,7 +26,11 @@ import {
 } from '../store/store';
 import type { Project } from '../store/types';
 import type { TaskAttentionState } from '../store/store';
-import { computeGroupedTasks, getCoordinatorChildren } from '../store/sidebar-order';
+import {
+  computeGroupedTasks,
+  getCoordinatorChildren,
+  isCoordinatedChild,
+} from '../store/sidebar-order';
 import { ConnectPhoneModal } from './ConnectPhoneModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EditProjectDialog } from './EditProjectDialog';
@@ -58,6 +62,7 @@ function getAttentionColor(attention: TaskAttentionState): string | null {
   if (attention === 'active') return theme.accent;
   if (attention === 'needs_input') return theme.warning;
   if (attention === 'error') return theme.error;
+  if (attention === 'review') return '#c084fc';
   return null;
 }
 
@@ -91,6 +96,21 @@ function createOffscreenAttentionState(taskId: () => string) {
   };
 }
 
+/** Small bot/coordinator icon (16x16 SVG). */
+function CoordinatorIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      style={{ 'flex-shrink': '0', opacity: '0.7' }}
+    >
+      <path d="M8 1a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V6h3a2 2 0 0 1 2 2v1.27A2 2 0 0 1 15 11a2 2 0 0 1-3 1.73V11a1 1 0 0 0-1-1H9v2.27A2 2 0 0 1 10 14a2 2 0 0 1-4 0c0-.74.4-1.39 1-1.73V10H5a1 1 0 0 0-1 1v1.73A2 2 0 0 1 5 14a2 2 0 0 1-4 0c0-.74.4-1.39 1-1.73V11a2 2 0 0 1-1-1.73V8a2 2 0 0 1 2-2h3V4.73A2 2 0 0 1 6 3a2 2 0 0 1 2-2Z" />
+    </svg>
+  );
+}
+
 export function Sidebar() {
   const [confirmRemove, setConfirmRemove] = createSignal<string | null>(null);
   const [editingProject, setEditingProject] = createSignal<Project | null>(null);
@@ -100,16 +120,29 @@ export function Sidebar() {
     ImportableWorktree[] | null
   >(null);
   const [dragFromIndex, setDragFromIndex] = createSignal<number | null>(null);
+  const [dragFromTaskId, setDragFromTaskId] = createSignal<string | null>(null);
   const [dropTargetIndex, setDropTargetIndex] = createSignal<number | null>(null);
   const [resizing, setResizing] = createSignal(false);
   let taskListRef: HTMLDivElement | undefined;
 
   const sidebarWidth = () => getPanelUserSize(SIDEBAR_SIZE_KEY) ?? SIDEBAR_DEFAULT_WIDTH;
+
+  // Maps each visible draggable task ID to its visual position (0-based, excluding coordinated children).
+  // This keeps drag signals, drop indicators, and data-task-index in the same coordinate space.
   const taskIndexById = createMemo(() => {
     const map = new Map<string, number>();
-    store.taskOrder.forEach((taskId, idx) => map.set(taskId, idx));
+    let visIdx = 0;
+    for (const taskId of store.taskOrder) {
+      if (!isCoordinatedChild(taskId)) {
+        map.set(taskId, visIdx++);
+      }
+    }
     return map;
   });
+
+  // Number of visible draggable items (used for the end-of-list drop indicator).
+  const draggableTaskCount = createMemo(() => taskIndexById().size);
+
   const groupedTasks = createMemo(() => computeGroupedTasks());
   const sidebarTaskCount = createMemo(
     () => store.taskOrder.length + store.collapsedTaskOrder.length,
@@ -119,6 +152,7 @@ export function Sidebar() {
     sidebarTaskCount() >= DENSE_SIDEBAR_LIST_THRESHOLD
       ? PROJECTS_LIST_DENSE_MAX_HEIGHT
       : PROJECTS_LIST_DEFAULT_MAX_HEIGHT;
+
   function handleResizeMouseDown(e: MouseEvent) {
     e.preventDefault();
     setResizing(true);
@@ -144,27 +178,26 @@ export function Sidebar() {
   }
 
   onMount(() => {
-    // Attach mousedown on task list container via native listener
     const el = taskListRef;
     if (el) {
       const handler = (e: MouseEvent) => {
         const target = (e.target as HTMLElement).closest<HTMLElement>('[data-task-index]');
         if (!target) return;
-        const index = Number(target.dataset.taskIndex);
-        const taskId = store.taskOrder[index];
+        const visibleIndex = Number(target.dataset.taskIndex);
+        // data-task-index is now the visible draggable index; look up the task ID from the visible order
+        const draggableOrder = store.taskOrder.filter((id) => !isCoordinatedChild(id));
+        const taskId = draggableOrder[visibleIndex];
         if (taskId === undefined || taskId === null) return;
-        handleTaskMouseDown(e, taskId, index);
+        handleTaskMouseDown(e, taskId, visibleIndex);
       };
       el.addEventListener('mousedown', handler);
       onCleanup(() => el.removeEventListener('mousedown', handler));
     }
 
-    // Register sidebar focus
     registerFocusFn('sidebar', () => taskListRef?.focus());
     onCleanup(() => unregisterFocusFn('sidebar'));
   });
 
-  // When sidebarFocused changes, trigger focus
   createEffect(() => {
     if (store.sidebarFocused) {
       taskListRef?.focus();
@@ -183,7 +216,6 @@ export function Sidebar() {
     el?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   });
 
-  // Scroll the focused task into view when navigating via keyboard
   createEffect(() => {
     const focusedId = store.sidebarFocusedTaskId;
     if (!focusedId || !taskListRef) return;
@@ -198,7 +230,6 @@ export function Sidebar() {
     el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   });
 
-  // Scroll the focused project into view when it changes
   createEffect(() => {
     const projectId = store.sidebarFocusedProjectId;
     if (!projectId) return;
@@ -245,7 +276,7 @@ export function Sidebar() {
     return items.length;
   }
 
-  function handleTaskMouseDown(e: MouseEvent, taskId: string, index: number) {
+  function handleTaskMouseDown(e: MouseEvent, taskId: string, visibleIndex: number) {
     if (e.button !== 0) return;
     e.preventDefault();
     const startX = e.clientX;
@@ -259,12 +290,12 @@ export function Sidebar() {
 
       if (!dragging) {
         dragging = true;
-        setDragFromIndex(index);
+        setDragFromIndex(visibleIndex);
+        setDragFromTaskId(taskId);
         document.body.classList.add('dragging-task');
       }
 
-      const dropIdx = computeDropIndex(ev.clientY, index);
-      setDropTargetIndex(dropIdx);
+      setDropTargetIndex(computeDropIndex(ev.clientY, visibleIndex));
     }
 
     function onUp() {
@@ -275,12 +306,14 @@ export function Sidebar() {
         document.body.classList.remove('dragging-task');
         const from = dragFromIndex();
         const to = dropTargetIndex();
+        const fromTaskId = dragFromTaskId();
         setDragFromIndex(null);
+        setDragFromTaskId(null);
         setDropTargetIndex(null);
 
-        if (from !== null && to !== null && from !== to) {
+        if (from !== null && to !== null && from !== to && fromTaskId !== null) {
           const adjustedTo = to > from ? to - 1 : to;
-          reorderTask(from, adjustedTo);
+          reorderTaskVisually(fromTaskId, adjustedTo);
         }
       } else {
         setActiveTask(taskId);
@@ -293,7 +326,6 @@ export function Sidebar() {
   }
 
   function abbreviatePath(path: string): string {
-    // Handle Linux /home/user/... and macOS /Users/user/...
     const prefixes = ['/home/', '/Users/'];
     for (const prefix of prefixes) {
       if (path.startsWith(prefix)) {
@@ -306,7 +338,6 @@ export function Sidebar() {
     return path;
   }
 
-  // Compute the global taskOrder index for a given task
   function globalIndex(taskId: string): number {
     return taskIndexById().get(taskId) ?? -1;
   }
@@ -672,34 +703,16 @@ export function Sidebar() {
                   </span>
                   <For each={activeTasks()}>
                     {(taskId) => (
-                      <>
-                        <TaskRow
-                          taskId={taskId}
-                          globalIndex={globalIndex}
-                          dragFromIndex={dragFromIndex}
-                          dropTargetIndex={dropTargetIndex}
-                        />
-                        <CoordinatorChildRows
-                          taskId={taskId}
-                          globalIndex={globalIndex}
-                          dragFromIndex={dragFromIndex}
-                          dropTargetIndex={dropTargetIndex}
-                        />
-                      </>
+                      <TaskEntry
+                        taskId={taskId}
+                        globalIndex={globalIndex}
+                        dragFromIndex={dragFromIndex}
+                        dropTargetIndex={dropTargetIndex}
+                      />
                     )}
                   </For>
                   <For each={collapsedTasks()}>
-                    {(taskId) => (
-                      <>
-                        <CollapsedTaskRow taskId={taskId} />
-                        <CoordinatorChildRows
-                          taskId={taskId}
-                          globalIndex={globalIndex}
-                          dragFromIndex={dragFromIndex}
-                          dropTargetIndex={dropTargetIndex}
-                        />
-                      </>
-                    )}
+                    {(taskId) => <CollapsedTaskEntry taskId={taskId} />}
                   </For>
                 </Show>
               );
@@ -728,38 +741,20 @@ export function Sidebar() {
             </span>
             <For each={groupedTasks().orphanedActive}>
               {(taskId) => (
-                <>
-                  <TaskRow
-                    taskId={taskId}
-                    globalIndex={globalIndex}
-                    dragFromIndex={dragFromIndex}
-                    dropTargetIndex={dropTargetIndex}
-                  />
-                  <CoordinatorChildRows
-                    taskId={taskId}
-                    globalIndex={globalIndex}
-                    dragFromIndex={dragFromIndex}
-                    dropTargetIndex={dropTargetIndex}
-                  />
-                </>
+                <TaskEntry
+                  taskId={taskId}
+                  globalIndex={globalIndex}
+                  dragFromIndex={dragFromIndex}
+                  dropTargetIndex={dropTargetIndex}
+                />
               )}
             </For>
             <For each={groupedTasks().orphanedCollapsed}>
-              {(taskId) => (
-                <>
-                  <CollapsedTaskRow taskId={taskId} />
-                  <CoordinatorChildRows
-                    taskId={taskId}
-                    globalIndex={globalIndex}
-                    dragFromIndex={dragFromIndex}
-                    dropTargetIndex={dropTargetIndex}
-                  />
-                </>
-              )}
+              {(taskId) => <CollapsedTaskEntry taskId={taskId} />}
             </For>
           </Show>
 
-          <Show when={dropTargetIndex() === store.taskOrder.length}>
+          <Show when={dropTargetIndex() === draggableTaskCount()}>
             <div class="drop-indicator" />
           </Show>
         </div>
@@ -809,7 +804,6 @@ export function Sidebar() {
 
         <ConnectPhoneModal open={showConnectPhone()} onClose={() => setShowConnectPhone(false)} />
 
-        {/* Edit project dialog */}
         <EditProjectDialog project={editingProject()} onClose={() => setEditingProject(null)} />
         <ImportWorktreesDialog
           open={importProject() !== null}
@@ -864,172 +858,57 @@ export function Sidebar() {
   );
 }
 
-function CurrentBranchBadge(props: { branchName: string }) {
-  return (
-    <span
-      style={{
-        'font-size': sf(11),
-        'font-weight': '600',
-        padding: '1px 5px',
-        'border-radius': '3px',
-        background: `color-mix(in srgb, ${theme.warning} 12%, transparent)`,
-        color: theme.warning,
-        'flex-shrink': '0',
-        'line-height': '1.5',
-      }}
-    >
-      {props.branchName}
-    </span>
-  );
-}
+// Coordinator children always render inline under their coordinator regardless of
+// their position in taskOrder (they're filtered out of computeGroupedTasks).
+// So moving the coordinator itself is sufficient — children follow visually.
 
-function OffscreenAttentionBadge(props: { taskId: string }) {
-  const offscreenAttention = createOffscreenAttentionState(() => props.taskId);
-  return (
-    <Show when={offscreenAttention.label()}>
-      {(text) => (
-        <span
-          class="sidebar-offscreen-attention-badge"
-          title={text()}
-          style={{
-            color: offscreenAttention.color(),
-            border: `1px solid color-mix(in srgb, ${offscreenAttention.color()} 30%, transparent)`,
-            background: `color-mix(in srgb, ${offscreenAttention.color()} 10%, transparent)`,
-          }}
-        >
-          {text()}
-        </span>
-      )}
-    </Show>
-  );
-}
+// --- Task entry: renders a task row OR a coordinator folder with nested children ---
 
-function NoGitBadge() {
-  return (
-    <span
-      style={{
-        'font-size': sf(10),
-        'font-weight': '600',
-        padding: '1px 5px',
-        'border-radius': '3px',
-        background: `color-mix(in srgb, ${theme.fgMuted} 12%, transparent)`,
-        color: theme.fgMuted,
-        'flex-shrink': '0',
-        'line-height': '1.5',
-      }}
-    >
-      no git
-    </span>
-  );
-}
-
-function CollapsedTaskRow(props: { taskId: string }) {
-  const task = () => store.tasks[props.taskId];
-  const offscreenAttention = createOffscreenAttentionState(() => props.taskId);
-  return (
-    <Show when={task()}>
-      {(t) => (
-        <div
-          class="task-item task-item-appearing"
-          role="button"
-          tabIndex={0}
-          data-sidebar-task-id={props.taskId}
-          onClick={() => uncollapseTask(props.taskId)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              uncollapseTask(props.taskId);
-            }
-          }}
-          title="Click to restore"
-          style={{
-            padding: '7px 10px',
-            'border-radius': '6px',
-            background: offscreenAttention.hasAttention()
-              ? `color-mix(in srgb, ${offscreenAttention.color()} 10%, transparent)`
-              : 'transparent',
-            color: offscreenAttention.hasAttention() ? theme.fg : theme.fgSubtle,
-            'font-size': sf(13),
-            'font-weight': '400',
-            cursor: 'pointer',
-            'white-space': 'nowrap',
-            overflow: 'hidden',
-            'text-overflow': 'ellipsis',
-            opacity: offscreenAttention.hasAttention() ? '1' : '0.6',
-            display: 'flex',
-            'align-items': 'center',
-            gap: '6px',
-            border:
-              store.sidebarFocused && store.sidebarFocusedTaskId === props.taskId
-                ? `1.5px solid var(--border-focus)`
-                : offscreenAttention.hasAttention()
-                  ? `1.5px solid color-mix(in srgb, ${offscreenAttention.color()} 38%, transparent)`
-                  : '1.5px solid transparent',
-          }}
-        >
-          <StatusDot
-            status={getTaskDotStatus(props.taskId)}
-            size="sm"
-            attention={offscreenAttention.attention()}
-          />
-          <Show when={t().gitIsolation === 'direct'}>
-            <CurrentBranchBadge branchName={t().branchName} />
-          </Show>
-          <Show when={t().gitIsolation === 'none'}>
-            <NoGitBadge />
-          </Show>
-          <span style={{ flex: '1', overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
-            {t().name}
-          </span>
-          <OffscreenAttentionBadge taskId={props.taskId} />
-        </div>
-      )}
-    </Show>
-  );
-}
-
-interface TaskRowProps {
+interface TaskEntryProps {
   taskId: string;
   globalIndex: (taskId: string) => number;
   dragFromIndex: () => number | null;
   dropTargetIndex: () => number | null;
 }
 
-function CoordinatorChildRows(props: TaskRowProps) {
-  const children = () => getCoordinatorChildren(props.taskId);
-  const totalCount = () => children().active.length + children().collapsed.length;
+function TaskEntry(props: TaskEntryProps) {
+  const task = () => store.tasks[props.taskId];
+  const isCoordinator = () => task()?.coordinatorMode ?? false;
+
   return (
-    <Show when={totalCount() > 0}>
-      <div
-        style={{
-          'margin-left': '12px',
-          'padding-left': '8px',
-          'border-left': `1px solid color-mix(in srgb, ${theme.border} 70%, transparent)`,
-          display: 'flex',
-          'flex-direction': 'column',
-          gap: '1px',
-        }}
+    <Show when={task()}>
+      <Show
+        when={isCoordinator()}
+        fallback={
+          <TaskRow
+            taskId={props.taskId}
+            globalIndex={props.globalIndex}
+            dragFromIndex={props.dragFromIndex}
+            dropTargetIndex={props.dropTargetIndex}
+            indented={false}
+          />
+        }
       >
-        <For each={children().active}>
-          {(taskId) => (
-            <TaskRow
-              taskId={taskId}
-              globalIndex={props.globalIndex}
-              dragFromIndex={props.dragFromIndex}
-              dropTargetIndex={props.dropTargetIndex}
-            />
-          )}
-        </For>
-        <For each={children().collapsed}>{(taskId) => <CollapsedTaskRow taskId={taskId} />}</For>
-      </div>
+        <CoordinatorFolder
+          taskId={props.taskId}
+          globalIndex={props.globalIndex}
+          dragFromIndex={props.dragFromIndex}
+          dropTargetIndex={props.dropTargetIndex}
+        />
+      </Show>
     </Show>
   );
 }
 
-function TaskRow(props: TaskRowProps) {
+// --- Coordinator folder: coordinator row + indented children ---
+
+function CoordinatorFolder(props: TaskEntryProps) {
   const task = () => store.tasks[props.taskId];
+  const children = createMemo(() => getCoordinatorChildren(props.taskId));
+  const childCount = createMemo(() => children().active.length + children().collapsed.length);
   const idx = () => props.globalIndex(props.taskId);
   const offscreenAttention = createOffscreenAttentionState(() => props.taskId);
+
   return (
     <Show when={task()}>
       {(t) => (
@@ -1037,6 +916,7 @@ function TaskRow(props: TaskRowProps) {
           <Show when={props.dropTargetIndex() === idx()}>
             <div class="drop-indicator" />
           </Show>
+          {/* Coordinator row */}
           <div
             class={`task-item${t().closingStatus === 'removing' ? ' task-item-removing' : ' task-item-appearing'}`}
             data-task-index={idx()}
@@ -1065,8 +945,8 @@ function TaskRow(props: TaskRowProps) {
               'text-overflow': 'ellipsis',
               opacity: props.dragFromIndex() === idx() ? '0.4' : '1',
               display: 'flex',
-              'align-items': 'center',
-              gap: '6px',
+              'flex-direction': 'column',
+              gap: '1px',
               border:
                 store.sidebarFocused && store.sidebarFocusedTaskId === props.taskId
                   ? `1.5px solid var(--border-focus)`
@@ -1075,34 +955,266 @@ function TaskRow(props: TaskRowProps) {
                     : '1.5px solid transparent',
             }}
           >
-            <StatusDot
-              status={getTaskDotStatus(props.taskId)}
-              size="sm"
-              attention={offscreenAttention.attention()}
-            />
-            <Show when={t().gitIsolation === 'direct'}>
-              <span
-                style={{
-                  'font-size': sf(11),
-                  'font-weight': '600',
-                  padding: '1px 5px',
-                  'border-radius': '3px',
-                  background: `color-mix(in srgb, ${theme.warning} 12%, transparent)`,
-                  color: theme.warning,
-                  'flex-shrink': '0',
-                  'line-height': '1.5',
-                }}
-              >
-                {t().branchName}
+            <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+              <CoordinatorIcon />
+              <StatusDot status={getTaskDotStatus(props.taskId)} size="sm" />
+              <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis', flex: '1' }}>
+                {t().name}
               </span>
-            </Show>
-            <Show when={t().gitIsolation === 'none'}>
-              <NoGitBadge />
-            </Show>
-            <span style={{ flex: '1', overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
-              {t().name}
-            </span>
-            <OffscreenAttentionBadge taskId={props.taskId} />
+              <Show when={childCount() > 0}>
+                <span
+                  style={{
+                    'font-size': sf(10),
+                    color: theme.fgSubtle,
+                    'flex-shrink': '0',
+                  }}
+                >
+                  {childCount()}
+                </span>
+              </Show>
+            </div>
+          </div>
+
+          {/* Indented active children */}
+          <For each={children().active}>
+            {(childId) => (
+              <TaskRow
+                taskId={childId}
+                globalIndex={props.globalIndex}
+                dragFromIndex={props.dragFromIndex}
+                dropTargetIndex={props.dropTargetIndex}
+                indented
+              />
+            )}
+          </For>
+
+          {/* Indented collapsed children */}
+          <For each={children().collapsed}>
+            {(childId) => <CollapsedTaskEntry taskId={childId} indented />}
+          </For>
+        </>
+      )}
+    </Show>
+  );
+}
+
+// --- Collapsed task entry: also handles coordinator folders in collapsed state ---
+
+function CollapsedTaskEntry(props: { taskId: string; indented?: boolean; coordinatorId?: string }) {
+  const task = () => store.tasks[props.taskId];
+  // Only top-level coordinators render children — indented entries never recurse
+  const isCoordinator = () => !props.indented && (task()?.coordinatorMode ?? false);
+  const children = createMemo(() =>
+    isCoordinator() ? getCoordinatorChildren(props.taskId) : { active: [], collapsed: [] },
+  );
+  const childCount = createMemo(() => children().active.length + children().collapsed.length);
+
+  return (
+    <Show when={task()}>
+      {(t) => (
+        <>
+          <div
+            class="task-item task-item-appearing"
+            role="button"
+            tabIndex={0}
+            data-sidebar-task-id={props.taskId}
+            onClick={() => {
+              if (props.coordinatorId) {
+                uncollapseTask(props.coordinatorId);
+                setActiveTask(props.taskId);
+              } else {
+                uncollapseTask(props.taskId);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (props.coordinatorId) {
+                  uncollapseTask(props.coordinatorId);
+                  setActiveTask(props.taskId);
+                } else {
+                  uncollapseTask(props.taskId);
+                }
+              }
+            }}
+            title="Click to restore"
+            style={{
+              padding: '7px 10px',
+              'padding-left': props.indented ? '22px' : '10px',
+              'border-radius': '6px',
+              background: 'transparent',
+              color: theme.fgSubtle,
+              'font-size': sf(12),
+              'font-weight': '400',
+              cursor: 'pointer',
+              'white-space': 'nowrap',
+              overflow: 'hidden',
+              'text-overflow': 'ellipsis',
+              opacity: '0.6',
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '1px',
+              border:
+                store.sidebarFocused && store.sidebarFocusedTaskId === props.taskId
+                  ? `1.5px solid var(--border-focus)`
+                  : '1.5px solid transparent',
+            }}
+          >
+            <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+              <Show when={isCoordinator()}>
+                <CoordinatorIcon />
+              </Show>
+              <StatusDot status={getTaskDotStatus(props.taskId)} size="sm" />
+              <Show when={t().gitIsolation === 'direct'}>
+                <span
+                  style={{
+                    'font-size': sf(10),
+                    'font-weight': '600',
+                    padding: '1px 5px',
+                    'border-radius': '3px',
+                    background: `color-mix(in srgb, ${theme.warning} 12%, transparent)`,
+                    color: theme.warning,
+                    'flex-shrink': '0',
+                    'line-height': '1.5',
+                  }}
+                >
+                  {t().branchName}
+                </span>
+              </Show>
+              <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>{t().name}</span>
+              <Show when={isCoordinator() && childCount() > 0}>
+                <span
+                  style={{
+                    'font-size': sf(10),
+                    color: theme.fgSubtle,
+                    'flex-shrink': '0',
+                  }}
+                >
+                  {childCount()}
+                </span>
+              </Show>
+            </div>
+          </div>
+
+          {/* If collapsed coordinator, still show children nested */}
+          <Show when={isCoordinator()}>
+            <For each={children().active}>
+              {(childId) => (
+                <CollapsedTaskEntry taskId={childId} indented coordinatorId={props.taskId} />
+              )}
+            </For>
+            <For each={children().collapsed}>
+              {(childId) => (
+                <CollapsedTaskEntry taskId={childId} indented coordinatorId={props.taskId} />
+              )}
+            </For>
+          </Show>
+        </>
+      )}
+    </Show>
+  );
+}
+
+// --- Individual task row ---
+
+interface TaskRowProps {
+  taskId: string;
+  globalIndex: (taskId: string) => number;
+  dragFromIndex: () => number | null;
+  dropTargetIndex: () => number | null;
+  indented: boolean;
+}
+
+function TaskRow(props: TaskRowProps) {
+  const task = () => store.tasks[props.taskId];
+  const idx = () => props.globalIndex(props.taskId);
+  const offscreenAttention = createOffscreenAttentionState(() => props.taskId);
+  return (
+    <Show when={task()}>
+      {(t) => (
+        <>
+          <Show when={!props.indented && props.dropTargetIndex() === idx()}>
+            <div class="drop-indicator" />
+          </Show>
+          <div
+            class={`task-item${t().closingStatus === 'removing' ? ' task-item-removing' : ' task-item-appearing'}`}
+            data-task-index={props.indented ? undefined : idx()}
+            onClick={() => {
+              setActiveTask(props.taskId);
+              focusSidebar();
+            }}
+            style={{
+              padding: '7px 10px',
+              'padding-left': props.indented ? '22px' : '10px',
+              'border-radius': '6px',
+              background: offscreenAttention.hasAttention()
+                ? `color-mix(in srgb, ${offscreenAttention.color()} 10%, transparent)`
+                : 'transparent',
+              color:
+                store.activeTaskId === props.taskId || offscreenAttention.hasAttention()
+                  ? theme.fg
+                  : theme.fgMuted,
+              'font-size': sf(12),
+              'font-weight':
+                store.activeTaskId === props.taskId || offscreenAttention.hasAttention()
+                  ? '500'
+                  : '400',
+              cursor: props.indented
+                ? 'pointer'
+                : props.dragFromIndex() !== null
+                  ? 'grabbing'
+                  : 'pointer',
+              'white-space': 'nowrap',
+              overflow: 'hidden',
+              'text-overflow': 'ellipsis',
+              opacity: !props.indented && props.dragFromIndex() === idx() ? '0.4' : '1',
+              display: 'flex',
+              'flex-direction': 'column',
+              gap: '1px',
+              border:
+                store.sidebarFocused && store.sidebarFocusedTaskId === props.taskId
+                  ? `1.5px solid var(--border-focus)`
+                  : offscreenAttention.hasAttention()
+                    ? `1.5px solid color-mix(in srgb, ${offscreenAttention.color()} 38%, transparent)`
+                    : '1.5px solid transparent',
+            }}
+          >
+            <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+              <StatusDot status={getTaskDotStatus(props.taskId)} size="sm" />
+              <Show when={t().gitIsolation === 'direct'}>
+                <span
+                  style={{
+                    'font-size': sf(10),
+                    'font-weight': '600',
+                    padding: '1px 5px',
+                    'border-radius': '3px',
+                    background: `color-mix(in srgb, ${theme.warning} 12%, transparent)`,
+                    color: theme.warning,
+                    'flex-shrink': '0',
+                    'line-height': '1.5',
+                  }}
+                >
+                  {t().branchName}
+                </span>
+              </Show>
+              <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>{t().name}</span>
+              <Show when={offscreenAttention.label()}>
+                {(label) => (
+                  <span
+                    style={{
+                      'font-size': sf(10),
+                      color: offscreenAttention.color(),
+                      background: `color-mix(in srgb, ${offscreenAttention.color()} 12%, transparent)`,
+                      padding: '1px 5px',
+                      'border-radius': '3px',
+                      'flex-shrink': '0',
+                    }}
+                  >
+                    {label()}
+                  </span>
+                )}
+              </Show>
+            </div>
           </div>
         </>
       )}

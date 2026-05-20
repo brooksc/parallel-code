@@ -10,7 +10,7 @@ vi.mock('../lib/ipc', () => ({
   invoke: mockInvoke,
 }));
 
-import { loadState, resolveIncomingPanelUserSize } from './persistence';
+import { loadState, resolveIncomingPanelUserSize, saveState } from './persistence';
 import { setStore, store } from './core';
 
 function agentDef(overrides: Partial<AgentDef> = {}): AgentDef {
@@ -77,6 +77,7 @@ beforeEach(() => {
   setStore('activeAgentId', null);
   setStore('availableAgents', []);
   setStore('customAgents', []);
+  setStore('coordinatorControlHintDismissed', false);
 });
 
 describe('resolveIncomingPanelUserSize', () => {
@@ -160,227 +161,6 @@ describe('resolveIncomingPanelUserSize', () => {
 });
 
 describe('loadState agent definition migrations', () => {
-  it('restores coordinator global and per-task fields', async () => {
-    const codex = agentDef({ id: 'codex', name: 'Codex CLI' });
-    mockInvoke.mockResolvedValueOnce(
-      JSON.stringify({
-        projects: [{ id: 'project-1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
-        lastProjectId: 'project-1',
-        lastAgentId: null,
-        taskOrder: ['task-1'],
-        collapsedTaskOrder: [],
-        coordinatorModeEnabled: true,
-        coordinatorNotificationDelayMs: 12_345,
-        coordinatorControlHintDismissed: true,
-        tasks: {
-          'task-1': {
-            ...persistedTask(codex),
-            coordinatorMode: true,
-            propagateSkipPermissions: true,
-            coordinatedBy: 'coord-1',
-            controlledBy: 'human',
-            mcpConfigPath: '/tmp/parallel-code-subtask-task-1.json',
-            preambleFileExistedBefore: true,
-            signalDoneReceived: true,
-            signalDoneAt: '2026-05-19T10:00:00.000Z',
-            signalDoneConsumed: true,
-            needsReview: true,
-          },
-        },
-        activeTaskId: 'task-1',
-        sidebarVisible: true,
-      }),
-    );
-
-    await loadState();
-
-    expect(store.coordinatorModeEnabled).toBe(true);
-    expect(store.coordinatorNotificationDelayMs).toBe(12_345);
-    expect(store.coordinatorControlHintDismissed).toBe(true);
-    expect(store.tasks['task-1']).toMatchObject({
-      coordinatorMode: true,
-      propagateSkipPermissions: true,
-      coordinatedBy: 'coord-1',
-      controlledBy: 'human',
-      mcpConfigPath: '/tmp/parallel-code-subtask-task-1.json',
-      preambleFileExistedBefore: true,
-      signalDoneReceived: true,
-      signalDoneAt: '2026-05-19T10:00:00.000Z',
-      signalDoneConsumed: true,
-      needsReview: true,
-    });
-  });
-
-  it('restores multiple persisted agents for one task', async () => {
-    const codex = agentDef({ id: 'codex', name: 'Codex CLI' });
-    const claude = agentDef({
-      id: 'claude',
-      name: 'Claude Code',
-      command: 'claude',
-      description: 'Claude',
-    });
-
-    mockInvoke.mockResolvedValueOnce(
-      JSON.stringify({
-        projects: [{ id: 'project-1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
-        lastProjectId: 'project-1',
-        lastAgentId: null,
-        taskOrder: ['task-1'],
-        collapsedTaskOrder: [],
-        tasks: {
-          'task-1': {
-            ...persistedTask(codex),
-            agentDefs: [codex, claude],
-            agentIds: ['persisted-agent-1', 'persisted-agent-2'],
-          },
-        },
-        activeTaskId: 'task-1',
-        sidebarVisible: true,
-      }),
-    );
-
-    await loadState();
-
-    const agentIds = store.tasks['task-1']?.agentIds ?? [];
-    expect(agentIds).toEqual(['persisted-agent-1', 'persisted-agent-2']);
-    expect(agentIds.map((id) => store.agents[id].def.id)).toEqual(['codex', 'claude']);
-    expect(store.agents[agentIds[0]].spawnDelayMs).toBeUndefined();
-    expect(store.agents[agentIds[1]].spawnDelayMs).toBeGreaterThan(0);
-    expect(store.agents[agentIds[0]].attachExisting).toBe(true);
-    expect(store.agents[agentIds[1]].attachExisting).toBe(true);
-  });
-
-  it('restores prompted agent ids only when they still belong to active task agents', async () => {
-    const codex = agentDef({ id: 'codex', name: 'Codex CLI' });
-    const claude = agentDef({
-      id: 'claude',
-      name: 'Claude Code',
-      command: 'claude',
-      description: 'Claude',
-    });
-
-    mockInvoke.mockResolvedValueOnce(
-      JSON.stringify({
-        projects: [{ id: 'project-1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
-        lastProjectId: 'project-1',
-        lastAgentId: null,
-        taskOrder: ['task-1'],
-        collapsedTaskOrder: [],
-        tasks: {
-          'task-1': {
-            ...persistedTask(codex),
-            agentDefs: [codex, claude],
-            agentIds: ['persisted-agent-1', 'persisted-agent-2'],
-            promptedAgentIds: ['persisted-agent-2', 'missing-agent'],
-          },
-        },
-        activeTaskId: 'task-1',
-        sidebarVisible: true,
-      }),
-    );
-
-    await loadState();
-
-    expect(store.tasks['task-1']?.promptedAgentIds).toEqual(['persisted-agent-2']);
-  });
-
-  it('restores the selected agent for active multi-agent tasks', async () => {
-    const codex = agentDef({ id: 'codex', name: 'Codex CLI' });
-    const claude = agentDef({
-      id: 'claude',
-      name: 'Claude Code',
-      command: 'claude',
-      description: 'Claude',
-    });
-
-    mockInvoke.mockResolvedValueOnce(
-      JSON.stringify({
-        projects: [{ id: 'project-1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
-        lastProjectId: 'project-1',
-        lastAgentId: null,
-        taskOrder: ['task-1'],
-        collapsedTaskOrder: [],
-        tasks: {
-          'task-1': {
-            ...persistedTask(codex),
-            agentDefs: [codex, claude],
-            agentIds: ['persisted-agent-1', 'persisted-agent-2'],
-            selectedAgentId: 'persisted-agent-2',
-          },
-        },
-        activeTaskId: 'task-1',
-        sidebarVisible: true,
-      }),
-    );
-
-    await loadState();
-
-    expect(store.tasks['task-1']?.selectedAgentId).toBe('persisted-agent-2');
-    expect(store.activeAgentId).toBe('persisted-agent-2');
-  });
-
-  it('restores pending initial prompts until they are sent', async () => {
-    const codex = agentDef({ id: 'codex', name: 'Codex CLI' });
-
-    mockInvoke.mockResolvedValueOnce(
-      JSON.stringify({
-        projects: [{ id: 'project-1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
-        lastProjectId: 'project-1',
-        lastAgentId: null,
-        taskOrder: ['task-1'],
-        collapsedTaskOrder: [],
-        tasks: {
-          'task-1': {
-            ...persistedTask(codex),
-            agentIds: ['persisted-agent-1'],
-            initialPrompt: 'queued prompt',
-            savedInitialPrompt: 'clean queued prompt',
-          },
-        },
-        activeTaskId: 'task-1',
-        sidebarVisible: true,
-      }),
-    );
-
-    await loadState();
-
-    expect(store.tasks['task-1']?.initialPrompt).toBe('queued prompt');
-    expect(store.tasks['task-1']?.savedInitialPrompt).toBe('clean queued prompt');
-  });
-
-  it('keeps prompted agent indexes for collapsed task restore', async () => {
-    const codex = agentDef({ id: 'codex', name: 'Codex CLI' });
-
-    mockInvoke.mockResolvedValueOnce(
-      JSON.stringify({
-        projects: [{ id: 'project-1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
-        lastProjectId: 'project-1',
-        lastAgentId: null,
-        taskOrder: [],
-        collapsedTaskOrder: ['task-1'],
-        tasks: {
-          'task-1': {
-            ...persistedTask(codex),
-            collapsed: true,
-            agentDefs: [codex],
-            promptedAgentIds: ['stale-agent-id'],
-            savedSelectedAgentIndex: 0,
-            savedPromptedAgentIndexes: [0, -1, 101],
-          },
-        },
-        activeTaskId: null,
-        sidebarVisible: true,
-      }),
-    );
-
-    await loadState();
-
-    expect(store.tasks['task-1']?.agentIds).toEqual([]);
-    expect(store.tasks['task-1']?.promptedAgentIds).toBeUndefined();
-    expect(store.tasks['task-1']?.savedSelectedAgentIndex).toBe(0);
-    expect(store.tasks['task-1']?.savedPromptedAgentIndexes).toEqual([0]);
-  });
-
   it('migrates persisted Codex --full-auto skip-permissions args', async () => {
     const restored = await loadPersistedAgent(
       agentDef({
@@ -533,5 +313,58 @@ describe('loadState theme persistence', () => {
     await loadState();
     expect(store.appearanceMode).toBe('dark');
     expect(store.darkThemePreset).toBe('islands-dark');
+  });
+});
+
+describe('coordinator control hint persistence', () => {
+  it('does not persist dismissed=false', async () => {
+    setStore('coordinatorControlHintDismissed', false);
+    mockInvoke.mockResolvedValueOnce(undefined);
+
+    await saveState();
+
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.coordinatorControlHintDismissed).toBeUndefined();
+  });
+
+  it('persists dismissed=true', async () => {
+    setStore('coordinatorControlHintDismissed', true);
+    mockInvoke.mockResolvedValueOnce(undefined);
+
+    await saveState();
+
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.coordinatorControlHintDismissed).toBe(true);
+  });
+
+  it('restores dismissed=true from saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+        coordinatorControlHintDismissed: true,
+      }),
+    );
+
+    await loadState();
+
+    expect(store.coordinatorControlHintDismissed).toBe(true);
+  });
+
+  it('defaults to false when not in saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+      }),
+    );
+
+    await loadState();
+
+    expect(store.coordinatorControlHintDismissed).toBe(false);
   });
 });
