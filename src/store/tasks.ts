@@ -1309,6 +1309,10 @@ export function retryTaskMcpStartup(taskId: string): Promise<void> {
       markTaskMcpError(taskId, 'Coordinator MCP failed — retry the coordinator task first');
       return Promise.resolve();
     }
+    if (coordinator?.mcpStartupStatus === 'pending') {
+      markTaskMcpError(taskId, 'Coordinator is still starting — wait for it to finish, then retry');
+      return Promise.resolve();
+    }
     return invoke(IPC.MCP_HydrateCoordinatedTask, {
       id: task.id,
       name: task.name,
