@@ -16,6 +16,7 @@ import {
 import { join, dirname } from 'path';
 import os from 'os';
 import { getSubTaskMcpConfigPath } from './config.js';
+import { buildMcpLaunchArgs } from './agent-args.js';
 import { validateBranchName } from './validation.js';
 import { atomicWriteFileSync, atomicWriteFile } from './atomic.js';
 import { ReplayCache } from './replay-cache.js';
@@ -29,7 +30,7 @@ import {
 const execAsync = promisify(execFile);
 import type { BrowserWindow } from 'electron';
 import { createTask as createBackendTask, deleteTask } from '../ipc/tasks.js';
-import { getSkipPermissionsArgs, getMcpConfigArgs } from '../ipc/agents.js';
+import { getSkipPermissionsArgs } from '../ipc/agents.js';
 import {
   spawnAgent,
   writeToAgent,
@@ -52,7 +53,6 @@ import type {
   CoordinatedTask,
   PendingNotification,
   CoordinatorState,
-  CoordinatorSpawnDefaults,
   ApiTaskSummary,
   ApiTaskDetail,
   ApiDiffResult,
@@ -83,16 +83,14 @@ export class Coordinator {
   private projectRoot: string | null = null;
   private projectId: string | null = null;
   private defaultCoordinatorTaskId: string | null = null;
-  private coordinatorSpawnDefaults: CoordinatorSpawnDefaults = {
+  private coordinatorSpawnDefaults: { command: string; args: string[] } = {
     command: 'claude',
     args: [],
   };
   private coordinators = new Map<string, CoordinatorState>();
-  private notificationDelayMs = 60_000;
+  private notificationDelayMs = 30_000;
   private readonly COORDINATOR_RESTAMP_DELAY_MS = 5 * 60_000;
   private readonly MAX_ACKED_BATCH_IDS = 64;
-  private orphanedTaskIds = new Set<string>();
-  private allOrphanedDoneCallback: (() => void) | null = null;
   // Serializes concurrent preamble writes to the same file path.
   private preambleWriteQueue = new Map<string, Promise<void>>();
   constructor() {
@@ -247,27 +245,13 @@ export class Coordinator {
     }
   }
 
-  setCoordinatorSpawnDefaults(
-    coordinatorTaskId: string,
-    command: string,
-    args: string[],
-    opts?: {
-      skipPermissionsArgs?: string[];
-      mcpConfigFlag?: string;
-    },
-  ): void {
-    const spawnDefaults: CoordinatorSpawnDefaults = {
-      command,
-      args,
-      skipPermissionsArgs: opts?.skipPermissionsArgs ? [...opts.skipPermissionsArgs] : undefined,
-      mcpConfigFlag: opts?.mcpConfigFlag,
-    };
+  setCoordinatorSpawnDefaults(coordinatorTaskId: string, command: string, args: string[]): void {
     const state = this.coordinators.get(coordinatorTaskId);
     if (state) {
-      state.spawnDefaults = spawnDefaults;
+      state.spawnDefaults = { command, args };
     }
     // Also update global fallback.
-    this.coordinatorSpawnDefaults = spawnDefaults;
+    this.coordinatorSpawnDefaults = { command, args };
   }
 
   setDockerContainerName(coordinatorTaskId: string, name: string | null): void {
@@ -621,8 +605,9 @@ export class Coordinator {
       // Write a per-sub-task MCP config so the agent can call signal_done.
       // In Docker mode, write to the coordinator's .parallel-code/ dir (which IS the explicitly
       // mounted volume) rather than the sub-task worktree (which may not be in the container).
-      // Always pass --mcp-config explicitly so Claude doesn't rely on auto-discovery.
+      // Always pass explicit MCP launch args so agents don't rely on auto-discovery.
       const mcpServerInfoForTask = coordinatorState.mcpServerInfo;
+      let subTaskMcpConfig: Parameters<typeof buildMcpLaunchArgs>[2] | undefined;
       if (mcpServerInfoForTask) {
         const { serverUrl, subtaskToken, serverPath } = mcpServerInfoForTask;
         const doneToken = randomBytes(24).toString('base64url');
@@ -640,6 +625,7 @@ export class Coordinator {
             },
           },
         };
+        subTaskMcpConfig = mcpConfig;
         const configPath = getSubTaskMcpConfigPath(dockerContainerName, serverPath, task.id);
         await atomicWriteFile(configPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
         subTaskMcpConfigPath = configPath;
@@ -648,16 +634,12 @@ export class Coordinator {
 
       const agentCommand = opts.agentCommand ?? coordinatorState.spawnDefaults.command;
       const agentArgs = opts.agentArgs ?? coordinatorState.spawnDefaults.args;
-      const skipPermissionArgs =
-        coordinatorState.spawnDefaults.skipPermissionsArgs ?? getSkipPermissionsArgs(agentCommand);
       const baseArgs = [
         ...agentArgs,
-        ...(coordinatorState.propagateSkipPermissions ? skipPermissionArgs : []),
+        ...(coordinatorState.propagateSkipPermissions ? getSkipPermissionsArgs(agentCommand) : []),
       ];
-      const mcpArgs = subTaskMcpConfigPath
-        ? coordinatorState.spawnDefaults.mcpConfigFlag
-          ? [coordinatorState.spawnDefaults.mcpConfigFlag, subTaskMcpConfigPath]
-          : getMcpConfigArgs(agentCommand, subTaskMcpConfigPath)
+      const mcpArgs = subTaskMcpConfig
+        ? buildMcpLaunchArgs(agentCommand, subTaskMcpConfigPath, subTaskMcpConfig)
         : [];
       const agentFinalArgs = [...baseArgs, ...mcpArgs];
 
@@ -666,7 +648,7 @@ export class Coordinator {
       // sub-task container, rather than killing processes inside the coordinator).
       const channelId = randomUUID();
 
-      await spawnAgent(this.win, {
+      spawnAgent(this.win, {
         taskId: task.id,
         agentId,
         command: agentCommand,
@@ -805,6 +787,14 @@ export class Coordinator {
     writeToAgent(task.agentId, '\r');
     task.status = 'running';
     task.pendingPrompt = undefined;
+    task.signalDoneAt = undefined;
+    this.notifyRenderer(IPC.MCP_TaskStateSync, {
+      taskId,
+      signalDoneReceived: false,
+      signalDoneAt: null,
+      signalDoneConsumed: false,
+      needsReview: false,
+    });
   }
 
   waitForIdle(
@@ -953,16 +943,30 @@ export class Coordinator {
     }
 
     const coordinatorState = this.coordinators.get(task.coordinatorTaskId);
-    const result = await gitMergeTask(
-      root,
-      task.branchName,
-      opts?.squash ?? false,
-      opts?.message ?? null,
-      false, // worktree removal is handled by cleanupTask below, not gitMergeTask
-      task.baseBranch,
-      task.worktreePath,
-      coordinatorState?.worktreePath,
-    );
+    const runMerge = () =>
+      gitMergeTask(
+        root,
+        task.branchName,
+        opts?.squash ?? false,
+        opts?.message ?? null,
+        false, // worktree removal is handled by cleanupTask below, not gitMergeTask
+        task.baseBranch,
+        task.worktreePath,
+        coordinatorState?.worktreePath,
+      );
+    let result: Awaited<ReturnType<typeof runMerge>>;
+    try {
+      result = await runMerge();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('Another git process') || msg.includes('index.lock')) {
+        // Stale git lock — wait for it to clear then retry once
+        await new Promise((r) => setTimeout(r, 2000));
+        result = await runMerge();
+      } else {
+        throw err;
+      }
+    }
 
     if (opts?.cleanup) {
       await this.cleanupTask(taskId);
@@ -1034,11 +1038,6 @@ export class Coordinator {
     this.tasks.delete(taskId);
     this.blockedByHumanControl.delete(taskId);
     this.controlMap.delete(taskId);
-
-    this.orphanedTaskIds.delete(taskId);
-    if (this.orphanedTaskIds.size === 0 && !this.hasActiveCoordinator()) {
-      this.allOrphanedDoneCallback?.();
-    }
   }
 
   private async cleanupTask(taskId: string): Promise<void> {
@@ -1123,11 +1122,6 @@ export class Coordinator {
     this.controlMap.delete(taskId);
     this.blockedByHumanControl.delete(taskId);
     this.closingTaskIds.delete(taskId);
-
-    this.orphanedTaskIds.delete(taskId);
-    if (this.orphanedTaskIds.size === 0 && !this.hasActiveCoordinator()) {
-      this.allOrphanedDoneCallback?.();
-    }
 
     // Notify renderer
     this.notifyRenderer(IPC.MCP_TaskClosed, { taskId });
@@ -1414,13 +1408,38 @@ export class Coordinator {
         this.idleResolvers.delete(taskId);
       }
 
+      // If the prompt hadn't been delivered yet, silence future orphaned notifications:
+      // the task never started real work so there's nothing to review. If the prompt
+      // WAS already delivered, leave reviewNotificationQueued unset so the next idle
+      // or exit fires the expected orphaned notification for the user to act on.
+      if (!task.assignedPromptDelivered) {
+        task.reviewNotificationQueued = true;
+      }
+
       // Transfer control to human so the user can decide what to do with orphaned tasks
       this.controlMap.set(taskId, 'human');
       this.blockedByHumanControl.delete(taskId);
-      this.orphanedTaskIds.add(taskId);
 
-      // Notify the frontend so it can update the task's displayed state
-      this.notifyRenderer(IPC.MCP_TaskStateSync, { taskId, needsReview: true });
+      if (task.mcpConfigPath) {
+        try {
+          unlinkSync(task.mcpConfigPath);
+        } catch {
+          /* already gone */
+        }
+        task.mcpConfigPath = undefined;
+      }
+
+      // Notify the frontend so it can detach children consistently regardless
+      // of whether backend deregistration or renderer close cleanup wins the IPC race.
+      this.notifyRenderer(IPC.MCP_TaskStateSync, {
+        taskId,
+        coordinatedBy: null,
+        controlledBy: null,
+        mcpConfigPath: null,
+        mcpStartupStatus: null,
+        mcpStartupError: null,
+        needsReview: task.assignedPromptDelivered,
+      });
     }
   }
 
@@ -1500,14 +1519,6 @@ export class Coordinator {
 
   hasActiveCoordinator(): boolean {
     return this.coordinators.size > 0;
-  }
-
-  hasOrphanedTasks(): boolean {
-    return this.orphanedTaskIds.size > 0;
-  }
-
-  setAllOrphanedDoneCallback(cb: () => void): void {
-    this.allOrphanedDoneCallback = cb;
   }
 
   signalDone(taskId: string): boolean {
@@ -1657,7 +1668,7 @@ export class Coordinator {
       timeoutMs,
     });
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const timerRef = { value: undefined as ReturnType<typeof setTimeout> | undefined };
 
       const wrapped = (result: WaitForSignalDoneResult) => {
@@ -1679,7 +1690,8 @@ export class Coordinator {
           timeoutMs,
           activeWaitCount: this.activeSignalWaitCounts.get(coordinatorTaskId) ?? 0,
         });
-        reject(new Error(`Timed out waiting for any signal_done`));
+        const remaining = this.countRemaining(coordinatorTaskId);
+        resolve({ remaining, timedOut: true });
       }, timeoutMs);
 
       let resolvers = this.anySignalResolvers.get(coordinatorTaskId);

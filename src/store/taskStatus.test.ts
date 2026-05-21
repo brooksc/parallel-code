@@ -752,6 +752,34 @@ describe('task attention state', () => {
     expect(getTaskAttentionState('task-2')).toBe('needs_input');
     expect(taskNeedsAttention('task-2')).toBe(true);
   });
+
+  it('returns review for tasks with needsReview flag set', () => {
+    setMockTask('task-1', { agentIds: ['agent-1'], needsReview: true });
+    setMockAgent('agent-1', { status: 'running' });
+
+    expect(getTaskAttentionState('task-1')).toBe('review');
+    expect(taskNeedsAttention('task-1')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task dot status
+// ---------------------------------------------------------------------------
+describe('getTaskDotStatus', () => {
+  it('returns review for tasks with needsReview flag set', () => {
+    setMockTask('task-1', { agentIds: ['agent-1'], needsReview: true });
+    setMockAgent('agent-1', { status: 'running' });
+
+    expect(getTaskDotStatus('task-1')).toBe('review');
+  });
+
+  it('returns busy over review when an agent is actively producing output', () => {
+    setMockTask('task-1', { agentIds: ['agent-1'], needsReview: true });
+    setMockAgent('agent-1', { status: 'running' });
+    markAgentSpawned('agent-1');
+
+    expect(getTaskDotStatus('task-1')).toBe('busy');
+  });
 });
 
 describe('coordinator auto-trust', () => {

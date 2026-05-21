@@ -13,35 +13,15 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { createServer } from 'net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildCoordinatorMCPConfig,
   getDockerMcpServerDestPath,
-  rebindRemoteServerSafely,
   selectMcpJsonDir,
   validateStartMCPServerArgs,
 } from './register.js';
 import { getMCPRemoteServerUrl } from '../mcp/config.js';
 import { startRemoteServer } from '../remote/server.js';
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-async function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.on('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      if (!addr || typeof addr === 'string') {
-        srv.close(() => reject(new Error('no port')));
-        return;
-      }
-      const { port } = addr;
-      srv.close(() => resolve(port));
-    });
-  });
-}
 
 const TEST_COORDINATOR_ID = '12345678-1234-4234-8234-123456789abc';
 
@@ -388,27 +368,6 @@ describe('Layer 4 — StartMCPServer input validation', () => {
     expect(copyFileSpy).not.toHaveBeenCalled();
   });
 
-  it('validates custom agent coordinator arg metadata', () => {
-    expect(() =>
-      validateStartMCPServerArgs({
-        ...VALID_ARGS,
-        agentSkipPermissionsArgs: ['--custom-skip'],
-        agentMcpConfigFlag: '--custom-config',
-      }),
-    ).not.toThrow();
-
-    expect(() =>
-      validateStartMCPServerArgs({
-        ...VALID_ARGS,
-        agentSkipPermissionsArgs: ['--custom-skip', 1],
-      }),
-    ).toThrow('agentSkipPermissionsArgs must be a string array');
-
-    expect(() => validateStartMCPServerArgs({ ...VALID_ARGS, agentMcpConfigFlag: 1 })).toThrow(
-      'agentMcpConfigFlag must be a string',
-    );
-  });
-
   it('rejects dockerContainerName with shell-special characters', () => {
     const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
     const copyFileSpy = vi.spyOn(fs, 'copyFileSync');
@@ -449,9 +408,8 @@ describe('Layer 5 — Failure modes', () => {
   });
 
   it('remote server returns 401 for a missing auth token', async () => {
-    const port = await findFreePort();
     const srv = await startRemoteServer({
-      port,
+      port: 0,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
@@ -468,9 +426,8 @@ describe('Layer 5 — Failure modes', () => {
   });
 
   it('remote server returns 401 for a wrong auth token', async () => {
-    const port = await findFreePort();
     const srv = await startRemoteServer({
-      port,
+      port: 0,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
@@ -487,13 +444,12 @@ describe('Layer 5 — Failure modes', () => {
   });
 
   it('remote server returns 200 with correct Bearer token and X-Coordinator-Id', async () => {
-    const port = await findFreePort();
     const mockCoordinator = {
       listTasks: () => [],
       isRegisteredCoordinator: () => true,
     };
     const srv = await startRemoteServer({
-      port,
+      port: 0,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
@@ -536,10 +492,9 @@ describe('Layer 5 — Failure modes', () => {
 
 describe('Layer 7 — Remote server bind address', () => {
   it('server bound to 127.0.0.1 is reachable via that address', async () => {
-    const port = await findFreePort();
     const mockCoordinator = { listTasks: () => [], isRegisteredCoordinator: () => true };
     const srv = await startRemoteServer({
-      port,
+      port: 0,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
@@ -556,9 +511,8 @@ describe('Layer 7 — Remote server bind address', () => {
   });
 
   it('server port is included in generated MCP URL', async () => {
-    const port = await findFreePort();
     const srv = await startRemoteServer({
-      port,
+      port: 0,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
@@ -694,44 +648,14 @@ describe('Layer 6 — Log assertions (production startup messages)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Layer 8 — Coordinator routes available after late coordinator attach', () => {
-  it('startRemoteServer defaults to loopback when host is omitted', async () => {
-    const port = await findFreePort();
-    const srv = await startRemoteServer({
-      port,
-      staticDir: os.tmpdir(),
-      getTaskName: (id) => id,
-      getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),
-      getCoordinator: () => null,
-    });
-
-    try {
-      expect(srv.bindHost).toBe('127.0.0.1');
-    } finally {
-      await srv.stop();
-    }
-  });
-
-  it('does not stop the existing MCP server when public rebind startup fails', async () => {
-    const existing = { stop: vi.fn().mockResolvedValue(undefined) };
-
-    await expect(
-      rebindRemoteServerSafely(existing, async () => {
-        throw new Error('EADDRINUSE');
-      }),
-    ).rejects.toThrow('EADDRINUSE');
-
-    expect(existing.stop).not.toHaveBeenCalled();
-  });
-
   it('coordinator routes return 503 before coordinator is set, then 200 after', async () => {
-    const port = await findFreePort();
     let currentCoordinator: {
       listTasks: () => unknown[];
       isRegisteredCoordinator?: () => boolean;
     } | null = null;
 
     const srv = await startRemoteServer({
-      port,
+      port: 0,
       staticDir: os.tmpdir(),
       getTaskName: (id) => id,
       getAgentStatus: () => ({ status: 'running', exitCode: null, lastLine: '' }),

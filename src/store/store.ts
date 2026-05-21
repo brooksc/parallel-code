@@ -42,6 +42,7 @@ export {
   clearPrefillPrompt,
   setPrefillPrompt,
   reorderTask,
+  reorderTaskVisually,
   spawnShellForTask,
   runBookmarkInTask,
   closeShell,
@@ -55,6 +56,14 @@ export {
   setStepsContent,
   setTaskStepsEnabled,
   setTaskLastInputAt,
+  initMCPListeners,
+  getCoordinatorCloseWarning,
+  setTaskControl,
+  markTaskMcpPending,
+  markTaskMcpReady,
+  setTaskMcpLaunchArgs,
+  markTaskMcpError,
+  retryTaskMcpStartup,
 } from './tasks';
 export {
   setActiveTask,
@@ -122,6 +131,7 @@ export {
   setFontSmoothing,
   setDesktopNotificationsEnabled,
   setVerboseLogging,
+  setCoordinatorNotificationDelayMs,
   setInactiveColumnOpacity,
   setEditorCommand,
   setDockerImage,
@@ -130,6 +140,7 @@ export {
   setAskCodeProvider,
   setMinimaxApiKey,
   setWindowState,
+  setCoordinatorModeEnabled,
 } from './ui';
 export {
   getTaskDotStatus,
@@ -174,3 +185,9 @@ export {
   checkConflict,
   dismissMigrationBanner,
 } from './keybindings';
+export {
+  hasAnyCoordinatorTask,
+  refreshMCPStatus,
+  startMCPStatusPolling,
+  stopMCPStatusPolling,
+} from './mcpStatus';

@@ -213,8 +213,8 @@ describe('DOCKER_CONTAINER_HOME', () => {
 });
 
 describe('spawnAgent docker mode', () => {
-  it('uses --network host (not --add-host, which is incompatible with host networking on Linux)', async () => {
-    await spawnAgent(createMockWindow(), buildSpawnArgs({ cwd: '/workspace/project' }));
+  it('uses --network host (not --add-host, which is incompatible with host networking on Linux)', () => {
+    spawnAgent(createMockWindow(), buildSpawnArgs({ cwd: '/workspace/project' }));
     const { args } = getLastSpawnCall();
     expect(args).toContain('--network');
     const netIdx = args.indexOf('--network');
@@ -223,40 +223,40 @@ describe('spawnAgent docker mode', () => {
     expect(args.join(' ')).not.toContain('--add-host');
   });
 
-  it('sets -w to the worktree cwd so the container starts in the right directory', async () => {
+  it('sets -w to the worktree cwd so the container starts in the right directory', () => {
     const cwd = '/workspace/my-project';
-    await spawnAgent(createMockWindow(), buildSpawnArgs({ cwd, dockerMountWorktreeParent: false }));
+    spawnAgent(createMockWindow(), buildSpawnArgs({ cwd, dockerMountWorktreeParent: false }));
     const { args } = getLastSpawnCall();
     const wIdx = args.indexOf('-w');
     expect(wIdx).toBeGreaterThan(0);
     expect(args[wIdx + 1]).toBe(cwd);
   });
 
-  it('volume-mounts the worktree cwd at the same host path', async () => {
+  it('volume-mounts the worktree cwd at the same host path', () => {
     const cwd = '/workspace/my-project';
-    await spawnAgent(createMockWindow(), buildSpawnArgs({ cwd, dockerMountWorktreeParent: false }));
+    spawnAgent(createMockWindow(), buildSpawnArgs({ cwd, dockerMountWorktreeParent: false }));
     const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
     expect(volumeFlags).toContain(`${cwd}:${cwd}`);
   });
 
-  it('injects a per-agent HOME under /tmp into docker run args', async () => {
+  it('injects a per-agent HOME under /tmp into docker run args', () => {
     vi.stubEnv('HOME', '/Users/tester');
 
     const agentId = nextAgentId();
-    await spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }));
+    spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }));
 
     const { command, args } = getLastSpawnCall();
     expect(command).toBe('docker');
     expect(getFlagValues(args, '-e')).toContain(`HOME=${DOCKER_CONTAINER_HOME}/agent-${agentId}`);
   });
 
-  it('does not forward host or renderer HOME as a generic docker env flag', async () => {
+  it('does not forward host or renderer HOME as a generic docker env flag', () => {
     const hostHome = '/Users/host-home';
     const rendererHome = '/Users/renderer-home';
     vi.stubEnv('HOME', hostHome);
 
     const agentId = nextAgentId();
-    await spawnAgent(
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         agentId,
@@ -276,8 +276,8 @@ describe('spawnAgent docker mode', () => {
     expect(envFlags).not.toContain(`HOME=${rendererHome}`);
   });
 
-  it('redacts docker env values in spawn debug logs', async () => {
-    await spawnAgent(
+  it('redacts docker env values in spawn debug logs', () => {
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         env: {
@@ -299,8 +299,8 @@ describe('spawnAgent docker mode', () => {
     expect(logged).toContain('parallel-code-agent:test');
   });
 
-  it('redacts inline docker env values in spawn debug logs', async () => {
-    await spawnAgent(
+  it('redacts inline docker env values in spawn debug logs', () => {
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         args: ['--env=INLINE_TOKEN=inline-secret', '--env', 'SPLIT_TOKEN=split-secret'],
@@ -315,8 +315,8 @@ describe('spawnAgent docker mode', () => {
     expect(logged).not.toContain('split-secret');
   });
 
-  it('redacts shell command strings in spawn debug logs', async () => {
-    await spawnAgent(
+  it('redacts shell command strings in spawn debug logs', () => {
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         command: '/bin/sh',
@@ -331,12 +331,12 @@ describe('spawnAgent docker mode', () => {
     expect(ctx.args).toEqual(['-c', '<redacted>']);
   });
 
-  it('redirects credential mounts under per-agent /tmp/agent-<id> inside the container', async () => {
+  it('redirects credential mounts under per-agent /tmp/agent-<id> inside the container', () => {
     const home = makeTempHome(['.ssh/', '.gitconfig', '.config/gh/']);
     vi.stubEnv('HOME', home);
 
     const agentId = nextAgentId();
-    await spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }));
+    spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }));
 
     const containerHome = `${DOCKER_CONTAINER_HOME}/agent-${agentId}`;
     const volumeFlags = getFlagValues(getLastSpawnCall().args, '-v');
@@ -354,12 +354,12 @@ describe('spawnAgent docker mode', () => {
       ['copilot', '.config/github-copilot'],
     ])(
       '%s bind-mounts a user-owned host directory when shareDockerAgentAuth is enabled',
-      async (command, relDir) => {
+      (command, relDir) => {
         const home = makeTempHome([]);
         vi.stubEnv('HOME', home);
 
         const agentId = nextAgentId();
-        await spawnAgent(
+        spawnAgent(
           createMockWindow(),
           buildSpawnArgs({ agentId, command, shareDockerAgentAuth: true }),
         );
@@ -371,11 +371,11 @@ describe('spawnAgent docker mode', () => {
       },
     );
 
-    it('creates the host auth directory so it is user-owned before mounting', async () => {
+    it('creates the host auth directory so it is user-owned before mounting', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: true }),
       );
@@ -384,12 +384,12 @@ describe('spawnAgent docker mode', () => {
       expect(fs.existsSync(hostDir)).toBe(true);
     });
 
-    it('bind-mounts .claude.json file for claude so auth persists across containers', async () => {
+    it('bind-mounts .claude.json file for claude so auth persists across containers', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
       const agentId = nextAgentId();
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({ agentId, command: 'claude', shareDockerAgentAuth: true }),
       );
@@ -408,31 +408,11 @@ describe('spawnAgent docker mode', () => {
       });
     });
 
-    it('does not synchronously seed Claude project trust during spawn setup', async () => {
-      const home = makeTempHome([]);
-      vi.stubEnv('HOME', home);
-      const readSpy = vi.spyOn(fs, 'readFileSync');
-      const writeSpy = vi.spyOn(fs, 'writeFileSync');
-
-      const result = spawnAgent(
-        createMockWindow(),
-        buildSpawnArgs({
-          command: 'claude',
-          cwd: '/workspace/project',
-          shareDockerAgentAuth: true,
-        }),
-      );
-
-      expect(readSpy).not.toHaveBeenCalled();
-      expect(writeSpy).not.toHaveBeenCalled();
-      await result;
-    });
-
-    it('pre-seeds Claude folder trust for the mounted worktree path', async () => {
+    it('pre-seeds Claude folder trust for the mounted worktree path', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           command: 'claude',
@@ -454,7 +434,7 @@ describe('spawnAgent docker mode', () => {
       });
     });
 
-    it('preserves existing Claude project config when pre-seeding folder trust', async () => {
+    it('preserves existing Claude project config when pre-seeding folder trust', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
       const hostFile = `${home}/.parallel-code/agent-auth/claude/.claude.json`;
@@ -472,7 +452,7 @@ describe('spawnAgent docker mode', () => {
         }),
       );
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           command: 'claude',
@@ -500,11 +480,11 @@ describe('spawnAgent docker mode', () => {
       });
     });
 
-    it('does not mount agent auth directory when shareDockerAgentAuth is disabled', async () => {
+    it('does not mount agent auth directory when shareDockerAgentAuth is disabled', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: false }),
       );
@@ -513,11 +493,11 @@ describe('spawnAgent docker mode', () => {
       expect(volumeFlags.some((v) => v.includes('.parallel-code/agent-auth'))).toBe(false);
     });
 
-    it('does not mount agent auth directory for an unknown agent command', async () => {
+    it('does not mount agent auth directory for an unknown agent command', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({ command: 'unknown-agent', shareDockerAgentAuth: true }),
       );
@@ -526,23 +506,23 @@ describe('spawnAgent docker mode', () => {
       expect(volumeFlags.some((v) => v.includes('.parallel-code/agent-auth'))).toBe(false);
     });
 
-    it('does not crash spawn when .claude.json contains malformed JSON', async () => {
+    it('does not crash spawn when .claude.json contains malformed JSON', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
       const hostFile = `${home}/.parallel-code/agent-auth/claude/.claude.json`;
       fs.mkdirSync(path.dirname(hostFile), { recursive: true });
       fs.writeFileSync(hostFile, '{invalid json');
 
-      await expect(
+      expect(() =>
         spawnAgent(
           createMockWindow(),
           buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: true }),
         ),
-      ).resolves.toBeUndefined();
+      ).not.toThrow();
       expect(mockPtySpawn).toHaveBeenCalled();
     });
 
-    it('preserves existing project config for other paths after trust seeding', async () => {
+    it('preserves existing project config for other paths after trust seeding', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
       const hostFile = `${home}/.parallel-code/agent-auth/claude/.claude.json`;
@@ -556,7 +536,7 @@ describe('spawnAgent docker mode', () => {
         }),
       );
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           command: 'claude',
@@ -578,11 +558,11 @@ describe('spawnAgent docker mode', () => {
       });
     });
 
-    it('accumulates trust entries for multiple worktree paths', async () => {
+    it('accumulates trust entries for multiple worktree paths', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           command: 'claude',
@@ -591,7 +571,7 @@ describe('spawnAgent docker mode', () => {
         }),
       );
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           command: 'claude',
@@ -617,11 +597,11 @@ describe('spawnAgent docker mode', () => {
       });
     });
 
-    it('does not write .claude.json trust file when shareDockerAgentAuth is disabled', async () => {
+    it('does not write .claude.json trust file when shareDockerAgentAuth is disabled', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           command: 'claude',
@@ -634,12 +614,12 @@ describe('spawnAgent docker mode', () => {
       expect(fs.existsSync(hostFile)).toBe(false);
     });
 
-    it('trust entry persists in host .claude.json file between container spawns', async () => {
+    it('trust entry persists in host .claude.json file between container spawns', () => {
       const home = makeTempHome([]);
       vi.stubEnv('HOME', home);
 
       // First container spawn — seeds trust
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           command: 'claude',
@@ -656,7 +636,7 @@ describe('spawnAgent docker mode', () => {
       expect(afterFirst.projects['/workspace/my-project']?.hasTrustDialogAccepted).toBe(true);
 
       // Second container spawn (same auth dir, same worktree path — simulates container B)
-      await spawnAgent(
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           command: 'claude',
@@ -674,8 +654,8 @@ describe('spawnAgent docker mode', () => {
   });
 
   describe('dockerMountWorktreeParent', () => {
-    it('mounts parent directory when dockerMountWorktreeParent is true', async () => {
-      await spawnAgent(
+    it('mounts parent directory when dockerMountWorktreeParent is true', () => {
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           cwd: '/Users/alice/git/my-repo/.worktrees/task/coordinator-abc',
@@ -694,8 +674,8 @@ describe('spawnAgent docker mode', () => {
       );
     });
 
-    it('does not mount parent directory when dockerMountWorktreeParent is false', async () => {
-      await spawnAgent(
+    it('does not mount parent directory when dockerMountWorktreeParent is false', () => {
+      spawnAgent(
         createMockWindow(),
         buildSpawnArgs({
           cwd: '/Users/alice/git/my-repo/.worktrees/task/coordinator-abc',
@@ -715,7 +695,7 @@ describe('spawnAgent docker mode', () => {
 });
 
 describe('spawnAgent session reattach', () => {
-  it('reuses an existing PTY session and moves live output to the new channel', async () => {
+  it('reuses an existing PTY session and moves live output to the new channel', () => {
     const win = createMockWindow();
     const agentId = 'agent-reattach';
     const args = buildSpawnArgs({
@@ -726,11 +706,11 @@ describe('spawnAgent session reattach', () => {
       onOutput: { __CHANNEL_ID__: 'channel-1' },
     });
 
-    await spawnAgent(win, args);
+    spawnAgent(win, args);
     const proc = mockPtySpawn.mock.results[0].value as ReturnType<typeof mockPtySpawn>;
     proc.emitData('before reload');
 
-    await spawnAgent(win, {
+    spawnAgent(win, {
       ...args,
       cols: 90,
       rows: 30,
@@ -752,7 +732,7 @@ describe('spawnAgent session reattach', () => {
     });
   });
 
-  it('reattaches before validating the launch command', async () => {
+  it('reattaches before validating the launch command', () => {
     const win = createMockWindow();
     const agentId = 'agent-reattach-missing-command';
     const args = buildSpawnArgs({
@@ -763,16 +743,16 @@ describe('spawnAgent session reattach', () => {
       onOutput: { __CHANNEL_ID__: 'channel-1' },
     });
 
-    await spawnAgent(win, args);
+    spawnAgent(win, args);
 
-    await expect(
+    expect(() =>
       spawnAgent(win, {
         ...args,
         command: 'nonexistent-binary-xyz',
         attachExisting: true,
         onOutput: { __CHANNEL_ID__: 'channel-2' },
       }),
-    ).resolves.toBeUndefined();
+    ).not.toThrow();
     expect(mockPtySpawn).toHaveBeenCalledTimes(1);
   });
 });
@@ -921,11 +901,11 @@ describe('buildDockerImage', () => {
 });
 
 describe('killAgent — Docker container lifecycle', () => {
-  it('calls docker stop with the predictable container name when agent is killed', async () => {
+  it('calls docker stop with the predictable container name when agent is killed', () => {
     const agentId = nextAgentId();
     const containerName = `parallel-code-${agentId.slice(0, 12)}`;
 
-    await spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }));
+    spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }));
     killAgent(agentId);
 
     const stopCall = mockExecFile.mock.calls.find(
@@ -945,9 +925,9 @@ describe('killAgent — Docker container lifecycle', () => {
     expect(expected.length).toBe(14 + 12); // 'parallel-code-' + 12 chars
   });
 
-  it('does not call docker stop for a non-Docker agent', async () => {
+  it('does not call docker stop for a non-Docker agent', () => {
     const agentId = nextAgentId();
-    await spawnAgent(createMockWindow(), buildSpawnArgs({ agentId, dockerMode: false }));
+    spawnAgent(createMockWindow(), buildSpawnArgs({ agentId, dockerMode: false }));
     mockExecFile.mockClear();
     killAgent(agentId);
 
@@ -959,7 +939,7 @@ describe('killAgent — Docker container lifecycle', () => {
 });
 
 describe('spawnAgent docker mode — same-path bind mounts', () => {
-  it('workspace cwd and worktree-parent -v mounts use identical host:container paths', async () => {
+  it('workspace cwd and worktree-parent -v mounts use identical host:container paths', () => {
     // Same-path mounts for workspace paths guarantee that absolute paths in MCP config /
     // Claude trust config are valid both on the host and inside the container. Any
     // remapped workspace path would break MCP server invocations and .mcp.json references.
@@ -967,7 +947,7 @@ describe('spawnAgent docker mode — same-path bind mounts', () => {
     const home = makeTempHome([]);
     vi.stubEnv('HOME', home);
 
-    await spawnAgent(
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         cwd: '/workspace/project',
@@ -992,30 +972,32 @@ describe('spawnAgent docker mode — same-path bind mounts', () => {
 // ─── Item 3: Concurrent Docker task spawns ────────────────────────────────────
 
 describe('seedClaudeProjectTrust — concurrent spawns', () => {
-  it('two simultaneous spawns both record hasTrustDialogAccepted without data loss', async () => {
+  it('two simultaneous spawns both record hasTrustDialogAccepted (last write wins, no data loss)', () => {
+    // This tests that each spawn independently writes trust for its own worktree path.
+    // Since each worktree path is unique, there is no actual conflict — both paths end up
+    // in the final .claude.json regardless of spawn order.
     const home = makeTempHome([]);
     vi.stubEnv('HOME', home);
 
-    await Promise.all([
-      spawnAgent(
-        createMockWindow(),
-        buildSpawnArgs({
-          command: 'claude',
-          cwd: '/workspace/task-a',
-          shareDockerAgentAuth: true,
-          agentId: `agent-concurrent-a`,
-        }),
-      ),
-      spawnAgent(
-        createMockWindow(),
-        buildSpawnArgs({
-          command: 'claude',
-          cwd: '/workspace/task-b',
-          shareDockerAgentAuth: true,
-          agentId: `agent-concurrent-b`,
-        }),
-      ),
-    ]);
+    spawnAgent(
+      createMockWindow(),
+      buildSpawnArgs({
+        command: 'claude',
+        cwd: '/workspace/task-a',
+        shareDockerAgentAuth: true,
+        agentId: `agent-concurrent-a`,
+      }),
+    );
+
+    spawnAgent(
+      createMockWindow(),
+      buildSpawnArgs({
+        command: 'claude',
+        cwd: '/workspace/task-b',
+        shareDockerAgentAuth: true,
+        agentId: `agent-concurrent-b`,
+      }),
+    );
 
     const hostFile = `${home}/.parallel-code/agent-auth/claude/.claude.json`;
     const config = JSON.parse(fs.readFileSync(hostFile, 'utf8')) as {
@@ -1030,13 +1012,13 @@ describe('seedClaudeProjectTrust — concurrent spawns', () => {
 // ─── Item 4: Docker cleanup on failed spawn ───────────────────────────────────
 
 describe('spawnAgent docker mode — PTY spawn failure', () => {
-  it('throws when pty.spawn fails and does not leave a session in the registry', async () => {
+  it('throws when pty.spawn fails and does not leave a session in the registry', () => {
     mockPtySpawn.mockImplementationOnce(() => {
       throw new Error('pty spawn failed: out of file descriptors');
     });
 
     const agentId = nextAgentId();
-    await expect(spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }))).rejects.toThrow();
+    expect(() => spawnAgent(createMockWindow(), buildSpawnArgs({ agentId }))).toThrow();
   });
 });
 
@@ -1048,8 +1030,8 @@ describe('spawnAgent docker mode — PTY spawn failure', () => {
 // ─── Item 8: No credentials leakage in spawn log ─────────────────────────────
 
 describe('spawnAgent docker mode — credential redaction in logs', () => {
-  it('does not log the MCP token when it appears in env vars', async () => {
-    await spawnAgent(
+  it('does not log the MCP token when it appears in env vars', () => {
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         env: { MCP_TOKEN: 'super-secret-value' },
@@ -1065,10 +1047,10 @@ describe('spawnAgent docker mode — credential redaction in logs', () => {
     }
   });
 
-  it('redacts -e KEY=VALUE in spawn command log', async () => {
+  it('redacts -e KEY=VALUE in spawn command log', () => {
     // The redactDockerArgs function should redact -e assignments.
     // Verify by checking the logged spawn command args.
-    await spawnAgent(
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         env: { ANTHROPIC_API_KEY: 'sk-ant-abc123' },
@@ -1121,9 +1103,9 @@ describe('isDockerAvailable', () => {
 // ─── Item 4b: Long path / spaces in worktree path ────────────────────────────
 
 describe('spawnAgent docker mode — path edge cases', () => {
-  it('preserves spaces in worktree path in -v and -w args', async () => {
+  it('preserves spaces in worktree path in -v and -w args', () => {
     const cwd = '/Users/alice bob/my repos/project name/.worktrees/task/coord-abc';
-    await spawnAgent(
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         cwd,
@@ -1139,13 +1121,13 @@ describe('spawnAgent docker mode — path edge cases', () => {
     expect(args[wIdx + 1]).toBe(cwd);
   });
 
-  it('non-Docker agents do not get trust seeding and no .claude.json write occurs', async () => {
+  it('non-Docker agents do not get trust seeding and no .claude.json write occurs', () => {
     // Non-Claude agent (e.g. codex) with shareDockerAgentAuth=true but different command
     // should not invoke seedClaudeProjectTrust. No .claude.json write for unknown commands.
     const home = makeTempHome([]);
     vi.stubEnv('HOME', home);
 
-    await spawnAgent(
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         command: 'codex',
@@ -1163,11 +1145,11 @@ describe('spawnAgent docker mode — path edge cases', () => {
 // ─── Auth file permission mode ────────────────────────────────────────────────
 
 describe('seedClaudeProjectTrust — file permissions', () => {
-  it('.claude.json is written with mode 0o600 (owner r/w only)', async () => {
+  it('.claude.json is written with mode 0o600 (owner r/w only)', () => {
     const home = makeTempHome([]);
     vi.stubEnv('HOME', home);
 
-    await spawnAgent(
+    spawnAgent(
       createMockWindow(),
       buildSpawnArgs({
         command: 'claude',
@@ -1187,7 +1169,7 @@ describe('seedClaudeProjectTrust — file permissions', () => {
 // ─── Read-only auth dir warning ───────────────────────────────────────────────
 
 describe('buildDockerCredentialMounts — read-only auth dir', () => {
-  it('emits console.warn and continues when agent auth dir cannot be created', async () => {
+  it('emits console.warn and continues when agent auth dir cannot be created', () => {
     const home = makeTempHome([]);
     vi.stubEnv('HOME', home);
 
@@ -1200,12 +1182,12 @@ describe('buildDockerCredentialMounts — read-only auth dir', () => {
     const warnSpy = vi.spyOn(console, 'warn');
 
     // Should not throw
-    await expect(
+    expect(() =>
       spawnAgent(
         createMockWindow(),
         buildSpawnArgs({ command: 'claude', shareDockerAgentAuth: true }),
       ),
-    ).resolves.toBeUndefined();
+    ).not.toThrow();
 
     // Must have warned about the failure (single string arg — the message itself)
     const warnMessages = warnSpy.mock.calls.map((c) => String(c[0]));

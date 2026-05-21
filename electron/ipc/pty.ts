@@ -2,7 +2,6 @@ import * as pty from 'node-pty';
 import { execFileSync, execFile, spawn as cpSpawn } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
-import fsPromises from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { BrowserWindow } from 'electron';
@@ -174,7 +173,7 @@ function resolveWorktreeGitDirMount(startPath: string): string[] {
   }
 }
 
-export async function spawnAgent(
+export function spawnAgent(
   win: BrowserWindow,
   args: {
     taskId: string;
@@ -195,7 +194,7 @@ export async function spawnAgent(
     dockerMountWorktreeParent?: boolean;
     onOutput: { __CHANNEL_ID__: string };
   },
-): Promise<void> {
+): void {
   const channelId = args.onOutput.__CHANNEL_ID__;
   const command = args.command || resolveUserShell();
   const cwd = args.cwd || process.env.HOME || '/';
@@ -337,12 +336,12 @@ export async function spawnAgent(
       '-e',
       `HOME=${DOCKER_CONTAINER_HOME}/agent-${args.agentId}`,
       // Mount SSH and git config read-only for git operations
-      ...(await buildDockerCredentialMounts(
+      ...buildDockerCredentialMounts(
         args.command,
         args.shareDockerAgentAuth === true,
         cwd,
         `${DOCKER_CONTAINER_HOME}/agent-${args.agentId}`,
-      )),
+      ),
       image,
       // Pre-create the per-agent HOME directory then exec the real command.
       // $HOME is already set by the -e flag above; using it here avoids repeating the path.
@@ -718,30 +717,11 @@ const AGENT_CONFIG_FILES: Record<string, string[]> = {
   claude: ['.claude.json'],
 };
 
-const claudeTrustSeedQueues = new Map<string, Promise<void>>();
-
-async function queueClaudeProjectTrustSeed(hostFile: string, worktreePath: string): Promise<void> {
-  const previous = claudeTrustSeedQueues.get(hostFile) ?? Promise.resolve();
-  const current = previous
-    .catch(() => undefined)
-    .then(() => seedClaudeProjectTrust(hostFile, worktreePath));
-  claudeTrustSeedQueues.set(hostFile, current);
-
-  try {
-    await current;
-  } finally {
-    if (claudeTrustSeedQueues.get(hostFile) === current) {
-      claudeTrustSeedQueues.delete(hostFile);
-    }
-  }
-}
-
-async function seedClaudeProjectTrust(hostFile: string, worktreePath: string): Promise<void> {
+function seedClaudeProjectTrust(hostFile: string, worktreePath: string): void {
   let config: Record<string, unknown> = {};
-  const stat = await fsPromises.stat(hostFile).catch(() => null);
-  if (stat && stat.size > 0) {
+  if (fs.existsSync(hostFile) && fs.statSync(hostFile).size > 0) {
     try {
-      config = JSON.parse(await fsPromises.readFile(hostFile, 'utf8')) as Record<string, unknown>;
+      config = JSON.parse(fs.readFileSync(hostFile, 'utf8')) as Record<string, unknown>;
     } catch {
       console.warn(`[docker-auth] Could not parse ${hostFile}, skipping Claude trust seed`);
       return;
@@ -767,19 +747,19 @@ async function seedClaudeProjectTrust(hostFile: string, worktreePath: string): P
   config.projects = projects;
 
   // Atomic write: write to a temp file first, then rename over the original.
-  // The per-file queue above serializes read-modify-write updates so concurrent
-  // spawns do not drop each other's project entries.
-  const tmpFile = `${hostFile}.tmp.${process.pid}.${Date.now()}.${crypto.randomUUID()}`;
-  await fsPromises.writeFile(tmpFile, JSON.stringify(config, null, 2), { mode: 0o600 });
-  await fsPromises.rename(tmpFile, hostFile);
+  // rename() is atomic on POSIX filesystems, so concurrent spawns won't corrupt
+  // each other's data even if both read before either writes.
+  const tmpFile = `${hostFile}.tmp.${process.pid}.${Date.now()}`;
+  fs.writeFileSync(tmpFile, JSON.stringify(config, null, 2), { mode: 0o600 });
+  fs.renameSync(tmpFile, hostFile);
 }
 
-async function buildDockerCredentialMounts(
+function buildDockerCredentialMounts(
   agentCommand: string,
   shareAgentAuth: boolean,
   worktreePath: string,
   containerHome: string,
-): Promise<string[]> {
+): string[] {
   const mounts: string[] = [];
   const home = process.env.HOME;
   if (!home) return mounts;
@@ -827,7 +807,7 @@ async function buildDockerCredentialMounts(
     for (const relDir of AGENT_CONFIG_DIRS[baseCommand] ?? []) {
       const hostDir = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relDir);
       try {
-        await fsPromises.mkdir(hostDir, { recursive: true, mode: 0o700 });
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
         mounts.push('-v', `${hostDir}:${containerHome}/${relDir}`);
       } catch {
         console.warn(`[docker-auth] Could not create host auth dir ${hostDir}, skipping mount`);
@@ -837,13 +817,12 @@ async function buildDockerCredentialMounts(
       const hostFile = path.join(home, '.parallel-code', 'agent-auth', baseCommand, relFile);
       try {
         const hostDir = path.dirname(hostFile);
-        await fsPromises.mkdir(hostDir, { recursive: true, mode: 0o700 });
-        const stat = await fsPromises.stat(hostFile).catch(() => null);
-        if (!stat || stat.size === 0) {
-          await fsPromises.writeFile(hostFile, '{}', { mode: 0o600 });
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        if (!fs.existsSync(hostFile) || fs.statSync(hostFile).size === 0) {
+          fs.writeFileSync(hostFile, '{}', { mode: 0o600 });
         }
         if (baseCommand === 'claude' && relFile === '.claude.json') {
-          await queueClaudeProjectTrustSeed(hostFile, worktreePath);
+          seedClaudeProjectTrust(hostFile, worktreePath);
         }
         mounts.push('-v', `${hostFile}:${containerHome}/${relFile}`);
       } catch {

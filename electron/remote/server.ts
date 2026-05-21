@@ -31,12 +31,7 @@ export interface MCPLogEntry {
 
 const MAX_LOG_ENTRIES = 200;
 const REST_COORDINATOR_SENTINEL = 'api';
-const MAX_WS_BUFFERED_BYTES = 1_000_000;
 const mcpLogs: MCPLogEntry[] = [];
-
-export function shouldCloseWsForBackpressure(bufferedAmount: number): boolean {
-  return bufferedAmount > MAX_WS_BUFFERED_BYTES;
-}
 
 function mcpLog(level: 'info' | 'error', msg: string): void {
   const entry: MCPLogEntry = { ts: Date.now(), level, msg };
@@ -70,15 +65,12 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
-type RemoteServerMode = 'mcp-only' | 'remote';
-
 interface RemoteServer {
   stop: () => Promise<void>;
   token: string;
   subtaskToken: string;
   mobileToken: string;
   port: number;
-  mode: RemoteServerMode;
   /** Mobile-scoped URL (embedded mobileToken). Safe to send to the renderer. */
   url: string;
   tailscaleUrl: string | null;
@@ -143,7 +135,6 @@ function buildAgentList(
 export function startRemoteServer(opts: {
   port: number;
   host?: string;
-  mode?: RemoteServerMode;
   staticDir: string;
   getTaskName: (taskId: string) => string;
   getAgentStatus: (agentId: string) => {
@@ -707,22 +698,14 @@ export function startRemoteServer(opts: {
   });
 
   const clientSubs = new WeakMap<WebSocket, Map<string, (data: string) => void>>();
+  const authenticatedClients = new Set<WebSocket>();
   const clientTokenTypes = new Map<WebSocket, 'coordinator' | 'mobile'>();
   const authTimers = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>();
-
-  function unsubscribeClient(ws: WebSocket): void {
-    const subs = clientSubs.get(ws);
-    if (!subs) return;
-    for (const [agentId, cb] of subs) {
-      unsubscribeFromAgent(agentId, cb);
-    }
-    subs.clear();
-  }
 
   function broadcast(msg: ServerMessage): void {
     const json = JSON.stringify(msg);
     for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN && clientTokenTypes.has(client)) {
+      if (client.readyState === WebSocket.OPEN && authenticatedClients.has(client)) {
         client.send(json);
       }
     }
@@ -757,13 +740,14 @@ export function startRemoteServer(opts: {
     // Support legacy URL-based auth (verifyClient accepted all connections).
     // Only coordinator token grants WS access; subtask and mobile tokens are denied.
     if (classifyToken(req) === 'coordinator') {
+      authenticatedClients.add(ws);
       clientTokenTypes.set(ws, 'coordinator');
       const list = buildAgentList(opts.getTaskName, opts.getAgentStatus);
       ws.send(JSON.stringify({ type: 'agents', list } satisfies ServerMessage));
     } else {
       // Close unauthenticated connections after 5 seconds
       const authTimer = setTimeout(() => {
-        if (!clientTokenTypes.has(ws)) {
+        if (!authenticatedClients.has(ws)) {
           ws.close(4001, 'Auth timeout');
         }
       }, 5_000);
@@ -778,6 +762,7 @@ export function startRemoteServer(opts: {
       if (msg.type === 'auth') {
         const tokenType = classifyCandidate(msg.token);
         if (tokenType === 'coordinator' || tokenType === 'mobile') {
+          authenticatedClients.add(ws);
           clientTokenTypes.set(ws, tokenType);
           const timer = authTimers.get(ws);
           if (timer) clearTimeout(timer);
@@ -790,15 +775,14 @@ export function startRemoteServer(opts: {
       }
 
       // Reject messages from unauthenticated clients
-      if (!clientTokenTypes.has(ws)) {
+      if (!authenticatedClients.has(ws)) {
         ws.close(4001, 'Unauthorized');
         return;
       }
 
-      // Mobile clients are read-only. Allow only subscription traffic so future
-      // mutating message types fail closed until explicitly allowed.
+      // Mobile clients are read-only — block all PTY mutation messages
       if (clientTokenTypes.get(ws) === 'mobile') {
-        if (msg.type !== 'subscribe' && msg.type !== 'unsubscribe') {
+        if (msg.type === 'input' || msg.type === 'resize' || msg.type === 'kill') {
           ws.close(4003, 'Forbidden');
           return;
         }
@@ -846,25 +830,15 @@ export function startRemoteServer(opts: {
           }
 
           const cb = (encoded: string) => {
-            if (ws.readyState !== WebSocket.OPEN) return;
-            if (shouldCloseWsForBackpressure(ws.bufferedAmount)) {
-              unsubscribeClient(ws);
-              ws.close(1013, 'Backpressure');
-              return;
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  type: 'output',
+                  agentId: msg.agentId,
+                  data: encoded,
+                } satisfies ServerMessage),
+              );
             }
-            ws.send(
-              JSON.stringify({
-                type: 'output',
-                agentId: msg.agentId,
-                data: encoded,
-              } satisfies ServerMessage),
-              (err) => {
-                if (err) {
-                  unsubscribeClient(ws);
-                  ws.close(1011, 'Send failed');
-                }
-              },
-            );
           };
           if (subscribeToAgent(msg.agentId, cb)) {
             subs?.set(msg.agentId, cb);
@@ -885,15 +859,20 @@ export function startRemoteServer(opts: {
     });
 
     ws.on('close', () => {
+      authenticatedClients.delete(ws);
       clientTokenTypes.delete(ws);
       const timer = authTimers.get(ws);
       if (timer) clearTimeout(timer);
-      unsubscribeClient(ws);
+      const subs = clientSubs.get(ws);
+      if (subs) {
+        for (const [agentId, cb] of subs) {
+          unsubscribeFromAgent(agentId, cb);
+        }
+      }
     });
   });
 
-  const bindHost = opts.host ?? '127.0.0.1';
-  const mode = opts.mode ?? (bindHost === '127.0.0.1' ? 'mcp-only' : 'remote');
+  const bindHost = opts.host ?? '0.0.0.0';
 
   server.on('error', (err) => {
     console.error('[remote] Server error:', err.message);
@@ -908,7 +887,6 @@ export function startRemoteServer(opts: {
     subtaskToken,
     mobileToken,
     port: opts.port,
-    mode,
     bindHost,
     url,
     /** Re-detect network IPs so newly connected interfaces (e.g. Tailscale) are picked up. */
@@ -920,7 +898,7 @@ export function startRemoteServer(opts: {
       const cur = getNetworkIps();
       return cur.tailscale ? `http://${cur.tailscale}:${opts.port}?token=${mobileToken}` : null;
     },
-    connectedClients: () => clientTokenTypes.size,
+    connectedClients: () => authenticatedClients.size,
     stop: () =>
       new Promise<void>((resolve) => {
         unsubSpawn();

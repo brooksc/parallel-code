@@ -1424,10 +1424,16 @@ export async function getWorktreeStatus(
   if (!fs.existsSync(worktreePath)) {
     return { has_committed_changes: false, has_uncommitted_changes: false, current_branch: null };
   }
-  const { stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
-    cwd: worktreePath,
-    maxBuffer: MAX_BUFFER,
-  });
+  let statusOut: string;
+  try {
+    ({ stdout: statusOut } = await exec('git', ['status', '--porcelain'], {
+      cwd: worktreePath,
+      maxBuffer: MAX_BUFFER,
+    }));
+  } catch {
+    // Worktree removed between existsSync and exec (race condition)
+    return { has_committed_changes: false, has_uncommitted_changes: false, current_branch: null };
+  }
   const hasUncommittedChanges = statusOut.trim().length > 0;
 
   const currentBranch = await getCurrentBranchName(worktreePath).catch(() => null);
@@ -1883,6 +1889,7 @@ export async function getBranchCommits(
   baseBranch?: string,
   recentFallback?: number,
 ): Promise<CommitInfo[]> {
+  if (!fs.existsSync(worktreePath)) return [];
   const mergeBase = await detectMergeBase(worktreePath, 'HEAD', baseBranch);
   try {
     const { stdout } = await exec(

@@ -520,34 +520,6 @@ describe('Coordinator sub-agent spawn settings', () => {
     expect(spawnArgs).toContain('--dangerously-skip-permissions');
   });
 
-  it('uses coordinator-provided custom skip and MCP config args', async () => {
-    coordinator.registerCoordinator('coord-custom', 'proj-1', { skipPermissions: true });
-    coordinator.setCoordinatorSpawnDefaults('coord-custom', 'custom-agent', ['--base'], {
-      skipPermissionsArgs: ['--custom-skip'],
-      mcpConfigFlag: '--custom-config',
-    });
-    coordinator.setMCPServerInfo(
-      'coord-custom',
-      'http://localhost:3001',
-      'tok',
-      'subtask-tok',
-      '/path/server.js',
-    );
-
-    await coordinator.createTask({
-      name: 'test',
-      prompt: 'do',
-      coordinatorTaskId: 'coord-custom',
-    });
-
-    const spawnArgs = mockSpawnAgent.mock.calls[0][1].args as string[];
-    expect(spawnArgs).toContain('--base');
-    expect(spawnArgs).toContain('--custom-skip');
-    expect(spawnArgs).toContain('--custom-config');
-    expect(spawnArgs).toContain(coordinator.getTask('task-1')?.mcpConfigPath);
-    expect(spawnArgs).not.toContain('--dangerously-skip-permissions');
-  });
-
   it('does not add --dangerously-skip-permissions when coordinator does not propagate', async () => {
     await coordinator.createTask({
       name: 'test',
@@ -837,12 +809,14 @@ describe('Coordinator waitForSignalDone', () => {
     });
   });
 
-  it('rejects after timeout when signal never arrives', async () => {
+  it('resolves with timedOut:true when signal never arrives', async () => {
     vi.useFakeTimers();
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const waitPromise = coordinator.waitForSignalDone('coord-1', 1_000);
     vi.advanceTimersByTime(1_001);
-    await expect(waitPromise).rejects.toThrow('Timed out');
+    const result = await waitPromise;
+    expect(result.timedOut).toBe(true);
+    expect(result.remaining).toBeGreaterThanOrEqual(0);
   });
 
   it('returns remaining=1 when another task is still running', async () => {
@@ -977,6 +951,21 @@ describe('Coordinator sendPrompt', () => {
       expect.anything(),
     );
   });
+
+  it('syncs frontend done/review flags back to running when sending a new prompt', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    mockNotifyRenderer.mockClear();
+
+    await coordinator.sendPrompt('task-1', 'new work');
+
+    expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_state_sync', {
+      taskId: 'task-1',
+      signalDoneReceived: false,
+      signalDoneAt: null,
+      signalDoneConsumed: false,
+      needsReview: false,
+    });
+  });
 });
 
 // ─── deregisterCoordinator tests ──────────────────────────────────────────────
@@ -1001,41 +990,20 @@ describe('Coordinator deregisterCoordinator', () => {
     expect(() => coordinator.deregisterCoordinator('nonexistent')).not.toThrow();
   });
 
-  it('tasks become orphans after coordinator is deregistered', async () => {
+  it('child tasks are removed from internal map after coordinator is deregistered', async () => {
     coordinator.registerCoordinator('coord-1', 'proj-1');
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    expect(coordinator.hasOrphanedTasks()).toBe(false);
     coordinator.deregisterCoordinator('coord-1');
-    // Task remains in internal map as an orphan (not removed)
-    expect(coordinator.hasOrphanedTasks()).toBe(true);
-    // markPromptDelivered still works on orphaned tasks
+    // markPromptDelivered is now a no-op — task was removed from this.tasks
     coordinator.markPromptDelivered('task-1');
-    // Close the orphaned task
-    await coordinator.closeTask('task-1');
-    expect(coordinator.hasOrphanedTasks()).toBe(false);
-  });
-
-  it('preserves orphaned task MCP config until the task is closed', async () => {
-    coordinator.registerCoordinator('coord-1', 'proj-1');
-    coordinator.setMCPServerInfo(
-      'coord-1',
-      'http://localhost:3001',
-      'tok',
-      'subtask-tok',
-      '/path/server.js',
+    const outputCb = getOutputCb();
+    mockNotifyRenderer.mockClear();
+    outputCb(encode('Done ❯ '));
+    // PTY output is silently dropped — no orphaned notification because the task entry is gone
+    expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
+      'mcp_coordinator_orphaned_notification',
+      expect.anything(),
     );
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    const configPath = coordinator.getTask('task-1')?.mcpConfigPath;
-    expect(configPath).toBeDefined();
-
-    mockUnlinkSync.mockClear();
-    coordinator.deregisterCoordinator('coord-1');
-
-    expect(coordinator.getTask('task-1')?.mcpConfigPath).toBe(configPath);
-    expect(mockUnlinkSync).not.toHaveBeenCalledWith(configPath);
-
-    await coordinator.closeTask('task-1');
-    expect(mockUnlinkSync).toHaveBeenCalledWith(configPath);
   });
 
   it('clears staged notification when coordinator is deregistered', async () => {
@@ -1065,31 +1033,6 @@ describe('Coordinator deregisterCoordinator', () => {
     expect(coordinator.hasActiveCoordinator()).toBe(false);
   });
 
-  it('hasOrphanedTasks returns true after deregister with children, false after closeTask', async () => {
-    coordinator.registerCoordinator('coord-1', 'proj-1');
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    expect(coordinator.hasOrphanedTasks()).toBe(false);
-
-    coordinator.deregisterCoordinator('coord-1');
-    expect(coordinator.hasOrphanedTasks()).toBe(true);
-
-    await coordinator.closeTask('task-1');
-    expect(coordinator.hasOrphanedTasks()).toBe(false);
-  });
-
-  it('allOrphanedDoneCallback fires when last orphaned task is closed', async () => {
-    const cb = vi.fn();
-    coordinator.setAllOrphanedDoneCallback(cb);
-    coordinator.registerCoordinator('coord-1', 'proj-1');
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-
-    coordinator.deregisterCoordinator('coord-1');
-    expect(cb).not.toHaveBeenCalled();
-
-    await coordinator.closeTask('task-1');
-    expect(cb).toHaveBeenCalledTimes(1);
-  });
-
   it('deregister cleans up backend resource maps for child tasks', async () => {
     const { unsubscribeFromAgent } =
       await vi.importMock<typeof import('../ipc/pty.js')>('../ipc/pty.js');
@@ -1117,16 +1060,6 @@ describe('Coordinator deregisterCoordinator', () => {
     expect(c.subscribers.has(agentId)).toBe(false);
     expect(c.tailBuffers.has(agentId)).toBe(false);
     expect(c.decoders.has(agentId)).toBe(false);
-  });
-
-  it('hasOrphanedTasks returns false after removeCoordinatedTask closes an orphaned task', async () => {
-    coordinator.registerCoordinator('coord-1', 'proj-1');
-    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
-    coordinator.deregisterCoordinator('coord-1');
-    expect(coordinator.hasOrphanedTasks()).toBe(true);
-    // Simulate UI closing the task
-    coordinator.removeCoordinatedTask('task-1');
-    expect(coordinator.hasOrphanedTasks()).toBe(false);
   });
 });
 
@@ -1209,7 +1142,8 @@ describe('Coordinator waiter resolver cleanup on timeout', () => {
 
     const p = coordinator.waitForSignalDone('coord-1', 500);
     vi.advanceTimersByTime(501);
-    await expect(p).rejects.toThrow('Timed out');
+    const timedOutResult = await p;
+    expect(timedOutResult.timedOut).toBe(true);
 
     // signalDone fires after timeout — should resolve a new waiter, not the stale one
     let resolveCalled = false;
@@ -1861,7 +1795,8 @@ describe('Coordinator waitForSignalDone — notification lifecycle', () => {
 
     // Time out the wait
     vi.advanceTimersByTime(200);
-    await expect(waitPromise).rejects.toThrow('Timed out');
+    const timedOutResult = await waitPromise;
+    expect(timedOutResult.timedOut).toBe(true);
 
     // After timeout, pending notifications should be re-staged
     const stagedCalls = mockNotifyRenderer.mock.calls.filter(
@@ -2549,6 +2484,25 @@ describe('Coordinator removeCoordinatedTask', () => {
     expect(c.blockedByHumanControl.has('task-1')).toBe(false);
   });
 
+  it('deregister detaches child task state and preserves review only after prompt delivery', async () => {
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-1');
+    mockNotifyRenderer.mockClear();
+
+    coordinator.deregisterCoordinator('coord-1');
+
+    expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_state_sync', {
+      taskId: 'task-1',
+      coordinatedBy: null,
+      controlledBy: null,
+      mcpConfigPath: null,
+      mcpStartupStatus: null,
+      mcpStartupError: null,
+      needsReview: true,
+    });
+  });
+
   it('resolves pending idle waiters with removed reason', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const waitPromise = coordinator.waitForIdle('task-1');
@@ -3060,7 +3014,8 @@ describe('Coordinator waitForSignalDone — requestId replay after transport fai
     expect(task.signalDoneConsumed).toBe(true);
 
     // Second call with a new requestId: no unconsumed signal, no cache hit → times out
-    await expect(coordinator.waitForSignalDone('coord-1', 50, 'id-B')).rejects.toThrow('Timed out');
+    const result2 = await coordinator.waitForSignalDone('coord-1', 50, 'id-B');
+    expect(result2.timedOut).toBe(true);
   });
 
   it('waitForSignalDone without requestId still resolves from unconsumed signal', async () => {
@@ -3090,9 +3045,8 @@ describe('Coordinator waitForSignalDone — requestId replay after transport fai
     expect(result1.taskId).toBe('task-1');
 
     // coord-B with same requestId must not replay coord-A's cached result
-    await expect(coordinator.waitForSignalDone('coord-2', 50, requestId)).rejects.toThrow(
-      'Timed out',
-    );
+    const result2 = await coordinator.waitForSignalDone('coord-2', 50, requestId);
+    expect(result2.timedOut).toBe(true);
   });
 });
 

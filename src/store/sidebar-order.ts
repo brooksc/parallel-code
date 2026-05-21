@@ -79,19 +79,21 @@ export function computeGroupedTasks(): GroupedSidebarTasks {
 export function computeSidebarTaskOrder(): string[] {
   const { grouped, orphanedActive, orphanedCollapsed } = computeGroupedTasks();
   const order: string[] = [];
-  const appendWithCoordinatorChildren = (taskId: string) => {
+  const pushWithVisibleChildren = (taskId: string) => {
     order.push(taskId);
+    const task = store.tasks[taskId];
+    if (!task?.coordinatorMode) return;
     const children = getCoordinatorChildren(taskId);
     order.push(...children.active, ...children.collapsed);
   };
   for (const project of store.projects) {
     const group = grouped[project.id];
     if (group) {
-      for (const taskId of group.active) appendWithCoordinatorChildren(taskId);
-      for (const taskId of group.collapsed) appendWithCoordinatorChildren(taskId);
+      for (const taskId of group.active) pushWithVisibleChildren(taskId);
+      for (const taskId of group.collapsed) pushWithVisibleChildren(taskId);
     }
   }
-  for (const taskId of orphanedActive) appendWithCoordinatorChildren(taskId);
-  for (const taskId of orphanedCollapsed) appendWithCoordinatorChildren(taskId);
+  for (const taskId of orphanedActive) pushWithVisibleChildren(taskId);
+  for (const taskId of orphanedCollapsed) pushWithVisibleChildren(taskId);
   return order;
 }
