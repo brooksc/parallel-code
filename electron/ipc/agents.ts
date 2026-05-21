@@ -85,7 +85,7 @@ const AGENT_CACHE_TTL = 30_000;
 export function getSkipPermissionsArgs(command: string): string[] {
   const base = path.basename(command);
   const agent = DEFAULT_AGENTS.find((a) => a.command === base || a.command === command);
-  return agent ? agent.skip_permissions_args : [];
+  return agent ? [...agent.skip_permissions_args] : [];
 }
 
 export async function listAgents(): Promise<AgentDef[]> {
