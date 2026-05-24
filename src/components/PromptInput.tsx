@@ -39,6 +39,7 @@ export interface PromptInputHandle {
 
 interface PromptInputProps {
   taskId: string;
+  taskName: string;
   agentId: string;
   coordinatedBy?: string;
   coordinatorMode?: boolean;
@@ -563,8 +564,8 @@ export function PromptInput(props: PromptInputProps) {
   createEffect(
     on(
       // eslint-disable-next-line solid/reactivity
-      [questionActive, () => props.controlledBy] as const,
-      ([active, controlledBy], prev) => {
+      [questionActive, () => props.controlledBy, () => props.taskName] as const,
+      ([active, controlledBy, taskName], prev) => {
         const prevActive = prev?.[0] ?? false;
         // Trigger only when the question becomes newly active (false→true).
         // Do NOT re-take control when coordinator regains it while questionActive
@@ -577,7 +578,9 @@ export function PromptInput(props: PromptInputProps) {
         ) {
           setTaskControl(props.taskId, 'human');
           setTaskFocusedPanel(props.taskId, 'ai-terminal');
-          showNotification('Claude needs input. Answer in the terminal, then Release Control.');
+          showNotification(
+            `${taskName} needs input. Answer in the terminal, then Release Control.`,
+          );
         }
       },
     ),

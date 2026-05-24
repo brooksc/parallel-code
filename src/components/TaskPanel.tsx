@@ -341,6 +341,7 @@ export function TaskPanel(props: TaskPanelProps) {
     >
       <PromptInput
         taskId={props.task.id}
+        taskName={props.task.name}
         agentId={firstAgentId()}
         coordinatedBy={props.task.coordinatedBy}
         coordinatorMode={props.task.coordinatorMode}
