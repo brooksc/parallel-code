@@ -177,6 +177,9 @@ export function validateStartMCPServerArgs(args: Record<string, unknown>): void 
   assertString(args.projectId, 'projectId');
   validatePath(args.projectRoot, 'projectRoot');
   if (args.worktreePath !== undefined) validatePath(args.worktreePath, 'worktreePath');
+  if (args.coordinatorBranch !== undefined) {
+    validateBranchName(args.coordinatorBranch, 'coordinatorBranch');
+  }
   if (args.agentCommand !== undefined) assertString(args.agentCommand, 'agentCommand');
   if (args.agentArgs !== undefined) assertStringArray(args.agentArgs, 'agentArgs');
   assertOptionalBoolean(args.skipPermissions, 'skipPermissions');
@@ -1181,10 +1184,22 @@ export function registerAllHandlers(win: BrowserWindow): void {
 
     ipcMain.handle(
       IPC.MCP_CoordinatorRegistered,
-      (_e, args: { coordinatorTaskId: string; projectId: string; worktreePath?: string }) => {
+      (
+        _e,
+        args: {
+          coordinatorTaskId: string;
+          projectId: string;
+          coordinatorBranch?: string;
+          worktreePath?: string;
+        },
+      ) => {
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
         assertString(args.projectId, 'projectId');
+        if (args.coordinatorBranch !== undefined) {
+          validateBranchName(args.coordinatorBranch, 'coordinatorBranch');
+        }
         coordinator?.registerCoordinator(args.coordinatorTaskId, args.projectId, {
+          branchName: args.coordinatorBranch,
           worktreePath: args.worktreePath,
         });
       },
@@ -1255,6 +1270,11 @@ export function registerAllHandlers(win: BrowserWindow): void {
       },
     );
 
+    ipcMain.handle(IPC.MCP_TaskLandingReviewCleared, (_e, args: { taskId: string }) => {
+      assertString(args.taskId, 'taskId');
+      coordinator?.markTaskReviewed(args.taskId);
+    });
+
     ipcMain.handle(
       IPC.MCP_CoordinatedTaskClosed,
       (_e, args: { taskId: string; coordinatorTaskId: string }) => {
@@ -1281,7 +1301,13 @@ export function registerAllHandlers(win: BrowserWindow): void {
           agentId?: string;
           signalDoneAt?: string;
           signalDoneConsumed?: boolean;
+          verification?: import('../mcp/types.js').SubtaskVerification;
+          landingState?: import('../mcp/types.js').LandingState;
+          landingReason?: string;
+          landingSummary?: string;
+          landedMetadata?: import('../mcp/types.js').LandedMetadata;
           mcpConfigPath?: string;
+          agentCommand?: string;
           preambleFileExistedBefore?: boolean;
         },
       ) => {
@@ -1297,7 +1323,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
         assertString(args.coordinatorTaskId, 'coordinatorTaskId');
         validateUUID(args.coordinatorTaskId, 'coordinatorTaskId');
         if (!coordinator) throw new Error('coordinator mode not initialized');
-        coordinator.hydrateTask({
+        if (args.agentCommand !== undefined) assertString(args.agentCommand, 'agentCommand');
+        const result = coordinator.hydrateTask({
           id: args.id,
           name: args.name,
           projectId: args.projectId,
@@ -1310,13 +1337,20 @@ export function registerAllHandlers(win: BrowserWindow): void {
           controlledBy: args.controlledBy,
           signalDoneAt: args.signalDoneAt,
           signalDoneConsumed: args.signalDoneConsumed,
+          verification: args.verification,
+          landingState: args.landingState,
+          landingReason: args.landingReason,
+          landingSummary: args.landingSummary,
+          landedMetadata: args.landedMetadata,
           mcpConfigPath: args.mcpConfigPath,
+          agentCommand: args.agentCommand,
           preambleFileExistedBefore: args.preambleFileExistedBefore,
         });
         // Signal to renderer that MCP hydration is complete — gates TerminalView auto-spawn.
         if (!win.isDestroyed()) {
           win.webContents.send(IPC.MCP_TaskHydrated, { taskId: args.id });
         }
+        return result;
       },
     );
   }
@@ -1362,6 +1396,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         coordinatorTaskId: string;
         projectId: string;
         projectRoot: string;
+        coordinatorBranch?: string;
         worktreePath?: string;
         skipPermissions?: boolean;
         propagateSkipPermissions?: boolean;
@@ -1406,6 +1441,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
       // so create_task / list_tasks know about it. Idempotent — safe to call on restore.
       coordinator.setDefaultProject(args.projectId, args.projectRoot, args.coordinatorTaskId);
       coordinator.registerCoordinator(args.coordinatorTaskId, args.projectId, {
+        branchName: args.coordinatorBranch,
         worktreePath: args.worktreePath,
         skipPermissions: Boolean(args.skipPermissions && args.propagateSkipPermissions),
       });

@@ -103,7 +103,7 @@ export async function buildNormalizedPreambleFileDiff(
           delete s.systemPrompt;
         }
       }
-      normalizedContent = JSON.stringify(s, null, 2);
+      normalizedContent = Object.keys(s).length === 0 ? '' : JSON.stringify(s, null, 2);
     } catch {
       return '';
     }

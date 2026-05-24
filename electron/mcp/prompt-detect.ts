@@ -16,6 +16,7 @@ export function stripAnsi(text: string): string {
  */
 export const PROMPT_PATTERNS: RegExp[] = [
   /❯\s*$/, // Claude Code prompt
+  /›\s*$/, // Codex CLI prompt
   /(?:^|\s)\$\s*$/, // bash/zsh dollar prompt (preceded by whitespace or BOL)
   /(?:^|\s)%\s*$/, // zsh percent prompt
   /(?:^|\s)#\s*$/, // root prompt
@@ -33,12 +34,22 @@ export const AGENT_READY_TAIL_PATTERNS: RegExp[] = [
   /›/, // Codex CLI
 ];
 
+const AGENT_STARTUP_OR_DIALOG_PATTERNS: RegExp[] = [
+  /\bDo\s+you\s+trust\b/i,
+  /\bPress\s+enter\s+to\s+continue\b/i,
+  /\bmodel:\s*loading\b/i,
+  /\bBooting\s+MCP\s+server\b/i,
+  /\bStarting\s+MCP\s+servers?\b/i,
+];
+
 /** Check stripped output for known agent prompt characters.
- *  Only checks the tail of the chunk — the agent's main prompt renders as
- *  the last visible element, while TUI selection UIs place ❯ earlier in
- *  the render followed by option text and other choices. */
+ *  Only checks the tail of the chunk — the agent's main prompt renders near
+ *  the end of the visible content, while TUI selection UIs place ❯/› earlier
+ *  in the render followed by option text and other choices.
+ *  300 chars covers Codex's footer/status lines below the input prompt. */
 export function chunkContainsAgentPrompt(stripped: string): boolean {
   if (stripped.length === 0) return false;
-  const tail = stripped.slice(-50);
+  const tail = stripped.slice(-300);
+  if (AGENT_STARTUP_OR_DIALOG_PATTERNS.some((re) => re.test(tail))) return false;
   return AGENT_READY_TAIL_PATTERNS.some((re) => re.test(tail));
 }

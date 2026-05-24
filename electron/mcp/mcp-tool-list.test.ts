@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { selectTools, SUBTASK_TOOLS, COORDINATOR_TOOLS, type ToolDef } from './mcp-tool-list.js';
 
 describe('selectTools — role-based tool list', () => {
-  it('sub-task (taskId set, no coordinatorId) gets only signal_done', () => {
+  it('sub-task (taskId set, no coordinatorId) gets only sub-task tools', () => {
     const tools = selectTools('task-abc', '');
     expect(tools).toEqual(SUBTASK_TOOLS);
-    expect(tools.map((t: ToolDef) => t.name)).toStrictEqual(['signal_done']);
+    expect(tools.map((t: ToolDef) => t.name)).toStrictEqual(['land_self', 'signal_done']);
   });
 
   it('coordinator (coordinatorId set, no taskId) gets coordinator tools', () => {
@@ -39,6 +39,23 @@ describe('selectTools — role-based tool list', () => {
   it('plain agent (neither taskId nor coordinatorId) gets coordinator tools', () => {
     const tools = selectTools('', '');
     expect(tools).toEqual(COORDINATOR_TOOLS);
+  });
+
+  it('coordinator tool descriptions warn against resending assignments from startup placeholders', () => {
+    const byName = new Map(COORDINATOR_TOOLS.map((tool) => [tool.name, tool.description]));
+    expect(byName.get('create_task')).toContain('startup/default placeholder');
+    expect(byName.get('send_prompt')).toContain('Do not resend the full original assignment');
+    expect(byName.get('get_task_output')).toContain('Improve documentation in @filename');
+  });
+
+  it('create_task documents the coordinator branch as the default base branch', () => {
+    const createTask = COORDINATOR_TOOLS.find((tool) => tool.name === 'create_task');
+    const properties = createTask?.inputSchema.properties as
+      | Record<string, { description?: string }>
+      | undefined;
+    expect(properties?.baseBranch?.description).toContain(
+      'Defaults to the coordinator task branch',
+    );
   });
 
   it('sub-task tools do NOT include any coordinator lifecycle tools', () => {

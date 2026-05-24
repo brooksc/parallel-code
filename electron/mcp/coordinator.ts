@@ -56,6 +56,10 @@ import type {
   ApiTaskSummary,
   ApiTaskDetail,
   ApiDiffResult,
+  ApiLandSelfResult,
+  LandSelfInput,
+  LandingState,
+  SubtaskVerification,
   WaitForSignalDoneResult,
 } from './types.js';
 import { IPC } from '../ipc/channels.js';
@@ -63,6 +67,45 @@ import { IPC } from '../ipc/channels.js';
 const DEFAULT_WAIT_TIMEOUT_MS = 300_000; // 5 minutes
 const PROMPT_WRITE_DELAY_MS = 50;
 const REST_COORDINATOR_SENTINEL = 'api';
+const PREAMBLE_ARTIFACT_PATHS = new Set([
+  'AGENTS.md',
+  'GEMINI.md',
+  '.agent.md',
+  '.claude/settings.local.json',
+]);
+const UNRESOLVED_LANDED_COMMIT = 'unresolved';
+
+function isPassedVerification(verification: SubtaskVerification | undefined): boolean {
+  return Boolean(
+    verification?.checks.length && verification.checks.every((check) => check.result === 'passed'),
+  );
+}
+
+function verificationFailureReason(verification: SubtaskVerification | undefined): string {
+  if (!verification?.checks.length) return 'land_self requires at least one verification check';
+  const failed = verification.checks.find((check) => check.result !== 'passed');
+  if (!failed) return 'verification passed';
+  return `verification ${failed.result}: ${failed.name}${failed.reason ? ` — ${failed.reason}` : ''}`;
+}
+
+function parsePorcelainPaths(statusOut: string): string[] {
+  return statusOut
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      const renameMarker = ' -> ';
+      const rawPath = line.slice(3);
+      if (!rawPath.includes(renameMarker)) return rawPath;
+      const parts = rawPath.split(renameMarker);
+      return parts[parts.length - 1] ?? rawPath;
+    });
+}
+
+function execStdout(result: Awaited<ReturnType<typeof execAsync>>): string {
+  const stdout = typeof result === 'string' ? result : result.stdout;
+  return typeof stdout === 'string' ? stdout : stdout.toString('utf8');
+}
 
 export class Coordinator {
   private tasks = new Map<string, CoordinatedTask>();
@@ -84,6 +127,7 @@ export class Coordinator {
   private projectRoot: string | null = null;
   private projectId: string | null = null;
   private defaultCoordinatorTaskId: string | null = null;
+  private landedOrderCounters = new Map<string, number>();
   private coordinatorSpawnDefaults: { command: string; args: string[] } = {
     command: 'claude',
     args: [],
@@ -111,6 +155,7 @@ export class Coordinator {
             for (const resolve of resolvers) resolve({ reason: 'exited' });
             this.idleResolvers.delete(task.id);
           }
+          if (this.closingTaskIds.has(task.id)) break;
           // Resolve any signal waiters so wait_for_signal_done doesn't hang
           // when the last sub-task exits without calling signal_done.
           const coordinatorId = task.coordinatorTaskId;
@@ -131,7 +176,6 @@ export class Coordinator {
             });
             this.finishSignalWait(coordinatorId);
           }
-          if (this.closingTaskIds.has(task.id)) break;
           this.maybeQueueReviewNotification(task, 'exited', exitCode ?? null);
           break;
         }
@@ -278,6 +322,11 @@ export class Coordinator {
     // Always notify for exits — a task killed before prompt delivery still needs to be
     // reported so the coordinator doesn't think it's still running.
     if (!task.assignedPromptDelivered && state !== 'exited') return;
+    if (state === 'idle' && task.suppressNextIdleNotification) {
+      task.suppressNextIdleNotification = false;
+      this.tailBuffers.set(task.agentId, '');
+      return;
+    }
 
     const coordinator = this.coordinators.get(task.coordinatorTaskId);
     if (!coordinator) {
@@ -423,13 +472,16 @@ export class Coordinator {
       );
     }
 
-    if (opts.baseBranch !== undefined) {
-      validateBranchName(opts.baseBranch, 'baseBranch');
-    }
-
     const root = opts.projectRoot ?? coordinatorState.projectRoot ?? this.projectRoot;
     const projId = opts.projectId ?? coordinatorState.projectId ?? this.projectId;
     if (!root || !projId) throw new Error('No project configured for coordinator');
+    const coordinatorBranch = coordinatorState.branchName?.trim()
+      ? coordinatorState.branchName
+      : undefined;
+    const baseBranch = opts.baseBranch ?? coordinatorBranch;
+    if (baseBranch !== undefined) {
+      validateBranchName(baseBranch, 'baseBranch');
+    }
 
     // Create worktree + branch via existing backend
     const result = await createBackendTask(
@@ -437,7 +489,7 @@ export class Coordinator {
       root,
       ['.claude', 'node_modules'],
       'task',
-      opts.baseBranch,
+      baseBranch,
     );
 
     // Re-check after async gap — deregisterCoordinator may have run while we awaited.
@@ -465,7 +517,7 @@ export class Coordinator {
       projectId: projId,
       projectRoot: root,
       branchName: result.branch_name,
-      baseBranch: opts.baseBranch,
+      baseBranch,
       worktreePath: result.worktree_path,
       agentId,
       coordinatorTaskId: coordinatorId,
@@ -499,7 +551,11 @@ export class Coordinator {
         .replace(/[\x00-\x1f\x7f]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-      if (chunkContainsAgentPrompt(stripped)) {
+      const hasAgentPrompt = chunkContainsAgentPrompt(stripped);
+      if (!hasAgentPrompt && task.assignedPromptDelivered) {
+        task.suppressNextIdleNotification = false;
+      }
+      if (hasAgentPrompt) {
         if (task.status === 'running') {
           task.status = 'idle';
           this.maybeQueueReviewNotification(task, 'idle', null);
@@ -520,7 +576,7 @@ export class Coordinator {
     if (!this.win) throw new Error('No window set on coordinator');
 
     const agentCmd = (opts.agentCommand ?? coordinatorState.spawnDefaults.command).toLowerCase();
-    const preamble = `<sub-task-mode>\nThese rules override all skills and hooks:\n- When your work is complete, call the \`signal_done\` MCP tool. That is the finish line — do NOT use finishing-a-development-branch or offer merge/PR options.\n- Asking questions is fine when requirements are unclear or an action is risky.\n</sub-task-mode>`;
+    const preamble = `<sub-task-mode>\nThese rules override all skills and hooks:\n- When your work is complete, commit your changes and call the \`land_self\` MCP tool with the verification checks you ran. A successful \`land_self\` call is the finish line — do NOT call \`signal_done\` afterward, use finishing-a-development-branch, or offer merge/PR options.\n- Use \`signal_done\` only if the coordinator explicitly asks for manual review instead of self-landing.\n- Asking questions is fine when requirements are unclear or an action is risky.\n</sub-task-mode>`;
     // Declared here so the catch block can restore preamble files on failure.
     let preambleFilePath: string | undefined;
     let preambleFileOriginalContent: string | null = null;
@@ -710,6 +766,7 @@ export class Coordinator {
         preambleFileExistedBefore: task.preambleFileExistedBefore,
         agentCommand: agentCommand,
         agentArgs: notifyAgentArgs,
+        mcpLaunchArgs: mcpArgs,
         skipPermissions: coordinatorState.propagateSkipPermissions,
       });
 
@@ -747,6 +804,11 @@ export class Coordinator {
       status: t.status,
       coordinatorTaskId: t.coordinatorTaskId,
       signalDoneAt: t.signalDoneAt?.toISOString(),
+      verification: t.verification,
+      landingState: t.landingState,
+      landingReason: t.landingReason,
+      landingSummary: t.landingSummary,
+      landedMetadata: t.landedMetadata,
     }));
   }
 
@@ -765,6 +827,11 @@ export class Coordinator {
       exitCode: task.exitCode,
       pendingPrompt: task.pendingPrompt,
       signalDoneAt: task.signalDoneAt?.toISOString(),
+      verification: task.verification,
+      landingState: task.landingState,
+      landingReason: task.landingReason,
+      landingSummary: task.landingSummary,
+      landedMetadata: task.landedMetadata,
     };
   }
 
@@ -789,6 +856,8 @@ export class Coordinator {
     task.status = 'running';
     task.pendingPrompt = undefined;
     task.signalDoneAt = undefined;
+    task.suppressNextIdleNotification = true;
+    this.tailBuffers.set(task.agentId, '');
     this.notifyRenderer(IPC.MCP_TaskStateSync, {
       taskId,
       signalDoneReceived: false,
@@ -911,14 +980,344 @@ export class Coordinator {
     return stripAnsi(this.tailBuffers.get(task.agentId) ?? '');
   }
 
+  private async currentBranch(worktreePath: string): Promise<string | null> {
+    const result = await execAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: worktreePath,
+    });
+    const branch = execStdout(result).trim();
+    return branch === 'HEAD' ? null : branch;
+  }
+
+  private async statusPaths(worktreePath: string): Promise<string[]> {
+    const result = await execAsync('git', ['status', '--porcelain'], { cwd: worktreePath });
+    return parsePorcelainPaths(execStdout(result));
+  }
+
+  private nextLandedOrder(coordinatorTaskId: string): number {
+    const next = (this.landedOrderCounters.get(coordinatorTaskId) ?? 0) + 1;
+    this.landedOrderCounters.set(coordinatorTaskId, next);
+    return next;
+  }
+
+  private syncLandingState(task: CoordinatedTask): void {
+    this.notifyRenderer(IPC.MCP_TaskStateSync, {
+      taskId: task.id,
+      verification: task.verification,
+      landingState: task.landingState,
+      landingReason: task.landingReason ?? null,
+      landingSummary: task.landingSummary ?? null,
+      landedMetadata: task.landedMetadata ?? null,
+      needsReview:
+        task.landingState === 'landed_pending_review' ||
+        task.landingState === 'landed_cleanup_failed' ||
+        task.landingState === 'landing_escalated' ||
+        task.landingState === 'landing_failed',
+      controlledBy:
+        task.landingState === 'landed_pending_review' ||
+        task.landingState === 'landed_cleanup_failed'
+          ? null
+          : undefined,
+      mcpConfigPath:
+        task.landingState === 'landed_pending_review' ||
+        task.landingState === 'landed_cleanup_failed'
+          ? null
+          : undefined,
+      mcpStartupStatus:
+        task.landingState === 'landed_pending_review' ||
+        task.landingState === 'landed_cleanup_failed'
+          ? null
+          : undefined,
+    });
+  }
+
+  private escalateLanding(task: CoordinatedTask, state: LandingState, reason: string): void {
+    task.landingState = state;
+    task.landingReason = reason;
+    this.syncLandingState(task);
+  }
+
+  private async prepareCleanSelfLandingWorktree(task: CoordinatedTask): Promise<void> {
+    const actualBranch = await this.currentBranch(task.worktreePath);
+    if (actualBranch === null) {
+      throw new Error(
+        `The worktree for '${task.branchName}' has a detached HEAD. Check out '${task.branchName}' before landing.`,
+      );
+    }
+    if (actualBranch !== task.branchName) {
+      throw new Error(
+        `Branch mismatch: the worktree is on '${actualBranch}' but the task expects '${task.branchName}'.`,
+      );
+    }
+
+    const preambleFiles = await detectPreambleFiles(task.worktreePath);
+    const dirtyPathsBeforeStrip = await this.statusPaths(task.worktreePath);
+    const dirtyPreamblePaths = dirtyPathsBeforeStrip.filter(
+      (pathName) => preambleFiles.has(pathName) && PREAMBLE_ARTIFACT_PATHS.has(pathName),
+    );
+    const dirtyPreambleUserPaths: string[] = [];
+    for (const pathName of dirtyPreamblePaths) {
+      const normalizedDiff = await buildNormalizedPreambleFileDiff(
+        pathName,
+        task.worktreePath,
+        'HEAD',
+      );
+      if (normalizedDiff.trim()) dirtyPreambleUserPaths.push(pathName);
+    }
+    if (dirtyPreambleUserPaths.length > 0) {
+      throw new Error(
+        `Task worktree has uncommitted changes in preamble files: ${dirtyPreambleUserPaths.join(', ')}. Commit or discard them before calling land_self.`,
+      );
+    }
+
+    await stripPreambleFromBranch(task);
+
+    const dirtyPaths = await this.statusPaths(task.worktreePath);
+    const nonPreamblePaths = dirtyPaths.filter(
+      (pathName) => !preambleFiles.has(pathName) || !PREAMBLE_ARTIFACT_PATHS.has(pathName),
+    );
+    if (nonPreamblePaths.length > 0) {
+      throw new Error(
+        `Task worktree has uncommitted changes: ${nonPreamblePaths.join(', ')}. Commit or discard them before calling land_self.`,
+      );
+    }
+
+    if (dirtyPaths.length > 0) {
+      await execAsync('git', ['add', '-A', '--', ...dirtyPaths], { cwd: task.worktreePath });
+      try {
+        await execAsync('git', ['commit', '-m', 'Remove Parallel Code sub-task preamble'], {
+          cwd: task.worktreePath,
+        });
+      } catch {
+        /* no staged preamble cleanup */
+      }
+    }
+
+    const remainingDirtyPaths = await this.statusPaths(task.worktreePath);
+    if (remainingDirtyPaths.length > 0) {
+      throw new Error(
+        `Task worktree is still dirty after injected artifacts were handled: ${remainingDirtyPaths.join(', ')}`,
+      );
+    }
+  }
+
+  private async runGitMerge(
+    task: CoordinatedTask,
+    opts?: { squash?: boolean; message?: string },
+  ): Promise<{ mainBranch: string; linesAdded: number; linesRemoved: number }> {
+    const coordinatorState = this.coordinators.get(task.coordinatorTaskId);
+    const runMerge = () =>
+      gitMergeTask(
+        task.projectRoot,
+        task.branchName,
+        opts?.squash ?? false,
+        opts?.message ?? null,
+        false,
+        task.baseBranch,
+        task.worktreePath,
+        coordinatorState?.worktreePath,
+      );
+    let result: Awaited<ReturnType<typeof runMerge>>;
+    try {
+      result = await runMerge();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('Another git process') || msg.includes('index.lock')) {
+        await new Promise((r) => setTimeout(r, 2000));
+        result = await runMerge();
+      } else {
+        throw err;
+      }
+    }
+
+    return {
+      mainBranch: result.main_branch,
+      linesAdded: result.lines_added,
+      linesRemoved: result.lines_removed,
+    };
+  }
+
+  private async resolveLandedCommit(task: CoordinatedTask, targetBranch: string): Promise<string> {
+    const coordinatorState = this.coordinators.get(task.coordinatorTaskId);
+    const attempts: Array<{ cwd: string; rev: string }> = [];
+    if (coordinatorState?.worktreePath) {
+      attempts.push({ cwd: coordinatorState.worktreePath, rev: 'HEAD' });
+    }
+    attempts.push({ cwd: task.projectRoot, rev: targetBranch });
+
+    let lastError: unknown;
+    for (const attempt of attempts) {
+      try {
+        const result = await execAsync('git', ['rev-parse', attempt.rev], { cwd: attempt.cwd });
+        return execStdout(result).trim();
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private async cleanupLandedTaskResources(task: CoordinatedTask): Promise<void> {
+    this.closingTaskIds.add(task.id);
+    try {
+      this.suppressPendingNotificationForTask(task);
+
+      const cb = this.subscribers.get(task.agentId);
+      if (cb) {
+        unsubscribeFromAgent(task.agentId, cb);
+        this.subscribers.delete(task.agentId);
+      }
+
+      try {
+        killAgent(task.agentId);
+      } catch {
+        /* already dead */
+      }
+
+      await deleteTask({
+        agentIds: [task.agentId],
+        branchName: task.branchName,
+        deleteBranch: true,
+        projectRoot: task.projectRoot,
+      });
+
+      const idleResolvers = this.idleResolvers.get(task.id);
+      if (idleResolvers?.length) {
+        for (const resolve of idleResolvers) resolve({ reason: 'exited' });
+      }
+      this.idleResolvers.delete(task.id);
+      this.tailBuffers.delete(task.agentId);
+      this.decoders.delete(task.agentId);
+      if (task.mcpConfigPath) {
+        try {
+          unlinkSync(task.mcpConfigPath);
+        } catch {
+          /* already gone */
+        }
+      }
+      task.mcpConfigPath = undefined;
+      task.status = 'exited';
+      task.exitCode = 0;
+      this.tasks.delete(task.id);
+      this.controlMap.delete(task.id);
+      this.blockedByHumanControl.delete(task.id);
+      this.notifyRenderer(IPC.MCP_TaskClosed, { taskId: task.id });
+    } finally {
+      this.closingTaskIds.delete(task.id);
+    }
+  }
+
+  async landSelf(taskId: string, input: LandSelfInput): Promise<ApiLandSelfResult> {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    task.verification = input.verification;
+    task.landingSummary = input.summary;
+
+    if (!this.coordinators.has(task.coordinatorTaskId)) {
+      const reason = `Cannot self-land orphaned task: coordinator ${task.coordinatorTaskId} is not registered`;
+      this.escalateLanding(task, 'landing_escalated', reason);
+      throw new Error(reason);
+    }
+
+    if (!isPassedVerification(input.verification)) {
+      const reason = verificationFailureReason(input.verification);
+      this.escalateLanding(task, 'landing_escalated', reason);
+      throw new Error(reason);
+    }
+
+    try {
+      await this.prepareCleanSelfLandingWorktree(task);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.escalateLanding(task, 'landing_escalated', reason);
+      throw err;
+    }
+
+    let mergeResult: { mainBranch: string; linesAdded: number; linesRemoved: number };
+    try {
+      mergeResult = await this.runGitMerge(task, { squash: false });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const state =
+        reason.toLowerCase().includes('conflict') || reason.includes('Merge failed')
+          ? 'landing_escalated'
+          : 'landing_failed';
+      this.escalateLanding(task, state, reason);
+      throw err;
+    }
+
+    let landedCommit: string;
+    try {
+      landedCommit = await this.resolveLandedCommit(task, mergeResult.mainBranch);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const metadata = {
+        taskId: task.id,
+        taskName: task.name,
+        coordinatorTaskId: task.coordinatorTaskId,
+        targetBranch: mergeResult.mainBranch,
+        landedCommit: UNRESOLVED_LANDED_COMMIT,
+        landedAt: new Date().toISOString(),
+        landedOrder: this.nextLandedOrder(task.coordinatorTaskId),
+        summary: input.summary,
+        verification: input.verification,
+      };
+      task.landedMetadata = metadata;
+      task.landingState = 'landed_cleanup_failed';
+      task.landingReason = `Self-landing merged but landed commit could not be resolved: ${reason}`;
+      this.syncLandingState(task);
+      throw new Error(task.landingReason);
+    }
+
+    const metadata = {
+      taskId: task.id,
+      taskName: task.name,
+      coordinatorTaskId: task.coordinatorTaskId,
+      targetBranch: mergeResult.mainBranch,
+      landedCommit,
+      landedAt: new Date().toISOString(),
+      landedOrder: this.nextLandedOrder(task.coordinatorTaskId),
+      summary: input.summary,
+      verification: input.verification,
+    };
+    task.landedMetadata = metadata;
+    task.landingState = 'reviewed';
+    task.landingReason = undefined;
+
+    try {
+      await this.cleanupLandedTaskResources(task);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      task.landingState = 'landed_cleanup_failed';
+      task.landingReason = reason;
+      this.syncLandingState(task);
+      throw new Error(`Self-landing merged but cleanup failed: ${reason}`);
+    }
+
+    return {
+      mainBranch: mergeResult.mainBranch,
+      linesAdded: mergeResult.linesAdded,
+      linesRemoved: mergeResult.linesRemoved,
+      landingState: 'reviewed',
+      landedMetadata: metadata,
+    };
+  }
+
+  markTaskReviewed(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task || task.landingState !== 'landed_pending_review') return;
+    task.landingState = 'reviewed';
+    task.landingReason = undefined;
+    this.syncLandingState(task);
+  }
+
   async mergeTask(
     taskId: string,
     opts?: { squash?: boolean; message?: string; cleanup?: boolean },
   ): Promise<{ mainBranch: string; linesAdded: number; linesRemoved: number }> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
-
-    const root = task.projectRoot;
+    this.assertTaskCanBeMerged(task);
 
     // Strip injected preamble files before staging so they don't land in history,
     // then auto-commit any uncommitted changes in the task worktree before merging.
@@ -944,41 +1343,39 @@ export class Coordinator {
       }
     }
 
-    const coordinatorState = this.coordinators.get(task.coordinatorTaskId);
-    const runMerge = () =>
-      gitMergeTask(
-        root,
-        task.branchName,
-        opts?.squash ?? false,
-        opts?.message ?? null,
-        false, // worktree removal is handled by cleanupTask below, not gitMergeTask
-        task.baseBranch,
-        task.worktreePath,
-        coordinatorState?.worktreePath,
-      );
-    let result: Awaited<ReturnType<typeof runMerge>>;
-    try {
-      result = await runMerge();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('Another git process') || msg.includes('index.lock')) {
-        // Stale git lock — wait for it to clear then retry once
-        await new Promise((r) => setTimeout(r, 2000));
-        result = await runMerge();
-      } else {
-        throw err;
-      }
-    }
+    const result = await this.runGitMerge(task, opts);
 
     if (opts?.cleanup) {
       await this.cleanupTask(taskId);
     }
 
     return {
-      mainBranch: result.main_branch,
-      linesAdded: result.lines_added,
-      linesRemoved: result.lines_removed,
+      mainBranch: result.mainBranch,
+      linesAdded: result.linesAdded,
+      linesRemoved: result.linesRemoved,
     };
+  }
+
+  private assertTaskCanBeMerged(task: CoordinatedTask): void {
+    if (
+      task.landingState === 'landed_pending_review' ||
+      task.landingState === 'landed_cleanup_failed' ||
+      task.landingState === 'reviewed'
+    ) {
+      throw new Error(`Task ${task.id} has already landed; review or repair cleanup instead.`);
+    }
+
+    const hasManualReviewSignal = task.signalDoneAt !== undefined;
+    const hasLandingEscalation =
+      task.landingState === 'landing_escalated' || task.landingState === 'landing_failed';
+    if (task.status === 'running' && !hasManualReviewSignal && !hasLandingEscalation) {
+      throw new Error(
+        `Task ${task.id} is still running. Use send_prompt for follow-up, or wait until the task signals manual review or reaches a terminal state before calling merge_task.`,
+      );
+    }
+    if (task.status === 'creating') {
+      throw new Error(`Task ${task.id} is still starting and cannot be merged yet.`);
+    }
   }
 
   async reviewAndMergeTask(
@@ -1148,32 +1545,17 @@ export class Coordinator {
     controlledBy?: 'coordinator' | 'human';
     signalDoneAt?: string;
     signalDoneConsumed?: boolean;
+    verification?: SubtaskVerification;
+    landingState?: LandingState;
+    landingReason?: string;
+    landingSummary?: string;
+    landedMetadata?: CoordinatedTask['landedMetadata'];
     mcpConfigPath?: string;
+    agentCommand?: string;
     preambleFileExistedBefore?: boolean;
-  }): void {
+  }): { mcpLaunchArgs?: string[] } {
     if (!this.coordinators.has(opts.coordinatorTaskId)) {
       throw new Error(`coordinator ${opts.coordinatorTaskId} is not registered`);
-    }
-    if (this.tasks.has(opts.id)) return;
-    const task: CoordinatedTask = {
-      id: opts.id,
-      name: opts.name,
-      projectId: opts.projectId,
-      projectRoot: opts.projectRoot,
-      branchName: opts.branchName,
-      baseBranch: opts.baseBranch,
-      worktreePath: opts.worktreePath,
-      agentId: opts.agentId,
-      coordinatorTaskId: opts.coordinatorTaskId,
-      status: 'exited',
-      exitCode: null,
-      signalDoneAt: opts.signalDoneAt ? new Date(opts.signalDoneAt) : undefined,
-      signalDoneConsumed: opts.signalDoneConsumed,
-      preambleFileExistedBefore: opts.preambleFileExistedBefore,
-    };
-    this.tasks.set(task.id, task);
-    if (opts.controlledBy === 'human') {
-      this.controlMap.set(task.id, 'human');
     }
 
     // Validate the persisted mcpConfigPath is exactly one of the two paths that
@@ -1192,6 +1574,52 @@ export class Coordinator {
         (expectedDockerPath !== null && opts.mcpConfigPath === expectedDockerPath))
         ? opts.mcpConfigPath
         : undefined;
+
+    const existingTask = this.tasks.get(opts.id);
+    if (existingTask) {
+      if (safeMcpConfigPath) existingTask.mcpConfigPath = safeMcpConfigPath;
+      const mcpLaunchArgs = this.rewriteHydratedSubtaskMcpConfig(
+        existingTask,
+        opts.coordinatorTaskId,
+        safeMcpConfigPath ?? existingTask.mcpConfigPath,
+        opts.agentCommand,
+      );
+      return { mcpLaunchArgs };
+    }
+
+    const task: CoordinatedTask = {
+      id: opts.id,
+      name: opts.name,
+      projectId: opts.projectId,
+      projectRoot: opts.projectRoot,
+      branchName: opts.branchName,
+      baseBranch: opts.baseBranch,
+      worktreePath: opts.worktreePath,
+      agentId: opts.agentId,
+      coordinatorTaskId: opts.coordinatorTaskId,
+      status: 'exited',
+      exitCode: null,
+      signalDoneAt: opts.signalDoneAt ? new Date(opts.signalDoneAt) : undefined,
+      signalDoneConsumed: opts.signalDoneConsumed,
+      verification: opts.verification,
+      landingState: opts.landingState,
+      landingReason: opts.landingReason,
+      landingSummary: opts.landingSummary,
+      landedMetadata: opts.landedMetadata,
+      preambleFileExistedBefore: opts.preambleFileExistedBefore,
+    };
+    this.tasks.set(task.id, task);
+    if (opts.landedMetadata) {
+      const current = this.landedOrderCounters.get(opts.coordinatorTaskId) ?? 0;
+      this.landedOrderCounters.set(
+        opts.coordinatorTaskId,
+        Math.max(current, opts.landedMetadata.landedOrder),
+      );
+    }
+    if (opts.controlledBy === 'human') {
+      this.controlMap.set(task.id, 'human');
+    }
+
     task.mcpConfigPath = safeMcpConfigPath;
 
     // Set up output monitoring so wait_for_idle and idle detection work after restart.
@@ -1202,24 +1630,12 @@ export class Coordinator {
       // If StartMCPServer already ran before this hydration call (the normal restart path),
       // rewrite the config file immediately with the current port/token so the respawned
       // agent gets fresh credentials instead of the stale pre-restart values.
-      if (safeMcpConfigPath && serverInfo) {
-        const { serverUrl, subtaskToken, serverPath } = serverInfo;
-        if (!task.doneToken) task.doneToken = randomBytes(24).toString('base64url');
-        const mcpConfig = {
-          mcpServers: {
-            'parallel-code': {
-              type: 'stdio' as const,
-              command: 'node',
-              args: [serverPath, '--url', serverUrl, '--task-id', task.id],
-              env: {
-                PARALLEL_CODE_MCP_TOKEN: subtaskToken,
-                PARALLEL_CODE_MCP_DONE_TOKEN: task.doneToken,
-              },
-            },
-          },
-        };
-        atomicWriteFileSync(safeMcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
-      }
+      const mcpLaunchArgs = this.rewriteHydratedSubtaskMcpConfig(
+        task,
+        opts.coordinatorTaskId,
+        safeMcpConfigPath,
+        opts.agentCommand,
+      );
 
       this.tailBuffers.set(agentId, '');
       this.decoders.set(agentId, new TextDecoder());
@@ -1239,7 +1655,11 @@ export class Coordinator {
           .replace(/[\x00-\x1f\x7f]/g, ' ')
           .replace(/\s+/g, ' ')
           .trim();
-        if (chunkContainsAgentPrompt(stripped)) {
+        const hasAgentPrompt = chunkContainsAgentPrompt(stripped);
+        if (!hasAgentPrompt && task.assignedPromptDelivered) {
+          task.suppressNextIdleNotification = false;
+        }
+        if (hasAgentPrompt) {
           if (task.status === 'running') {
             task.status = 'idle';
             this.maybeQueueReviewNotification(task, 'idle', null);
@@ -1261,6 +1681,7 @@ export class Coordinator {
       } catch {
         /* agent not yet spawned — onPtyEvent('spawn') will subscribe when it starts */
       }
+      return { mcpLaunchArgs };
     } catch (err) {
       // Clean up partial map entries so the agentId doesn't linger in state.
       this.tailBuffers.delete(agentId);
@@ -1271,6 +1692,35 @@ export class Coordinator {
     }
   }
 
+  private rewriteHydratedSubtaskMcpConfig(
+    task: CoordinatedTask,
+    coordinatorTaskId: string,
+    mcpConfigPath: string | undefined,
+    agentCommand: string | undefined,
+  ): string[] | undefined {
+    const serverInfo = this.coordinators.get(coordinatorTaskId)?.mcpServerInfo;
+    if (!serverInfo) return undefined;
+    const { serverUrl, subtaskToken, serverPath } = serverInfo;
+    if (!task.doneToken) task.doneToken = randomBytes(24).toString('base64url');
+    const mcpConfig = {
+      mcpServers: {
+        'parallel-code': {
+          type: 'stdio' as const,
+          command: 'node',
+          args: [serverPath, '--url', serverUrl, '--task-id', task.id],
+          env: {
+            PARALLEL_CODE_MCP_TOKEN: subtaskToken,
+            PARALLEL_CODE_MCP_DONE_TOKEN: task.doneToken,
+          },
+        },
+      },
+    };
+    if (mcpConfigPath) {
+      atomicWriteFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2), { mode: 0o600 });
+    }
+    return buildMcpLaunchArgs(agentCommand ?? 'claude', mcpConfigPath, mcpConfig);
+  }
+
   isRegisteredCoordinator(coordinatorTaskId: string): boolean {
     return this.coordinators.has(coordinatorTaskId);
   }
@@ -1278,9 +1728,14 @@ export class Coordinator {
   registerCoordinator(
     coordinatorTaskId: string,
     projectId: string,
-    opts?: { worktreePath?: string; skipPermissions?: boolean },
+    opts?: { branchName?: string; worktreePath?: string; skipPermissions?: boolean },
   ): void {
-    if (this.coordinators.has(coordinatorTaskId)) return;
+    const existing = this.coordinators.get(coordinatorTaskId);
+    if (existing) {
+      if (opts?.branchName) existing.branchName = opts.branchName;
+      if (opts?.worktreePath) existing.worktreePath = opts.worktreePath;
+      return;
+    }
     // Snapshot the current global project root and defaults so each coordinator gets
     // the values that were active when IT registered, not whatever a later coordinator sets.
     this.coordinators.set(coordinatorTaskId, {
@@ -1288,6 +1743,7 @@ export class Coordinator {
       lifecycle: 'starting',
       projectId,
       projectRoot: this.projectRoot ?? '',
+      branchName: opts?.branchName,
       worktreePath: opts?.worktreePath,
       mcpServerInfo: null,
       spawnDefaults: { ...this.coordinatorSpawnDefaults },
@@ -1418,6 +1874,8 @@ export class Coordinator {
       // or exit fires the expected orphaned notification for the user to act on.
       if (!task.assignedPromptDelivered) {
         task.reviewNotificationQueued = true;
+      } else {
+        task.suppressNextIdleNotification = false;
       }
 
       // Transfer control to human so the user can decide what to do with orphaned tasks
@@ -1450,7 +1908,11 @@ export class Coordinator {
 
   markPromptDelivered(taskId: string): void {
     const task = this.tasks.get(taskId);
-    if (task) task.assignedPromptDelivered = true;
+    if (!task) return;
+    task.assignedPromptDelivered = true;
+    task.suppressNextIdleNotification = true;
+    this.tailBuffers.set(task.agentId, '');
+    if (task.status !== 'exited' && task.status !== 'error') task.status = 'running';
   }
 
   rescheduleRestageTimer(coordinatorTaskId: string): void {
@@ -1530,6 +1992,7 @@ export class Coordinator {
     const task = this.tasks.get(taskId);
     if (!task) return false;
     task.assignedPromptDelivered = true;
+    task.suppressNextIdleNotification = false;
     task.signalDoneAt = new Date();
     task.signalDoneConsumed = false;
 

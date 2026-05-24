@@ -8,6 +8,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { MCPClient } from './client.js';
 import { selectTools } from './mcp-tool-list.js';
 import { validateBranchName } from './validation.js';
+import type { LandSelfInput } from './types.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -65,13 +66,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: params } = request.params;
 
-  // Sub-tasks may only call signal_done
-  if (taskId && !coordinatorId && name !== 'signal_done') {
+  // Sub-tasks may only call sub-task scoped terminal tools.
+  if (taskId && !coordinatorId && name !== 'signal_done' && name !== 'land_self') {
     return {
       content: [
         {
           type: 'text',
-          text: `Error: '${name}' is not available to sub-tasks. Only signal_done is permitted.`,
+          text: `Error: '${name}' is not available to sub-tasks. Only land_self and signal_done are permitted.`,
         },
       ],
       isError: true,
@@ -232,6 +233,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{ type: 'text', text: 'Done signal sent. The coordinator has been notified.' }],
         };
+      }
+
+      case 'land_self': {
+        if (!taskId) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Error: land_self is only available to sub-tasks (no --task-id configured).',
+              },
+            ],
+            isError: true,
+          };
+        }
+        const result = await client.landSelf(taskId, params as unknown as LandSelfInput);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       }
 
       default:

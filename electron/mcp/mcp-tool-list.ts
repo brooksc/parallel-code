@@ -8,9 +8,44 @@ export interface ToolDef {
 
 export const SUBTASK_TOOLS: ToolDef[] = [
   {
+    name: 'land_self',
+    description:
+      'Land your own completed sub-task through the Parallel Code backend. Call this only after committing your work and running verification successfully. A successful call is terminal; do not call signal_done afterward.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        verification: {
+          type: 'object',
+          description: 'Structured verification showing the checks you ran and their results.',
+          properties: {
+            checks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  command: { type: 'string' },
+                  result: { type: 'string', enum: ['passed', 'blocked', 'failed'] },
+                  reason: { type: 'string' },
+                },
+                required: ['name', 'command', 'result'],
+              },
+            },
+          },
+          required: ['checks'],
+        },
+        summary: {
+          type: 'string',
+          description: 'Optional concise summary of what landed.',
+        },
+      },
+      required: ['verification'],
+    },
+  },
+  {
     name: 'signal_done',
     description:
-      'Signal that your assigned work is complete and ready for the coordinator to review. Call this when you have finished your task — do not call it mid-task.',
+      'Legacy/manual-review completion signal. Use land_self for normal self-landing; call signal_done only when the coordinator asked to review and land manually.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
 ];
@@ -19,7 +54,7 @@ export const COORDINATOR_TOOLS: ToolDef[] = [
   {
     name: 'create_task',
     description:
-      'Create a new task with its own git worktree and AI agent. The agent starts automatically and the prompt is delivered once the agent is ready.',
+      'Create a new task with its own git worktree and AI agent. The agent starts automatically and the prompt is delivered once the agent is ready. A startup/default placeholder prompt in get_task_output is not evidence that delivery failed; wait and re-check before sending follow-up instructions.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -31,7 +66,7 @@ export const COORDINATOR_TOOLS: ToolDef[] = [
         baseBranch: {
           type: 'string',
           description:
-            'Git branch to base the worktree on. Defaults to the project default branch. Use this to ensure sub-agents start with the right code (e.g. a feature branch).',
+            'Git branch to base the worktree on. Defaults to the coordinator task branch. Only set this when deliberately overriding that default.',
         },
       },
       required: ['name'],
@@ -53,7 +88,8 @@ export const COORDINATOR_TOOLS: ToolDef[] = [
   },
   {
     name: 'send_prompt',
-    description: "Send a prompt/instruction to a task's AI agent.",
+    description:
+      "Send a follow-up instruction to a task's AI agent. Do not resend the full original assignment merely because a newly created task is idle or get_task_output shows a startup/default placeholder prompt; wait briefly and re-check unless the agent clearly asks for input, starts unrelated work, or prompt delivery clearly failed.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -90,7 +126,8 @@ export const COORDINATOR_TOOLS: ToolDef[] = [
   },
   {
     name: 'get_task_output',
-    description: "Get recent terminal output from a task's agent (stripped of ANSI codes).",
+    description:
+      "Get recent terminal output from a task's agent (stripped of ANSI codes). A startup/default placeholder prompt, such as 'Improve documentation in @filename', can be stale while the dispatched create_task prompt is queued or being processed; do not treat it alone as a reason to resend the task.",
     inputSchema: {
       type: 'object',
       properties: { taskId: { type: 'string', description: 'Task ID' } },
@@ -156,7 +193,7 @@ export const COORDINATOR_TOOLS: ToolDef[] = [
 
 /**
  * Returns the tool list for a given role.
- * Sub-tasks (taskId set, no coordinatorId) get only signal_done.
+ * Sub-tasks (taskId set, no coordinatorId) get only sub-task scoped tools.
  * Coordinators (and plain agents) get the full coordinator set — which does NOT include signal_done.
  */
 export function selectTools(taskId: string, coordinatorId: string): ToolDef[] {

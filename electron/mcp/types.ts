@@ -18,8 +18,15 @@ export interface CoordinatedTask {
   preambleFileExistedBefore?: boolean; // true if the preamble file existed before injection (even if empty)
   signalDoneAt?: Date; // set when sub-task explicitly calls signal_done
   signalDoneConsumed?: boolean; // true after wait_for_signal_done returns this task's signal
+  verification?: SubtaskVerification;
+  landingState?: LandingState;
+  landingReason?: string;
+  landingSummary?: string;
+  landedMetadata?: LandedMetadata;
   // Coordinator notification lifecycle flags
   assignedPromptDelivered?: boolean;
+  // Ignore the prompt that was already visible when a coordinator-delivered prompt was sent.
+  suppressNextIdleNotification?: boolean;
   reviewNotificationQueued?: boolean;
   /** Coordinator Docker container name. Set when the coordinator runs in Docker mode.
    *  Sub-tasks each get their own `docker run` container; this is not used for spawning
@@ -53,6 +60,7 @@ export interface CoordinatorState {
   lifecycle: CoordinatorLifecycle;
   projectId: string;
   projectRoot: string;
+  branchName?: string;
   worktreePath?: string;
   /** Docker container name for this coordinator (used for identification/cleanup, not for spawning sub-tasks). */
   dockerContainerName?: string | null;
@@ -83,6 +91,36 @@ export interface CoordinatorState {
   previousMcpParallelCode?: unknown;
   /** The value this coordinator wrote into mcpServers["parallel-code"]; used to detect concurrent edits on deregister. */
   writtenMcpParallelCode?: unknown;
+}
+
+export interface SubtaskVerificationCheck {
+  name: string;
+  command: string;
+  result: 'passed' | 'blocked' | 'failed';
+  reason?: string;
+}
+
+export interface SubtaskVerification {
+  checks: SubtaskVerificationCheck[];
+}
+
+export type LandingState =
+  | 'landing_escalated'
+  | 'landing_failed'
+  | 'landed_pending_review'
+  | 'landed_cleanup_failed'
+  | 'reviewed';
+
+export interface LandedMetadata {
+  taskId: string;
+  taskName: string;
+  coordinatorTaskId: string;
+  targetBranch: string;
+  landedCommit: string;
+  landedAt: string;
+  landedOrder: number;
+  summary?: string;
+  verification: SubtaskVerification;
 }
 
 // --- MCP tool input schemas ---
@@ -128,6 +166,11 @@ export interface CloseTaskInput {
   taskId: string;
 }
 
+export interface LandSelfInput {
+  verification: SubtaskVerification;
+  summary?: string;
+}
+
 // --- API request/response types ---
 
 export interface ApiTaskSummary {
@@ -137,6 +180,11 @@ export interface ApiTaskSummary {
   status: string;
   coordinatorTaskId: string;
   signalDoneAt?: string; // ISO timestamp, set when sub-task called signal_done
+  verification?: SubtaskVerification;
+  landingState?: LandingState;
+  landingReason?: string;
+  landingSummary?: string;
+  landedMetadata?: LandedMetadata;
 }
 
 export interface ApiTaskDetail extends ApiTaskSummary {
@@ -169,4 +217,9 @@ export interface ApiMergeResult {
 export interface ApiReviewAndMergeResult {
   diff: ApiDiffResult;
   merge: ApiMergeResult;
+}
+
+export interface ApiLandSelfResult extends ApiMergeResult {
+  landingState: LandingState;
+  landedMetadata: LandedMetadata;
 }

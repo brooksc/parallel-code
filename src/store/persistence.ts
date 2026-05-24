@@ -207,6 +207,11 @@ export async function saveState(): Promise<void> {
       signalDoneAt: task.signalDoneAt,
       signalDoneConsumed: task.signalDoneConsumed,
       needsReview: task.needsReview,
+      verification: task.verification,
+      landingState: task.landingState,
+      landingReason: task.landingReason,
+      landingSummary: task.landingSummary,
+      landedMetadata: task.landedMetadata,
     };
   }
 
@@ -262,6 +267,11 @@ export async function saveState(): Promise<void> {
       signalDoneAt: task.signalDoneAt,
       signalDoneConsumed: task.signalDoneConsumed,
       needsReview: task.needsReview,
+      verification: task.verification,
+      landingState: task.landingState,
+      landingReason: task.landingReason,
+      landingSummary: task.landingSummary,
+      landedMetadata: task.landedMetadata,
     };
   }
 
@@ -686,6 +696,11 @@ export async function loadState(): Promise<void> {
           signalDoneAt: pt.signalDoneAt,
           signalDoneConsumed: pt.signalDoneConsumed,
           needsReview: pt.needsReview,
+          verification: pt.verification,
+          landingState: pt.landingState,
+          landingReason: pt.landingReason,
+          landingSummary: pt.landingSummary,
+          landedMetadata: pt.landedMetadata,
         };
 
         s.tasks[taskId] = task;
@@ -785,6 +800,11 @@ export async function loadState(): Promise<void> {
           signalDoneAt: pt.signalDoneAt,
           signalDoneConsumed: pt.signalDoneConsumed,
           needsReview: pt.needsReview,
+          verification: pt.verification,
+          landingState: pt.landingState,
+          landingReason: pt.landingReason,
+          landingSummary: pt.landingSummary,
+          landedMetadata: pt.landedMetadata,
         };
 
         s.tasks[taskId] = task;

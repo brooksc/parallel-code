@@ -78,6 +78,10 @@ export function TaskPanel(props: TaskPanelProps) {
   const [showPushConfirm, setShowPushConfirm] = createSignal(false);
   const [pushSuccess, setPushSuccess] = createSignal(false);
   const [pushing, setPushing] = createSignal(false);
+  const isLandedTask = () =>
+    props.task.landingState === 'landed_pending_review' ||
+    props.task.landingState === 'landed_cleanup_failed' ||
+    props.task.landingState === 'reviewed';
   let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(pushSuccessTimer));
   const [diffScrollTarget, setDiffScrollTarget] = createSignal<string | null>(null);
@@ -194,10 +198,10 @@ export function TaskPanel(props: TaskPanelProps) {
         setShowCloseConfirm(true);
         break;
       case 'merge':
-        if (props.task.gitIsolation === 'worktree') setShowMergeConfirm(true);
+        if (props.task.gitIsolation === 'worktree' && !isLandedTask()) setShowMergeConfirm(true);
         break;
       case 'push':
-        if (props.task.gitIsolation === 'worktree') setShowPushConfirm(true);
+        if (props.task.gitIsolation === 'worktree' && !isLandedTask()) setShowPushConfirm(true);
         break;
     }
   });
@@ -210,6 +214,7 @@ export function TaskPanel(props: TaskPanelProps) {
     const worktreePath = props.task.worktreePath;
     const baseBranch = props.task.baseBranch;
     const isolation = props.task.gitIsolation;
+    if (isLandedTask()) return;
     if (isolation !== 'worktree' && isolation !== 'direct') return;
     let cancelled = false;
 
@@ -397,7 +402,7 @@ export function TaskPanel(props: TaskPanelProps) {
     content: () => promptInputEl,
   };
 
-  const isNoneGit = () => props.task.gitIsolation === 'none';
+  const isGitUnavailable = () => props.task.gitIsolation === 'none' || isLandedTask();
 
   // Notes and changed-files children reused across stack and split trees.
   // In the stack-mode inner horizontal split, both children absorb (50/50 default).
@@ -425,7 +430,7 @@ export function TaskPanel(props: TaskPanelProps) {
     absorberWeight: 0.5,
     content: () => (
       <div style={{ height: '100%', 'min-height': '200px' }}>
-        {isNoneGit() ? (
+        {isGitUnavailable() ? (
           notesBodyEl
         ) : (
           <ResizablePanel
@@ -726,7 +731,7 @@ export function TaskPanel(props: TaskPanelProps) {
                     persistKey={`task:${props.task.id}:split-right`}
                     absorberIds={['shell-section']}
                     children={[
-                      ...(isNoneGit() ? [] : [changedFilesChild]),
+                      ...(isGitUnavailable() ? [] : [changedFilesChild]),
                       notesChild,
                       ...(props.task.stepsEnabled ? [stepsSectionChild] : []),
                       shellSectionChild,
@@ -743,7 +748,7 @@ export function TaskPanel(props: TaskPanelProps) {
         task={props.task}
         onDone={() => setShowCloseConfirm(false)}
       />
-      <Show when={props.task.gitIsolation !== 'none'}>
+      <Show when={props.task.gitIsolation !== 'none' && !isLandedTask()}>
         <MergeDialog
           open={showMergeConfirm()}
           task={props.task}

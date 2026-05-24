@@ -62,8 +62,7 @@ import {
   toggleTaskFocusMode,
   initMCPListeners,
   markTaskMcpPending,
-  markTaskMcpReady,
-  setTaskMcpLaunchArgs,
+  applyTaskMcpLaunchResult,
   markTaskMcpError,
 } from './store/store';
 import { isGitHubUrl } from './lib/github-url';
@@ -406,6 +405,7 @@ function App() {
           coordinatorTaskId: task.id,
           projectId: task.projectId,
           projectRoot,
+          coordinatorBranch: task.branchName || undefined,
           worktreePath: task.gitIsolation === 'worktree' ? task.worktreePath : undefined,
           skipPermissions: task.skipPermissions ?? false,
           propagateSkipPermissions: task.propagateSkipPermissions ?? false,
@@ -415,8 +415,7 @@ function App() {
           dockerImage: task.dockerMode ? task.dockerImage : undefined,
         })
           .then((result) => {
-            setTaskMcpLaunchArgs(taskId, result?.mcpLaunchArgs);
-            markTaskMcpReady(taskId);
+            applyTaskMcpLaunchResult(taskId, result);
           })
           .catch((err) => {
             console.warn(`[MCP] Failed to restore MCP server for coordinator task ${taskId}:`, err);
@@ -434,6 +433,12 @@ function App() {
     for (const taskId of [...store.taskOrder, ...store.collapsedTaskOrder]) {
       const task = store.tasks[taskId];
       if (!task?.coordinatedBy) continue;
+      if (
+        task.landingState === 'landed_pending_review' ||
+        task.landingState === 'landed_cleanup_failed' ||
+        task.landingState === 'reviewed'
+      )
+        continue;
       // Skip if coordinator restore failed — hydrating into a broken coordinator leaves
       // children with stale MCP wiring and misleading 'ready' status.
       if (store.tasks[task.coordinatedBy]?.mcpStartupStatus !== 'ready') continue;
@@ -441,7 +446,7 @@ function App() {
       if (!projectRoot) continue;
       markTaskMcpPending(task.id);
       hydratePromises.push(
-        invoke(IPC.MCP_HydrateCoordinatedTask, {
+        invoke<{ mcpLaunchArgs?: string[] }>(IPC.MCP_HydrateCoordinatedTask, {
           id: task.id,
           name: task.name,
           projectId: task.projectId,
@@ -454,10 +459,18 @@ function App() {
           agentId: task.agentIds[0],
           signalDoneAt: task.signalDoneAt,
           signalDoneConsumed: task.signalDoneConsumed,
+          verification: task.verification,
+          landingState: task.landingState,
+          landingReason: task.landingReason,
+          landingSummary: task.landingSummary,
+          landedMetadata: task.landedMetadata,
           mcpConfigPath: task.mcpConfigPath,
+          agentCommand: store.agents[task.agentIds[0]]?.def.command ?? 'claude',
           preambleFileExistedBefore: task.preambleFileExistedBefore,
         })
-          .then(() => markTaskMcpReady(task.id))
+          .then((result) => {
+            applyTaskMcpLaunchResult(task.id, result);
+          })
           .catch((err) => {
             console.warn(`[MCP] Failed to hydrate coordinated task ${taskId}:`, err);
             markTaskMcpError(task.id, String(err));

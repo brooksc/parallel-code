@@ -7,7 +7,28 @@ import { IPC } from '../../electron/ipc/channels';
 
 const DEBOUNCE_MS = 3_000;
 
-type NotificationType = 'ready' | 'needs_input' | 'error';
+export type NotificationType = 'ready' | 'needs_input' | 'error';
+
+export function reconcilePendingNotification(
+  pending: Map<string, NotificationType>,
+  taskId: string,
+  previous: TaskAttentionState | undefined,
+  current: TaskAttentionState,
+): NotificationType | null {
+  if (previous === undefined || previous === current) return null;
+  if (current === 'ready') return 'ready';
+  if (current === 'needs_input') return 'needs_input';
+  if (current === 'error') return 'error';
+  pending.delete(taskId);
+  return null;
+}
+
+export function clearPendingNotification(
+  pending: Map<string, NotificationType>,
+  taskId: string,
+): void {
+  pending.delete(taskId);
+}
 
 export function startDesktopNotificationWatcher(windowFocused: Accessor<boolean>): () => void {
   const previousAttention = new Map<string, TaskAttentionState>();
@@ -83,21 +104,16 @@ export function startDesktopNotificationWatcher(windowFocused: Accessor<boolean>
       previousAttention.set(taskId, current);
 
       // Skip initial population
-      if (prev === undefined) continue;
-      if (prev === current) continue;
-
-      if (current === 'ready' && prev !== 'ready') {
-        scheduleBatch('ready', taskId);
-      } else if (current === 'needs_input' && prev !== 'needs_input') {
-        scheduleBatch('needs_input', taskId);
-      } else if (current === 'error' && prev !== 'error') {
-        scheduleBatch('error', taskId);
-      }
+      const notificationType = reconcilePendingNotification(pending, taskId, prev, current);
+      if (notificationType) scheduleBatch(notificationType, taskId);
     }
 
     // Clean up removed tasks
     for (const taskId of previousAttention.keys()) {
-      if (!seen.has(taskId)) previousAttention.delete(taskId);
+      if (!seen.has(taskId)) {
+        previousAttention.delete(taskId);
+        clearPendingNotification(pending, taskId);
+      }
     }
   });
 

@@ -93,6 +93,22 @@ function makeMockCoordinator(): Coordinator {
     getTaskOutput: vi.fn().mockReturnValue('output'),
     mergeTask: vi.fn().mockResolvedValue({ mainBranch: 'main', linesAdded: 0, linesRemoved: 0 }),
     closeTask: vi.fn().mockResolvedValue(undefined),
+    landSelf: vi.fn().mockResolvedValue({
+      mainBranch: 'main',
+      linesAdded: 1,
+      linesRemoved: 0,
+      landingState: 'reviewed',
+      landedMetadata: {
+        taskId: taskA.id,
+        taskName: taskA.name,
+        coordinatorTaskId: COORD_A,
+        targetBranch: 'main',
+        landedCommit: 'abc123',
+        landedAt: new Date().toISOString(),
+        landedOrder: 1,
+        verification: { checks: [{ name: 'test', command: 'npm test', result: 'passed' }] },
+      },
+    }),
     reviewAndMergeTask: vi.fn().mockResolvedValue({
       diff: { files: [], diff: '' },
       merge: { mainBranch: 'main', linesAdded: 0, linesRemoved: 0 },
@@ -435,7 +451,7 @@ describe('coordinator scoping', () => {
 
 // ─── Subtask token access control ────────────────────────────────────────────
 
-describe('subtask token — restricted to signal_done only', () => {
+describe('subtask token — restricted to sub-task terminal tools', () => {
   let subtaskToken = '';
   let stop: () => Promise<void>;
 
@@ -506,6 +522,97 @@ describe('subtask token — restricted to signal_done only', () => {
       DONE_TOKENS[taskB.id],
     );
     expect(res.status).toBe(403);
+  });
+
+  it('POST /api/tasks/{id}/land is allowed with correct X-Done-Token header', async () => {
+    const res = await subtaskRequest(
+      'POST',
+      `/api/tasks/${taskA.id}/land`,
+      {
+        verification: { checks: [{ name: 'test', command: 'npm test', result: 'passed' }] },
+      },
+      DONE_TOKENS[taskA.id],
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /api/tasks/{id}/land returns 403 without X-Done-Token header', async () => {
+    const res = await subtaskRequest('POST', `/api/tasks/${taskA.id}/land`, {
+      verification: { checks: [{ name: 'test', command: 'npm test', result: 'passed' }] },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /api/tasks/{id}/land returns 403 when X-Done-Token is for wrong task', async () => {
+    const res = await subtaskRequest(
+      'POST',
+      `/api/tasks/${taskA.id}/land`,
+      {
+        verification: { checks: [{ name: 'test', command: 'npm test', result: 'passed' }] },
+      },
+      DONE_TOKENS[taskB.id],
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /api/tasks/{id}/land rejects missing verification', async () => {
+    const res = await subtaskRequest(
+      'POST',
+      `/api/tasks/${taskA.id}/land`,
+      {},
+      DONE_TOKENS[taskA.id],
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ['empty checks', { verification: { checks: [] } }],
+    [
+      'too many checks',
+      {
+        verification: {
+          checks: Array.from({ length: 51 }, (_, i) => ({
+            name: `check-${i}`,
+            command: 'npm test',
+            result: 'passed',
+          })),
+        },
+      },
+    ],
+    [
+      'empty check name',
+      { verification: { checks: [{ name: '', command: 'npm test', result: 'passed' }] } },
+    ],
+    [
+      'empty check command',
+      { verification: { checks: [{ name: 'test', command: '', result: 'passed' }] } },
+    ],
+    [
+      'invalid check result',
+      { verification: { checks: [{ name: 'test', command: 'npm test', result: 'unknown' }] } },
+    ],
+    [
+      'non-string summary',
+      {
+        verification: { checks: [{ name: 'test', command: 'npm test', result: 'passed' }] },
+        summary: 123,
+      },
+    ],
+    [
+      'too-long summary',
+      {
+        verification: { checks: [{ name: 'test', command: 'npm test', result: 'passed' }] },
+        summary: 'x'.repeat(20_001),
+      },
+    ],
+  ])('POST /api/tasks/{id}/land rejects invalid body: %s', async (_label, body) => {
+    const res = await subtaskRequest(
+      'POST',
+      `/api/tasks/${taskA.id}/land`,
+      body,
+      DONE_TOKENS[taskA.id],
+    );
+    expect(res.status).toBe(400);
   });
 
   it('GET /api/tasks returns 403 with subtaskToken', async () => {

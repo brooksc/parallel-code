@@ -18,6 +18,36 @@ export interface StagedNotification {
   hiddenCompletionCount?: number;
 }
 
+export interface SubtaskVerificationCheck {
+  name: string;
+  command: string;
+  result: 'passed' | 'blocked' | 'failed';
+  reason?: string;
+}
+
+export interface SubtaskVerification {
+  checks: SubtaskVerificationCheck[];
+}
+
+export type LandingState =
+  | 'landing_escalated'
+  | 'landing_failed'
+  | 'landed_pending_review'
+  | 'landed_cleanup_failed'
+  | 'reviewed';
+
+export interface LandedMetadata {
+  taskId: string;
+  taskName: string;
+  coordinatorTaskId: string;
+  targetBranch: string;
+  landedCommit: string;
+  landedAt: string;
+  landedOrder: number;
+  summary?: string;
+  verification: SubtaskVerification;
+}
+
 export interface TaskGitStatusSnapshot extends WorktreeStatus {
   refreshedAt: number;
   error?: string;
@@ -110,6 +140,11 @@ export interface Task {
   signalDoneAt?: string;
   signalDoneConsumed?: boolean;
   needsReview?: boolean;
+  verification?: SubtaskVerification;
+  landingState?: LandingState;
+  landingReason?: string;
+  landingSummary?: string;
+  landedMetadata?: LandedMetadata;
   mcpStartupStatus?: 'pending' | 'ready' | 'error';
   mcpStartupError?: string;
 }
@@ -162,6 +197,11 @@ export interface PersistedTask {
   signalDoneAt?: string;
   signalDoneConsumed?: boolean;
   needsReview?: boolean;
+  verification?: SubtaskVerification;
+  landingState?: LandingState;
+  landingReason?: string;
+  landingSummary?: string;
+  landedMetadata?: LandedMetadata;
 }
 
 export interface PersistedTerminal {

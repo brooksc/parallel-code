@@ -34,6 +34,7 @@ import {
   DEFAULT_COORDINATOR_CONCURRENT_TASKS,
 } from '../lib/coordinator-limits';
 import { getCoordinatorChildren, isCoordinatedChild } from './sidebar-order';
+import { isLandedTaskState } from './landing';
 
 function initTaskInStore(
   taskId: string,
@@ -81,11 +82,18 @@ function isAgentNotFoundError(err: unknown): boolean {
   return String(err).toLowerCase().includes('agent not found');
 }
 
-async function writeToAgentWhenReady(agentId: string, data: string): Promise<void> {
+function assertTaskCanReceiveInput(taskId: string, agentId: string): void {
+  if (isLandedTaskState(store.tasks[taskId]?.landingState)) {
+    throw new Error(`Task ${taskId} has already landed; agent ${agentId} is no longer writable.`);
+  }
+}
+
+async function writeToAgentWhenReady(taskId: string, agentId: string, data: string): Promise<void> {
   const deadline = Date.now() + AGENT_WRITE_READY_TIMEOUT_MS;
   let lastErr: unknown;
 
   while (Date.now() <= deadline) {
+    assertTaskCanReceiveInput(taskId, agentId);
     try {
       await invoke(IPC.WriteToAgent, { agentId, data });
       return;
@@ -206,6 +214,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
         coordinatorTaskId: taskId,
         projectId,
         projectRoot,
+        coordinatorBranch: branchName || undefined,
         worktreePath: gitIsolation === 'worktree' ? worktreePath : undefined,
         skipPermissions: skipPermissions ?? false,
         propagateSkipPermissions: opts.propagateSkipPermissions ?? false,
@@ -220,6 +229,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
       await invoke(IPC.MCP_CoordinatorRegistered, {
         coordinatorTaskId: taskId,
         projectId,
+        coordinatorBranch: branchName || undefined,
         worktreePath,
       });
     } catch (err) {
@@ -242,6 +252,10 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
   // Only possible here when an initialPrompt was provided; if not, sendPrompt handles injection.
   const effectivePrompt =
     stepsEnabled && initialPrompt ? `${initialPrompt}\n\n---\n${STEPS_INSTRUCTION}` : initialPrompt;
+  const coordinatorBaseBranchInstruction =
+    opts.coordinatorMode && branchName
+      ? `Use \`${branchName}\` as the baseBranch for all sub-tasks.\n\n`
+      : '';
 
   const task: Task = {
     id: taskId,
@@ -267,7 +281,7 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
               ),
             ),
           ) +
-          `Use \`${opts.baseBranch}\` as the baseBranch for all sub-tasks.\n\n` +
+          coordinatorBaseBranchInstruction +
           effectivePrompt
         : (effectivePrompt ?? undefined),
     savedInitialPrompt: initialPrompt ?? undefined,
@@ -624,6 +638,7 @@ export function updateTaskNotes(taskId: string, notes: string): void {
 
 export async function sendPrompt(taskId: string, agentId: string, text: string): Promise<void> {
   const task = store.tasks[taskId];
+  assertTaskCanReceiveInput(taskId, agentId);
   const promptedAgentIds = task?.promptedAgentIds ?? [];
   const hasPromptedAgent = promptedAgentIds.includes(agentId);
   const isQueuedInitialPrompt =
@@ -639,7 +654,7 @@ export async function sendPrompt(taskId: string, agentId: string, text: string):
   // the PromptInput textarea, the xterm.js terminal loses DOM focus.  For agents
   // that enable focus tracking (\x1b[?1004h), xterm.js sends \x1b[O (Focus Out)
   // to the PTY, which may suspend readline input processing; \x1b[I re-activates it.
-  await writeToAgentWhenReady(agentId, '\x1b[I');
+  await writeToAgentWhenReady(taskId, agentId, '\x1b[I');
   // Send text and Enter separately so TUI apps (Claude Code, Codex)
   // don't treat the \r as part of a pasted block.  When the agent has enabled
   // bracketed paste, wrap only the prompt text; this avoids Codex's paste-burst
@@ -647,11 +662,12 @@ export async function sendPrompt(taskId: string, agentId: string, text: string):
   setTaskLastInputAt(taskId);
   const useBracketed = isAgentBracketedPasteEnabled(agentId);
   await writeToAgentWhenReady(
+    taskId,
     agentId,
     useBracketed ? `${BRACKETED_PASTE_START}${effectiveText}${BRACKETED_PASTE_END}` : effectiveText,
   );
   await new Promise((r) => setTimeout(r, pasteDelayMs(effectiveText)));
-  await writeToAgentWhenReady(agentId, '\r');
+  await writeToAgentWhenReady(taskId, agentId, '\r');
   setStore('tasks', taskId, 'lastPrompt', text);
   if (task && !hasPromptedAgent) {
     setStore('tasks', taskId, 'promptedAgentIds', [...promptedAgentIds, agentId]);
@@ -678,6 +694,19 @@ export function setPrefillPrompt(taskId: string, text: string): void {
 
 export function clearStagedNotification(taskId: string): void {
   setStore('tasks', taskId, 'stagedNotification', undefined);
+}
+
+export function clearTaskLandingReview(taskId: string): void {
+  const task = store.tasks[taskId];
+  if (!task) return;
+  setStore('tasks', taskId, 'needsReview', false);
+  if (task.landingState === 'landed_pending_review') {
+    setStore('tasks', taskId, 'landingState', 'reviewed');
+    void invoke(IPC.MCP_TaskLandingReviewCleared, { taskId }).catch((err: unknown) =>
+      logWarn('tasks', 'Failed to clear backend landing review state', { err: String(err) }),
+    );
+  }
+  void saveState();
 }
 
 export function setStagedNotificationUserEdited(taskId: string): void {
@@ -1000,6 +1029,7 @@ interface MCPTaskCreatedEvent {
   preambleFileExistedBefore?: boolean;
   agentCommand?: string;
   agentArgs?: string[];
+  mcpLaunchArgs?: string[];
   skipPermissions?: boolean;
 }
 
@@ -1027,6 +1057,7 @@ export function initMCPListeners(): () => void {
         // PromptInput auto-delivers it with stability checks + quiescence.
         initialPrompt: evt.prompt,
         mcpConfigPath: evt.mcpConfigPath,
+        mcpLaunchArgs: evt.mcpLaunchArgs,
         preambleFileExistedBefore: evt.preambleFileExistedBefore,
         skipPermissions: evt.skipPermissions ?? false,
         // Backend-spawned children are already attached to a live MCP server;
@@ -1208,6 +1239,11 @@ export function initMCPListeners(): () => void {
         signalDoneAt?: string;
         signalDoneConsumed?: boolean;
         needsReview?: boolean;
+        verification?: Task['verification'];
+        landingState?: Task['landingState'] | null;
+        landingReason?: string | null;
+        landingSummary?: string | null;
+        landedMetadata?: Task['landedMetadata'] | null;
         coordinatedBy?: string | null;
         controlledBy?: 'coordinator' | 'human' | null;
         mcpConfigPath?: string | null;
@@ -1215,6 +1251,12 @@ export function initMCPListeners(): () => void {
         mcpStartupError?: string | null;
       };
       if (store.tasks[evt.taskId]) {
+        const hasLandingStateUpdate =
+          evt.verification !== undefined ||
+          evt.landingState !== undefined ||
+          evt.landingReason !== undefined ||
+          evt.landingSummary !== undefined ||
+          evt.landedMetadata !== undefined;
         if (evt.signalDoneReceived !== undefined)
           setStore('tasks', evt.taskId, 'signalDoneReceived', evt.signalDoneReceived);
         if (evt.signalDoneAt !== undefined)
@@ -1223,6 +1265,16 @@ export function initMCPListeners(): () => void {
           setStore('tasks', evt.taskId, 'signalDoneConsumed', evt.signalDoneConsumed);
         if (evt.needsReview !== undefined)
           setStore('tasks', evt.taskId, 'needsReview', evt.needsReview);
+        if (evt.verification !== undefined)
+          setStore('tasks', evt.taskId, 'verification', evt.verification);
+        if (evt.landingState !== undefined)
+          setStore('tasks', evt.taskId, 'landingState', evt.landingState ?? undefined);
+        if (evt.landingReason !== undefined)
+          setStore('tasks', evt.taskId, 'landingReason', evt.landingReason ?? undefined);
+        if (evt.landingSummary !== undefined)
+          setStore('tasks', evt.taskId, 'landingSummary', evt.landingSummary ?? undefined);
+        if (evt.landedMetadata !== undefined)
+          setStore('tasks', evt.taskId, 'landedMetadata', evt.landedMetadata ?? undefined);
         if (evt.coordinatedBy !== undefined)
           setStore('tasks', evt.taskId, 'coordinatedBy', evt.coordinatedBy ?? undefined);
         if (evt.controlledBy !== undefined)
@@ -1233,6 +1285,7 @@ export function initMCPListeners(): () => void {
           setStore('tasks', evt.taskId, 'mcpStartupStatus', evt.mcpStartupStatus ?? undefined);
         if (evt.mcpStartupError !== undefined)
           setStore('tasks', evt.taskId, 'mcpStartupError', evt.mcpStartupError ?? undefined);
+        if (hasLandingStateUpdate) void saveState();
       }
     }),
     window.electron.ipcRenderer.on(IPC.MCP_TaskHydrated, (data: unknown) => {
@@ -1258,6 +1311,31 @@ export function markTaskMcpReady(taskId: string): void {
 
 export function setTaskMcpLaunchArgs(taskId: string, args: string[] | undefined): void {
   if (store.tasks[taskId]) setStore('tasks', taskId, 'mcpLaunchArgs', args);
+}
+
+function isCodexCommand(command: string | undefined): boolean {
+  return command?.split('/').pop()?.includes('codex') === true;
+}
+
+function taskRequiresMcpLaunchArgs(taskId: string): boolean {
+  const task = store.tasks[taskId];
+  if (!task) return true;
+  const agentDef = task.agentIds[0] ? store.agents[task.agentIds[0]]?.def : undefined;
+  return isCodexCommand(agentDef?.command) || Boolean(task.mcpConfigPath);
+}
+
+export function applyTaskMcpLaunchResult(
+  taskId: string,
+  result: { mcpLaunchArgs?: string[] } | undefined,
+): boolean {
+  const args = result?.mcpLaunchArgs;
+  if ((!Array.isArray(args) || args.length === 0) && taskRequiresMcpLaunchArgs(taskId)) {
+    markTaskMcpError(taskId, 'MCP startup returned no launch args');
+    return false;
+  }
+  if (Array.isArray(args)) setTaskMcpLaunchArgs(taskId, args);
+  markTaskMcpReady(taskId);
+  return true;
 }
 
 export function markTaskMcpError(taskId: string, errorMsg: string): void {
@@ -1288,6 +1366,7 @@ export function retryTaskMcpStartup(taskId: string): Promise<void> {
       coordinatorTaskId: task.id,
       projectId: task.projectId,
       projectRoot,
+      coordinatorBranch: task.branchName || undefined,
       worktreePath: task.gitIsolation === 'worktree' ? task.worktreePath : undefined,
       skipPermissions: task.skipPermissions ?? false,
       propagateSkipPermissions: task.propagateSkipPermissions ?? false,
@@ -1297,19 +1376,26 @@ export function retryTaskMcpStartup(taskId: string): Promise<void> {
       dockerImage: task.dockerImage,
     })
       .then((result) => {
-        setTaskMcpLaunchArgs(taskId, result?.mcpLaunchArgs);
-        markTaskMcpReady(taskId);
+        applyTaskMcpLaunchResult(taskId, result);
       })
       .catch((err: unknown) => markTaskMcpError(taskId, String(err)));
   }
 
   if (task.coordinatedBy) {
+    if (
+      task.landingState === 'landed_pending_review' ||
+      task.landingState === 'landed_cleanup_failed' ||
+      task.landingState === 'reviewed'
+    ) {
+      return Promise.resolve();
+    }
     const coordinator = store.tasks[task.coordinatedBy];
     if (coordinator?.mcpStartupStatus === 'error') {
       markTaskMcpError(taskId, 'Coordinator MCP failed — retry the coordinator task first');
       return Promise.resolve();
     }
-    return invoke(IPC.MCP_HydrateCoordinatedTask, {
+    const agentDef = task.agentIds[0] ? store.agents[task.agentIds[0]]?.def : undefined;
+    return invoke<{ mcpLaunchArgs?: string[] }>(IPC.MCP_HydrateCoordinatedTask, {
       id: task.id,
       name: task.name,
       projectId: task.projectId,
@@ -1322,10 +1408,18 @@ export function retryTaskMcpStartup(taskId: string): Promise<void> {
       agentId: task.agentIds[0],
       signalDoneAt: task.signalDoneAt,
       signalDoneConsumed: task.signalDoneConsumed,
+      verification: task.verification,
+      landingState: task.landingState,
+      landingReason: task.landingReason,
+      landingSummary: task.landingSummary,
+      landedMetadata: task.landedMetadata,
       mcpConfigPath: task.mcpConfigPath,
+      agentCommand: agentDef?.command ?? 'claude',
       preambleFileExistedBefore: task.preambleFileExistedBefore,
     })
-      .then(() => markTaskMcpReady(taskId))
+      .then((result) => {
+        applyTaskMcpLaunchResult(taskId, result);
+      })
       .catch((err: unknown) => markTaskMcpError(taskId, String(err)));
   }
   return Promise.resolve();

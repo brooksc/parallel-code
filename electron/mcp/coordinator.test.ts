@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'os';
 import { join, dirname } from 'path';
-import { getChangedFiles, getAllFileDiffs, getDiffBaseSha } from '../ipc/git.js';
+import { getChangedFiles, getAllFileDiffs, getDiffBaseSha, mergeTask } from '../ipc/git.js';
 
 // --- fs / child_process mocks (must come before dynamic import) ---
 const mockExecFile = vi.fn(
@@ -138,6 +138,11 @@ function encode(s: string): string {
   return Buffer.from(s).toString('base64');
 }
 
+function emitWorkThenIdle(outputCb: (encoded: string) => void): void {
+  outputCb(encode('Working...\n'));
+  outputCb(encode('Done ❯ '));
+}
+
 const mockWin = {
   isDestroyed: () => false,
   webContents: { send: mockNotifyRenderer },
@@ -200,6 +205,24 @@ describe('Coordinator registerCoordinator — idempotency', () => {
       expect.objectContaining({ name: 'test' }),
     );
   });
+
+  it('defaults sub-task baseBranch to the coordinator branch', async () => {
+    coordinator.registerCoordinator('coord-1', 'proj-1', {
+      branchName: 'task/coordinator-work',
+      worktreePath: '/tmp/project',
+    });
+
+    await coordinator.createTask({ name: 'child', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    expect(mockCreateBackendTask).toHaveBeenCalledWith(
+      'child',
+      '/tmp/project',
+      ['.claude', 'node_modules'],
+      'task',
+      'task/coordinator-work',
+    );
+    expect(coordinator.getTask('task-1')?.baseBranch).toBe('task/coordinator-work');
+  });
 });
 
 // ─── coordinator notification tests ───────────────────────────────────────────
@@ -248,7 +271,7 @@ describe('Coordinator coordinator notifications', () => {
     );
   });
 
-  it('notifies coordinator when sub-task idles after prompt delivery', async () => {
+  it('suppresses the stale idle prompt immediately after prompt delivery', async () => {
     coordinator.registerCoordinator('coord-1', 'proj-1');
     await coordinator.createTask({
       name: 'test',
@@ -259,7 +282,14 @@ describe('Coordinator coordinator notifications', () => {
 
     coordinator.markPromptDelivered('task-1');
 
-    outputCb(encode('Working... ❯ '));
+    outputCb(encode('❯ '));
+    expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
+      'mcp_coordinator_notification_staged',
+      expect.anything(),
+    );
+
+    outputCb(encode('Working...'));
+    outputCb(encode('Done ❯ '));
     expect(mockNotifyRenderer).toHaveBeenCalledWith(
       'mcp_coordinator_notification_staged',
       expect.objectContaining({
@@ -291,7 +321,7 @@ describe('Coordinator coordinator notifications', () => {
     const outputCb = getOutputCb();
     const agentId = getAgentId();
     const exitHandler = getExitHandler();
-    outputCb(encode('Done ❯ '));
+    emitWorkThenIdle(outputCb);
     mockNotifyRenderer.mockClear();
     exitHandler(agentId, { exitCode: 0 });
     const stagedCalls = mockNotifyRenderer.mock.calls.filter(
@@ -307,7 +337,7 @@ describe('Coordinator coordinator notifications', () => {
     await coordinator.createTask({ name: 'task-a', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.markPromptDelivered('task-1');
     const outputCb = getOutputCb();
-    outputCb(encode('Done ❯ '));
+    emitWorkThenIdle(outputCb);
 
     const stagedCallAck = mockNotifyRenderer.mock.calls.find(
       (c) => c[0] === 'mcp_coordinator_notification_staged',
@@ -325,7 +355,7 @@ describe('Coordinator coordinator notifications', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.markPromptDelivered('task-1');
     const outputCb = getOutputCb();
-    outputCb(encode('Done ❯ '));
+    emitWorkThenIdle(outputCb);
     const stagedCallIdempotent = mockNotifyRenderer.mock.calls.find(
       (c) => c[0] === 'mcp_coordinator_notification_staged',
     );
@@ -370,7 +400,7 @@ describe('Coordinator coordinator notifications', () => {
       await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
       coordinator.markPromptDelivered('task-1');
       const outputCb = getOutputCb();
-      outputCb(encode('Done ❯ '));
+      emitWorkThenIdle(outputCb);
 
       expect(mockNotifyRenderer).toHaveBeenCalledWith(
         'mcp_coordinator_notification_staged',
@@ -460,6 +490,322 @@ describe('Coordinator signal_done', () => {
     expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
       'mcp_coordinator_notification_staged',
       expect.anything(),
+    );
+  });
+});
+
+// ─── land_self tests ──────────────────────────────────────────────────────────
+
+describe('Coordinator land_self', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  const verification = {
+    checks: [{ name: 'typecheck', command: 'npm run typecheck', result: 'passed' as const }],
+  };
+
+  function mockGit(statusOut = '') {
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') {
+          cb(null, 'task/test\n', '');
+          return;
+        }
+        if (args[0] === 'status') {
+          cb(null, statusOut, '');
+          return;
+        }
+        if (args.join(' ') === 'rev-parse HEAD') {
+          cb(null, 'landed-sha\n', '');
+          return;
+        }
+        cb(null, '', '');
+      },
+    );
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockFsReadFile.mockResolvedValue('# existing\n');
+    mockReadFileSync.mockReturnValue('# existing\n');
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/test',
+      worktree_path: '/tmp/test',
+    });
+    vi.mocked(mergeTask).mockResolvedValue({
+      main_branch: 'main',
+      lines_added: 3,
+      lines_removed: 1,
+    });
+    const { deleteTask: mockDeleteTask } = await import('../ipc/tasks.js');
+    vi.mocked(mockDeleteTask).mockResolvedValue(undefined);
+    mockGit();
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1', { worktreePath: '/tmp/project' });
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    mockNotifyRenderer.mockClear();
+  });
+
+  it('lands, cleans up resources, and closes the task record', async () => {
+    const { deleteTask: mockDeleteTask } = await import('../ipc/tasks.js');
+
+    const result = await coordinator.landSelf('task-1', { verification, summary: 'done' });
+
+    expect(result).toMatchObject({
+      mainBranch: 'main',
+      linesAdded: 3,
+      linesRemoved: 1,
+      landingState: 'reviewed',
+    });
+    expect(vi.mocked(mergeTask)).toHaveBeenCalled();
+    expect(vi.mocked(mockDeleteTask)).toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')).toBeUndefined();
+    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+      'mcp_task_closed',
+      expect.objectContaining({ taskId: 'task-1' }),
+    );
+  });
+
+  it('rejects missing verification before merging', async () => {
+    await expect(coordinator.landSelf('task-1', { verification: { checks: [] } })).rejects.toThrow(
+      'verification',
+    );
+
+    expect(vi.mocked(mergeTask)).not.toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')?.landingState).toBe('landing_escalated');
+  });
+
+  it('rejects dirty non-preamble worktrees before merging', async () => {
+    mockGit(' M src/file.ts\n');
+
+    await expect(coordinator.landSelf('task-1', { verification })).rejects.toThrow(
+      'uncommitted changes',
+    );
+
+    expect(vi.mocked(mergeTask)).not.toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')?.landingState).toBe('landing_escalated');
+  });
+
+  it('rejects dirty preamble files that contain user-authored changes', async () => {
+    const preambleWithUserChange =
+      '<sub-task-mode>\nrules\n</sub-task-mode>\n\n# User-authored change\n';
+    const fakeDiff =
+      'diff --git a/AGENTS.md b/AGENTS.md\n--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -0,0 +1 @@\n+# User-authored change\n';
+    mockFsReadFile.mockImplementation(async (p: unknown) => {
+      if (String(p).includes('AGENTS.md')) return preambleWithUserChange;
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('AGENTS.md'));
+    mockReadFileSync.mockReturnValue(preambleWithUserChange);
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        optsOrCb: unknown,
+        cbMaybe?: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        const cb = (typeof optsOrCb === 'function' ? optsOrCb : cbMaybe) as (
+          err: Error | null,
+          stdout: string,
+          stderr: string,
+        ) => void;
+        if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') {
+          cb(null, 'task/test\n', '');
+          return;
+        }
+        if (args[0] === 'status') {
+          cb(null, ' M AGENTS.md\n', '');
+          return;
+        }
+        if (args[0] === 'show') {
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'diff') {
+          cb(Object.assign(new Error('diff'), { code: 1, stdout: fakeDiff }), fakeDiff, '');
+          return;
+        }
+        cb(null, '', '');
+      },
+    );
+
+    await expect(coordinator.landSelf('task-1', { verification })).rejects.toThrow(
+      'uncommitted changes in preamble files',
+    );
+
+    expect(vi.mocked(mergeTask)).not.toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')?.landingState).toBe('landing_escalated');
+  });
+
+  it('allows dirty settings.local.json when only injected systemPrompt is stripped', async () => {
+    const settingsContent = JSON.stringify({
+      systemPrompt: '<sub-task-mode>\nrules\n</sub-task-mode>',
+    });
+    mockFsReadFile.mockImplementation(async (p: unknown) => {
+      if (String(p).includes('settings.local.json')) return settingsContent;
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockExistsSync.mockImplementation((p?: unknown) => String(p).includes('settings.local.json'));
+    mockReadFileSync.mockReturnValue(settingsContent);
+    let statusCalls = 0;
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        optsOrCb: unknown,
+        cbMaybe?: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        const cb = (typeof optsOrCb === 'function' ? optsOrCb : cbMaybe) as (
+          err: Error | null,
+          stdout: string,
+          stderr: string,
+        ) => void;
+        if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') {
+          cb(null, 'task/test\n', '');
+          return;
+        }
+        if (args[0] === 'status') {
+          statusCalls += 1;
+          cb(null, statusCalls <= 2 ? ' M .claude/settings.local.json\n' : '', '');
+          return;
+        }
+        if (args[0] === 'show') {
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'diff') {
+          cb(null, '', '');
+          return;
+        }
+        if (args.join(' ') === 'rev-parse HEAD') {
+          cb(null, 'landed-sha\n', '');
+          return;
+        }
+        cb(null, '', '');
+      },
+    );
+
+    const result = await coordinator.landSelf('task-1', { verification });
+
+    expect(result.landingState).toBe('reviewed');
+    expect(vi.mocked(mergeTask)).toHaveBeenCalled();
+  });
+
+  it('rejects orphaned tasks before merging', async () => {
+    coordinator.deregisterCoordinator('coord-1');
+
+    await expect(coordinator.landSelf('task-1', { verification })).rejects.toThrow('orphaned task');
+
+    expect(vi.mocked(mergeTask)).not.toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')?.landingState).toBe('landing_escalated');
+  });
+
+  it('rejects branch mismatch before merging', async () => {
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') {
+          cb(null, 'other-branch\n', '');
+          return;
+        }
+        cb(null, '', '');
+      },
+    );
+
+    await expect(coordinator.landSelf('task-1', { verification })).rejects.toThrow(
+      'Branch mismatch',
+    );
+
+    expect(vi.mocked(mergeTask)).not.toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')?.landingState).toBe('landing_escalated');
+  });
+
+  it('records merge conflict as landing_escalated without cleanup', async () => {
+    const { deleteTask: mockDeleteTask } = await import('../ipc/tasks.js');
+    vi.mocked(mergeTask).mockRejectedValueOnce(new Error('Merge failed: conflict'));
+
+    await expect(coordinator.landSelf('task-1', { verification })).rejects.toThrow('conflict');
+
+    expect(vi.mocked(mockDeleteTask)).not.toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')?.landingState).toBe('landing_escalated');
+  });
+
+  it('keeps landed state visible if landed commit resolution fails after merge', async () => {
+    const { deleteTask: mockDeleteTask } = await import('../ipc/tasks.js');
+    mockExecFile.mockImplementation(
+      (
+        _cmd: string,
+        args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') {
+          cb(null, 'task/test\n', '');
+          return;
+        }
+        if (args[0] === 'status') {
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'rev-parse') {
+          cb(new Error('rev-parse failed'), '', 'fatal');
+          return;
+        }
+        cb(null, '', '');
+      },
+    );
+
+    await expect(coordinator.landSelf('task-1', { verification })).rejects.toThrow(
+      'landed commit could not be resolved',
+    );
+
+    expect(vi.mocked(mergeTask)).toHaveBeenCalled();
+    expect(vi.mocked(mockDeleteTask)).not.toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')?.landingState).toBe('landed_cleanup_failed');
+    expect(coordinator.getTask('task-1')?.landedMetadata?.landedCommit).toBe('unresolved');
+  });
+
+  it('records cleanup failure without hiding the landed merge', async () => {
+    const { deleteTask: mockDeleteTask } = await import('../ipc/tasks.js');
+    vi.mocked(mockDeleteTask).mockRejectedValueOnce(new Error('delete failed'));
+
+    await expect(coordinator.landSelf('task-1', { verification })).rejects.toThrow(
+      'cleanup failed',
+    );
+
+    expect(vi.mocked(mergeTask)).toHaveBeenCalled();
+    expect(coordinator.getTask('task-1')?.landingState).toBe('landed_cleanup_failed');
+    expect(coordinator.getTask('task-1')?.landedMetadata?.landedCommit).toBe('landed-sha');
+  });
+
+  it('marks legacy landed pending-review task summaries as reviewed', () => {
+    const task = coordinator.getTask('task-1');
+    if (!task) throw new Error('test task missing');
+    task.landingState = 'landed_pending_review';
+
+    coordinator.markTaskReviewed('task-1');
+
+    expect(coordinator.getTask('task-1')?.landingState).toBe('reviewed');
+    expect(coordinator.listTasks()[0]?.landingState).toBe('reviewed');
+    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+      'mcp_task_state_sync',
+      expect.objectContaining({
+        taskId: 'task-1',
+        landingState: 'reviewed',
+        needsReview: false,
+      }),
     );
   });
 });
@@ -873,7 +1219,7 @@ describe('Coordinator waitForSignalDone', () => {
 
     const waitPromise = coordinator.waitForSignalDone('coord-1');
     const task2OutputCb = mockSubscribeToAgent.mock.calls[1][1] as (encoded: string) => void;
-    task2OutputCb(encode('Done ❯ '));
+    emitWorkThenIdle(task2OutputCb);
 
     expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
       'mcp_coordinator_notification_staged',
@@ -895,7 +1241,7 @@ describe('Coordinator waitForSignalDone', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.markPromptDelivered('task-1');
     const outputCb = getOutputCb();
-    outputCb(encode('Done ❯ '));
+    emitWorkThenIdle(outputCb);
 
     expect(mockNotifyRenderer).toHaveBeenCalledWith(
       'mcp_coordinator_notification_staged',
@@ -993,6 +1339,52 @@ describe('Coordinator sendPrompt', () => {
   });
 });
 
+// ─── mergeTask active ownership guard ─────────────────────────────────────────
+
+describe('Coordinator mergeTask active ownership guard', () => {
+  let coordinator: InstanceType<typeof Coordinator>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockCreateBackendTask.mockResolvedValue({
+      id: 'task-1',
+      branch_name: 'task/test',
+      worktree_path: '/tmp/test',
+    });
+    vi.mocked(mergeTask).mockResolvedValue({
+      main_branch: 'main',
+      lines_added: 1,
+      lines_removed: 0,
+    });
+    coordinator = new Coordinator();
+    coordinator.setWindow(mockWin);
+    coordinator.setDefaultProject('proj-1', '/tmp/project');
+    coordinator.registerCoordinator('coord-1', 'proj-1');
+  });
+
+  it('rejects merge_task for a running task that has not signaled manual review', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    await expect(coordinator.mergeTask('task-1')).rejects.toThrow('still running');
+
+    expect(vi.mocked(mergeTask)).not.toHaveBeenCalled();
+  });
+
+  it('allows legacy signal_done manual-review tasks even if the agent process is still running', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.signalDone('task-1');
+
+    await expect(coordinator.mergeTask('task-1')).resolves.toEqual({
+      mainBranch: 'main',
+      linesAdded: 1,
+      linesRemoved: 0,
+    });
+
+    expect(vi.mocked(mergeTask)).toHaveBeenCalled();
+  });
+});
+
 // ─── deregisterCoordinator tests ──────────────────────────────────────────────
 
 describe('Coordinator deregisterCoordinator', () => {
@@ -1036,7 +1428,7 @@ describe('Coordinator deregisterCoordinator', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.markPromptDelivered('task-1');
     const outputCb = getOutputCb();
-    outputCb(encode('Done ❯ '));
+    emitWorkThenIdle(outputCb);
 
     expect(mockNotifyRenderer).toHaveBeenCalledWith(
       'mcp_coordinator_notification_staged',
@@ -1223,6 +1615,27 @@ describe('Coordinator MCP_TaskCreated spawn settings', () => {
     expect(payload.agentArgs).toContain('--model');
     expect(payload.agentArgs).toContain('claude-opus-4-7');
     expect(payload.agentArgs).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('includes subtask MCP launch args in MCP_TaskCreated payload', async () => {
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3001',
+      'coordinator-token',
+      'subtask-token',
+      '/tmp/mcp-server.cjs',
+    );
+    coordinator.setCoordinatorSpawnDefaults('coord-1', 'codex', []);
+
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const payload = mockNotifyRenderer.mock.calls.find((c) => c[0] === 'mcp_task_created')?.[1] as {
+      mcpLaunchArgs: string[];
+    };
+    expect(payload.mcpLaunchArgs).toEqual([
+      '--config',
+      expect.stringContaining('mcp_servers.parallel-code'),
+    ]);
   });
 
   it('includes skipPermissions true in MCP_TaskCreated payload when coordinator has propagateSkipPermissions', async () => {
@@ -1761,7 +2174,7 @@ describe('Coordinator waitForSignalDone — notification lifecycle', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     coordinator.markPromptDelivered('task-1');
     const outputCb = getOutputCb();
-    outputCb(encode('Done ❯ '));
+    emitWorkThenIdle(outputCb);
 
     // Confirm a notification was staged
     expect(mockNotifyRenderer).toHaveBeenCalledWith(
@@ -1812,7 +2225,7 @@ describe('Coordinator waitForSignalDone — notification lifecycle', () => {
 
     // Trigger an idle so a notification is queued
     const outputCb = getOutputCb();
-    outputCb(encode('Done ❯ '));
+    emitWorkThenIdle(outputCb);
 
     // Start wait — this clears staged notifications
     const waitPromise = coordinator.waitForSignalDone('coord-1', 100);
@@ -2654,6 +3067,101 @@ describe('Coordinator restart round-trip integration', () => {
     const writtenToken = config.mcpServers['parallel-code'].env['PARALLEL_CODE_MCP_TOKEN'];
     expect(writtenToken).toBe('new-subtask-secret');
     expect(writtenToken).not.toBe('new-coordinator-secret');
+  });
+
+  it('hydrateTask returns fresh Codex MCP launch args after rewriting config', () => {
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3002',
+      'new-coordinator-secret',
+      'new-subtask-secret',
+      '/path/server.js',
+    );
+
+    const taskId = 'hydrated-restart-codex';
+    const configPath = join(os.tmpdir(), `parallel-code-subtask-${taskId}.json`);
+
+    const result = coordinator.hydrateTask({
+      id: taskId,
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId: 'agent-restart-codex',
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: configPath,
+      agentCommand: 'codex',
+    });
+
+    expect(result.mcpLaunchArgs).toEqual([
+      '--config',
+      expect.stringContaining('new-subtask-secret'),
+    ]);
+  });
+
+  it('hydrateTask returns Codex MCP launch args even without a persisted config path', () => {
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3002',
+      'new-coordinator-secret',
+      'new-subtask-secret',
+      '/path/server.js',
+    );
+
+    mockAtomicWriteFileSync.mockClear();
+    const result = coordinator.hydrateTask({
+      id: 'hydrated-restart-codex-inline',
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId: 'agent-restart-codex-inline',
+      coordinatorTaskId: 'coord-1',
+      agentCommand: 'codex',
+    });
+
+    expect(mockAtomicWriteFileSync).not.toHaveBeenCalled();
+    expect(result.mcpLaunchArgs).toEqual([
+      '--config',
+      expect.stringContaining('new-subtask-secret'),
+    ]);
+    expect(result.mcpLaunchArgs?.[1]).toContain('--task-id');
+    expect(result.mcpLaunchArgs?.[1]).toContain('hydrated-restart-codex-inline');
+  });
+
+  it('hydrateTask returns launch args when the task is already hydrated', () => {
+    coordinator.setMCPServerInfo(
+      'coord-1',
+      'http://localhost:3002',
+      'new-coordinator-secret',
+      'new-subtask-secret',
+      '/path/server.js',
+    );
+
+    const taskId = 'hydrated-restart-existing';
+    const configPath = join(os.tmpdir(), `parallel-code-subtask-${taskId}.json`);
+    const args = {
+      id: taskId,
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId: 'agent-restart-existing',
+      coordinatorTaskId: 'coord-1',
+      mcpConfigPath: configPath,
+      agentCommand: 'codex',
+    };
+
+    coordinator.hydrateTask(args);
+    const result = coordinator.hydrateTask(args);
+
+    expect(result.mcpLaunchArgs).toEqual([
+      '--config',
+      expect.stringContaining('new-subtask-secret'),
+    ]);
   });
 
   it('waitForIdle resolves after agent output fires post-hydration', async () => {

@@ -8,6 +8,7 @@ import {
   getTaskDotStatus,
   getTaskAttentionState,
   toggleTaskFocusMode,
+  clearTaskLandingReview,
 } from '../store/store';
 import { EditableText, type EditableTextHandle } from './EditableText';
 import { IconButton } from './IconButton';
@@ -32,6 +33,57 @@ interface TaskTitleBarProps {
 
 export function TaskTitleBar(props: TaskTitleBarProps) {
   const dockerBadgeLabel = () => getTaskDockerBadgeLabel(props.task.dockerSource);
+  const isLandedTask = () =>
+    props.task.landingState === 'landed_pending_review' ||
+    props.task.landingState === 'landed_cleanup_failed' ||
+    props.task.landingState === 'reviewed';
+  const landingBadge = () => {
+    switch (props.task.landingState) {
+      case 'landed_pending_review':
+        return { label: 'Landed', color: theme.success, title: 'Landed — pending review' };
+      case 'landed_cleanup_failed':
+        return {
+          label: 'Cleanup failed',
+          color: theme.warning,
+          title: props.task.landingReason ?? 'Landed, but cleanup failed',
+        };
+      case 'landing_escalated':
+        return {
+          label: 'Landing blocked',
+          color: theme.warning,
+          title: props.task.landingReason ?? 'Landing needs attention',
+        };
+      case 'landing_failed':
+        return {
+          label: 'Landing failed',
+          color: theme.error,
+          title: props.task.landingReason ?? 'Landing failed',
+        };
+      case 'reviewed':
+        return { label: 'Reviewed', color: theme.fgMuted, title: 'Landing reviewed' };
+      default:
+        return null;
+    }
+  };
+  const verificationBadge = () => {
+    const checks = props.task.verification?.checks;
+    if (!checks?.length) return null;
+    if (checks.every((check) => check.result === 'passed')) {
+      return {
+        label: `Verified ${checks.length}`,
+        color: theme.success,
+        title: checks.map((check) => `${check.name}: ${check.command}`).join('\n'),
+      };
+    }
+    const failed = checks.find((check) => check.result !== 'passed');
+    return {
+      label: failed?.result === 'blocked' ? 'Verification blocked' : 'Verification failed',
+      color: theme.warning,
+      title: failed
+        ? `${failed.name}: ${failed.command}${failed.reason ? `\n${failed.reason}` : ''}`
+        : 'Verification did not pass',
+    };
+  };
   const titleLabel = () => {
     const initialPrompt = props.task.savedInitialPrompt?.trim();
     if (
@@ -104,10 +156,40 @@ export function TaskTitleBar(props: TaskTitleBarProps) {
         <Show when={props.task.needsReview}>
           <span
             style={badgeStyle(theme.warning)}
-            title="Coordinator closed — review this branch manually"
+            title={props.task.landingReason ?? 'Review this task'}
           >
             Review
           </span>
+        </Show>
+        <Show when={landingBadge()}>
+          {(badge) => (
+            <button
+              style={{
+                ...badgeStyle(badge().color),
+                cursor: props.task.landingState === 'landed_pending_review' ? 'pointer' : 'default',
+              }}
+              title={
+                props.task.landingState === 'landed_pending_review'
+                  ? `${badge().title}. Click to mark reviewed.`
+                  : badge().title
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                if (props.task.landingState === 'landed_pending_review') {
+                  clearTaskLandingReview(props.task.id);
+                }
+              }}
+            >
+              {badge().label}
+            </button>
+          )}
+        </Show>
+        <Show when={verificationBadge()}>
+          {(badge) => (
+            <span style={badgeStyle(badge().color)} title={badge().title}>
+              {badge().label}
+            </span>
+          )}
         </Show>
         <EditableText
           value={titleLabel()}
@@ -118,7 +200,7 @@ export function TaskTitleBar(props: TaskTitleBarProps) {
         />
       </div>
       <div style={{ display: 'flex', gap: '4px', 'margin-left': '8px', 'flex-shrink': '0' }}>
-        <Show when={props.task.gitIsolation === 'worktree'}>
+        <Show when={props.task.gitIsolation === 'worktree' && !isLandedTask()}>
           <IconButton
             icon={
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">

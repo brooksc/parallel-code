@@ -152,6 +152,23 @@ export function SubTaskStrip(props: SubTaskStripProps) {
     return [...active, ...collapsed].map((id) => store.tasks[id]).filter(Boolean);
   });
 
+  const taskTone = (task: (typeof store.tasks)[string]) => {
+    if (task.landingState === 'landed_pending_review' || task.landingState === 'reviewed') {
+      return { color: '#22c55e', label: 'landed' };
+    }
+    if (
+      task.landingState === 'landed_cleanup_failed' ||
+      task.landingState === 'landing_escalated'
+    ) {
+      return { color: theme.warning, label: task.landingState };
+    }
+    if (task.landingState === 'landing_failed') {
+      return { color: theme.error, label: 'landing failed' };
+    }
+    if (task.signalDoneReceived) return { color: '#22c55e', label: 'signalled done' };
+    return null;
+  };
+
   return (
     <>
       <Show when={showLogs()}>
@@ -190,17 +207,17 @@ export function SubTaskStrip(props: SubTaskStripProps) {
                   }
                   setActiveTask(task.id);
                 }}
-                title={task.signalDoneReceived ? `${task.name} — signalled done` : task.name}
+                title={taskTone(task) ? `${task.name} — ${taskTone(task)?.label}` : task.name}
                 style={{
                   display: 'inline-flex',
                   'align-items': 'center',
                   gap: '4px',
                   padding: '2px 8px',
                   'border-radius': '10px',
-                  background: task.signalDoneReceived
-                    ? `color-mix(in srgb, #22c55e 12%, transparent)`
+                  background: taskTone(task)
+                    ? `color-mix(in srgb, ${taskTone(task)?.color} 12%, transparent)`
                     : `color-mix(in srgb, ${theme.fgSubtle} 8%, transparent)`,
-                  border: `1px solid ${task.signalDoneReceived ? '#22c55e44' : theme.border}`,
+                  border: `1px solid ${taskTone(task) ? `${taskTone(task)?.color}44` : theme.border}`,
                   color: theme.fgMuted,
                   'font-size': sf(11),
                   'font-family': "'JetBrains Mono', monospace",
@@ -213,10 +230,10 @@ export function SubTaskStrip(props: SubTaskStripProps) {
                 }}
               >
                 <Show
-                  when={task.signalDoneReceived}
+                  when={taskTone(task)}
                   fallback={<StatusDot status={getTaskDotStatus(task.id)} size="sm" />}
                 >
-                  <span style={{ color: '#22c55e', 'font-size': sf(10) }}>✓</span>
+                  {(tone) => <span style={{ color: tone().color, 'font-size': sf(10) }}>✓</span>}
                 </Show>
                 <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>{task.name}</span>
               </button>

@@ -40,6 +40,7 @@ export {
   setLastPrompt,
   clearInitialPrompt,
   clearPrefillPrompt,
+  clearTaskLandingReview,
   setPrefillPrompt,
   reorderTask,
   reorderTaskVisually,
@@ -62,6 +63,7 @@ export {
   markTaskMcpPending,
   markTaskMcpReady,
   setTaskMcpLaunchArgs,
+  applyTaskMcpLaunchResult,
   markTaskMcpError,
   retryTaskMcpStartup,
 } from './tasks';
@@ -159,6 +161,7 @@ export {
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
   isAgentAskingQuestion,
+  isAgentIdle,
   refreshTaskStatus,
   startTaskStatusPolling,
   stopTaskStatusPolling,

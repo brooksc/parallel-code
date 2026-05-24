@@ -21,6 +21,7 @@ import {
 import { parseClientMessage, type ServerMessage, type RemoteAgent } from './protocol.js';
 import type { Coordinator } from '../mcp/coordinator.js';
 import { validateBranchName } from '../mcp/validation.js';
+import type { LandSelfInput, SubtaskVerification } from '../mcp/types.js';
 
 // --- MCP log ring buffer ---
 export interface MCPLogEntry {
@@ -42,6 +43,48 @@ function mcpLog(level: 'info' | 'error', msg: string): void {
 
 export function getMCPLogs(): MCPLogEntry[] {
   return mcpLogs.slice();
+}
+
+function parseLandSelfInput(body: Record<string, unknown>): LandSelfInput | string {
+  const summary = body.summary;
+  if (summary !== undefined && typeof summary !== 'string') return 'summary must be a string';
+  if (summary !== undefined && summary.length > 20_000)
+    return 'summary must be 20000 characters or fewer';
+
+  const verification = body.verification as { checks?: unknown } | undefined;
+  if (!verification || typeof verification !== 'object') {
+    return 'verification must be an object';
+  }
+  if (!Array.isArray(verification.checks) || verification.checks.length === 0) {
+    return 'verification.checks must be a non-empty array';
+  }
+  if (verification.checks.length > 50) return 'verification.checks must contain 50 checks or fewer';
+
+  const checks: SubtaskVerification['checks'] = [];
+  for (const rawCheck of verification.checks) {
+    if (!rawCheck || typeof rawCheck !== 'object') return 'verification checks must be objects';
+    const check = rawCheck as Record<string, unknown>;
+    if (typeof check.name !== 'string' || !check.name.trim()) {
+      return 'verification check name must be a non-empty string';
+    }
+    if (typeof check.command !== 'string' || !check.command.trim()) {
+      return 'verification check command must be a non-empty string';
+    }
+    if (check.result !== 'passed' && check.result !== 'blocked' && check.result !== 'failed') {
+      return 'verification check result must be passed, blocked, or failed';
+    }
+    if (check.reason !== undefined && typeof check.reason !== 'string') {
+      return 'verification check reason must be a string';
+    }
+    checks.push({
+      name: check.name,
+      command: check.command,
+      result: check.result,
+      reason: check.reason,
+    });
+  }
+
+  return { verification: { checks }, summary };
 }
 
 /** Strip the token query param before logging or displaying a server URL. */
@@ -195,7 +238,8 @@ export function startRemoteServer(opts: {
         return;
       }
       if (tokenClass === 'subtask') {
-        const allowed = req.method === 'POST' && /^\/api\/tasks\/[^/]+\/done$/.test(url.pathname);
+        const allowed =
+          req.method === 'POST' && /^\/api\/tasks\/[^/]+\/(?:done|land)$/.test(url.pathname);
         if (!allowed) {
           res.writeHead(403, { ...SECURITY_HEADERS, 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'forbidden' }));
@@ -307,6 +351,17 @@ export function startRemoteServer(opts: {
 
         const ownedByCallerOrUnscoped = (taskCoordinatorId: string): boolean =>
           !callerCoordinatorId || taskCoordinatorId === callerCoordinatorId;
+
+        const hasMatchingDoneToken = (taskId: string): boolean => {
+          const expected = orch.getTaskDoneToken(taskId);
+          const incoming = req.headers['x-done-token'];
+          return Boolean(
+            expected &&
+            typeof incoming === 'string' &&
+            incoming.length === expected.length &&
+            timingSafeEqual(Buffer.from(incoming), Buffer.from(expected)),
+          );
+        };
 
         const taskIdMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(.+))?$/);
 
@@ -565,20 +620,37 @@ export function startRemoteServer(opts: {
           // intended authority model. The done-token is a sub-task ownership proof, not
           // a coordinator authority proof.
           if (tokenClass === 'subtask') {
-            const expected = orch.getTaskDoneToken(taskId);
-            const incoming = req.headers['x-done-token'];
-            if (
-              !expected ||
-              typeof incoming !== 'string' ||
-              incoming.length !== expected.length ||
-              !timingSafeEqual(Buffer.from(incoming), Buffer.from(expected))
-            ) {
+            if (!hasMatchingDoneToken(taskId)) {
               return jsonReply(403, { error: 'forbidden' });
             }
           }
           mcpLog('info', `signal_done id=${taskId}`);
           orch.signalDone(taskId);
           jsonReply(200, { ok: true });
+          return;
+        }
+
+        if (taskIdMatch && taskIdMatch[2] === 'land' && req.method === 'POST') {
+          readBody()
+            .then(async (body) => {
+              const taskId = decodeURIComponent(taskIdMatch[1]);
+              const landDetail = orch.getTaskStatus(taskId);
+              if (!landDetail) return jsonReply(404, { error: 'task not found' });
+              if (tokenClass !== 'subtask') return jsonReply(403, { error: 'forbidden' });
+              if (!hasMatchingDoneToken(taskId)) return jsonReply(403, { error: 'forbidden' });
+
+              const parsed = parseLandSelfInput(body);
+              if (typeof parsed === 'string') return jsonReply(400, { error: parsed });
+
+              mcpLog('info', `land_self id=${taskId}`);
+              const result = await orch.landSelf(taskId, parsed);
+              mcpLog('info', `land_self OK id=${taskId}`);
+              jsonReply(200, result);
+            })
+            .catch((err) => {
+              mcpLog('error', `land_self FAIL: ${String(err)}`);
+              jsonReply(500, { error: String(err) });
+            });
           return;
         }
 

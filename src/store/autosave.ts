@@ -68,6 +68,11 @@ function persistedSnapshot(): string {
               signalDoneAt: t.signalDoneAt,
               signalDoneConsumed: t.signalDoneConsumed,
               needsReview: t.needsReview,
+              verification: t.verification,
+              landingState: t.landingState,
+              landingReason: t.landingReason,
+              landingSummary: t.landingSummary,
+              landedMetadata: t.landedMetadata,
               controlledBy: t.controlledBy,
             },
           ];

@@ -13,11 +13,12 @@ import { isMac } from '../lib/platform';
 import { resolvedBindings } from '../store/keybindings';
 import { matchesKeyEvent } from '../lib/keybindings';
 import { store, setTaskLastInputAt, retryTaskMcpStartup } from '../store/store';
+import { isLandedTaskState } from '../store/landing';
 import { warn as logWarn } from '../lib/log';
 import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
 import { dataTransferToShellArgs, escapePath } from '../lib/terminalDrop';
 import { cleanCopiedTerminalText } from '../lib/copy-text';
-import { computeDisableStdin } from '../lib/terminalDisableStdin';
+import { computeDisableStdin, shouldForwardTerminalInput } from '../lib/terminalDisableStdin';
 import type { PtyOutput } from '../ipc/types';
 
 let windowUnloading = false;
@@ -129,6 +130,15 @@ export function TerminalView(props: TerminalViewProps) {
     const initialFontSize = props.fontSize ?? 13;
     const attachExisting = props.attachExisting ?? true;
     const preserveSessionOnCleanup = props.preserveSessionOnCleanup === true;
+    let ptyDetachedByLanding = false;
+
+    function taskPtyDetached(): boolean {
+      return ptyDetachedByLanding || isLandedTaskState(store.tasks[taskId]?.landingState);
+    }
+
+    function canForwardInput(): boolean {
+      return shouldForwardTerminalInput(store.tasks[taskId]?.controlledBy, taskPtyDetached());
+    }
 
     term = new Terminal({
       cursorBlink: true,
@@ -137,6 +147,7 @@ export function TerminalView(props: TerminalViewProps) {
       theme: activeTerminalTheme(),
       allowProposedApi: true,
       scrollback: TERMINAL_SCROLLBACK_LINES,
+      disableStdin: computeDisableStdin(store.tasks[taskId]?.controlledBy) || taskPtyDetached(),
     });
 
     fitAddon = new FitAddon();
@@ -158,13 +169,16 @@ export function TerminalView(props: TerminalViewProps) {
 
     term.open(containerRef);
 
-    // Block direct PTY keyboard input when the task is coordinator-controlled.
+    // Block direct PTY keyboard input when the task is coordinator-controlled or
+    // after self-landing has removed the backend PTY.
     // disableStdin prevents xterm from forwarding keystrokes to the process;
-    // copy/paste/scrollback still work. The effect re-runs when controlledBy
-    // changes so Take Control / Release Control works without a remount.
+    // copy/paste/scrollback still work. The effect re-runs when control or
+    // landing state changes, without remounting the terminal.
     createEffect(() => {
-      const controlledBy = store.tasks[props.taskId]?.controlledBy;
-      if (term) term.options.disableStdin = computeDisableStdin(controlledBy);
+      const task = store.tasks[taskId];
+      if (isLandedTaskState(task?.landingState)) ptyDetachedByLanding = true;
+      if (term)
+        term.options.disableStdin = computeDisableStdin(task?.controlledBy) || taskPtyDetached();
     });
 
     // File path link provider — makes file paths clickable in terminal output
@@ -463,6 +477,7 @@ export function TerminalView(props: TerminalViewProps) {
         // Resume PTY reader when xterm.js has caught up
         if (watermark < FLOW_LOW && ptyPaused) {
           ptyPaused = false;
+          if (taskPtyDetached()) return;
           invoke(IPC.ResumeAgent, { agentId }).catch((err: unknown) => {
             logWarn('terminal.flow', 'ResumeAgent failed', { err });
             ptyPaused = false;
@@ -496,7 +511,7 @@ export function TerminalView(props: TerminalViewProps) {
       watermark += chunk.length;
 
       // Pause PTY reader when xterm.js falls behind
-      if (watermark > FLOW_HIGH && !ptyPaused) {
+      if (watermark > FLOW_HIGH && !ptyPaused && !taskPtyDetached()) {
         ptyPaused = true;
         invoke(IPC.PauseAgent, { agentId }).catch((err: unknown) => {
           logWarn('terminal.flow', 'PauseAgent failed', { err });
@@ -545,6 +560,7 @@ export function TerminalView(props: TerminalViewProps) {
         clearTimeout(inputFlushTimer);
         inputFlushTimer = undefined;
       }
+      if (!canForwardInput()) return;
       fireAndForget(IPC.WriteToAgent, { agentId, data });
       if (!props.isShell && (data.includes('\r') || data.includes('\n'))) {
         setTaskLastInputAt(props.taskId);
@@ -552,6 +568,7 @@ export function TerminalView(props: TerminalViewProps) {
     }
 
     function enqueueInput(data: string) {
+      if (!canForwardInput()) return;
       pendingInput += data;
       if (pendingInput.length >= 2048) {
         flushPendingInput();
@@ -567,6 +584,7 @@ export function TerminalView(props: TerminalViewProps) {
 
     // eslint-disable-next-line solid/reactivity -- event handler reads current prop values intentionally
     term.onData((data) => {
+      if (!canForwardInput()) return;
       if (props.onPromptDetected) {
         for (const ch of data) {
           if (ch === '\r') {
@@ -597,6 +615,7 @@ export function TerminalView(props: TerminalViewProps) {
       if (!pendingResize) return;
       const { cols, rows } = pendingResize;
       pendingResize = null;
+      if (taskPtyDetached()) return;
       if (cols === lastSentCols && rows === lastSentRows) return;
       lastSentCols = cols;
       lastSentRows = rows;
@@ -637,6 +656,13 @@ export function TerminalView(props: TerminalViewProps) {
 
     function startSpawn() {
       if (!term || spawnStarted) return;
+      const landingState = store.tasks[taskId]?.landingState;
+      if (
+        landingState === 'landed_pending_review' ||
+        landingState === 'landed_cleanup_failed' ||
+        landingState === 'reviewed'
+      )
+        return;
       spawnStarted = true;
       invoke(IPC.SpawnAgent, {
         taskId,
@@ -715,11 +741,11 @@ export function TerminalView(props: TerminalViewProps) {
       webglAddon?.dispose();
       webglAddon = undefined;
       unregisterTerminal(agentId);
-      if (ptyPaused) {
+      if (ptyPaused && !taskPtyDetached()) {
         fireAndForget(IPC.ResumeAgent, { agentId });
         ptyPaused = false;
       }
-      if (!preserveSession && spawnStarted) {
+      if (!preserveSession && spawnStarted && !taskPtyDetached()) {
         fireAndForget(IPC.KillAgent, { agentId });
       }
       term?.dispose();

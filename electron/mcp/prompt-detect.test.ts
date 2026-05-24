@@ -57,6 +57,12 @@ describe('PROMPT_PATTERNS — last-line detection', () => {
     expect(matchesAny('❯ ')).toBe(true);
   });
 
+  it('matches Codex CLI prompt ›', () => {
+    expect(matchesAny('›')).toBe(true);
+    expect(matchesAny('  ›  ')).toBe(true);
+    expect(matchesAny('› ')).toBe(true);
+  });
+
   it('matches bash $ prompt', () => {
     expect(matchesAny('user@host:~ $ ')).toBe(true);
   });
@@ -90,21 +96,15 @@ describe('chunkContainsAgentPrompt', () => {
     expect(chunkContainsAgentPrompt('❯')).toBe(true);
   });
 
-  it('returns true for ❯ in the last 50 chars', () => {
+  it('returns true for ❯ in the last 300 chars', () => {
     const prefix = 'A'.repeat(200);
     expect(chunkContainsAgentPrompt(`${prefix}❯`)).toBe(true);
   });
 
   it('returns false when ❯ appears only in the body (TUI selection menu), not the tail', () => {
     // Claude Code TUI selection: ❯ next to an option, then more text follows
-    const chunk = '❯ Option A\n  Option B\n  Option C\n  Option D\n\nChoose with arrow keys: ';
-    // The tail (last 50 chars) must NOT contain ❯ for this to return false
-    const tail = chunk.slice(-50);
-    // Sanity-check our test data: ❯ must be absent from the tail
-    if (tail.includes('❯')) {
-      // If ❯ leaked into the tail, the test premise is wrong — skip assertion
-      return;
-    }
+    const chunk = `❯ Option A\n${'more menu text '.repeat(30)}`;
+    expect(chunk.slice(-300).includes('❯')).toBe(false);
     expect(chunkContainsAgentPrompt(chunk)).toBe(false);
   });
 
@@ -114,6 +114,28 @@ describe('chunkContainsAgentPrompt', () => {
 
   it('returns true for Codex CLI › prompt', () => {
     expect(chunkContainsAgentPrompt('› ')).toBe(true);
+  });
+
+  it('returns true for Codex CLI › prompt above footer/status text', () => {
+    const footer = '\n\ngpt-5.5 default · ~/repo/worktree';
+    expect(chunkContainsAgentPrompt(`›${footer}`)).toBe(true);
+  });
+
+  it('does not treat Codex startup screens as ready', () => {
+    expect(
+      chunkContainsAgentPrompt('Starting MCP servers (0/2): codex_apps, parallel-code\n›'),
+    ).toBe(false);
+    expect(chunkContainsAgentPrompt('model: loading   /model to change\n›')).toBe(false);
+  });
+
+  it('does not treat Codex trust dialogs as ready', () => {
+    const dialog = [
+      'Do you trust the contents of this directory?',
+      '› 1. Yes, continue',
+      '2. No, quit',
+      'Press enter to continue',
+    ].join('\n');
+    expect(chunkContainsAgentPrompt(dialog)).toBe(false);
   });
 
   it('handles ANSI-stripped Claude Code prompt (❯ after stripping)', () => {

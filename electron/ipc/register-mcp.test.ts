@@ -310,6 +310,7 @@ const VALID_ARGS = {
   coordinatorTaskId: TEST_COORDINATOR_ID,
   projectId: 'proj-1',
   projectRoot: '/absolute/project',
+  coordinatorBranch: 'task/coordinator-work',
   worktreePath: '/absolute/worktree',
   agentArgs: ['--flag', 'value'],
   dockerContainerName: 'my-container',
@@ -351,6 +352,18 @@ describe('Layer 4 — StartMCPServer input validation', () => {
     expect(() =>
       validateStartMCPServerArgs({ ...VALID_ARGS, worktreePath: 'relative/worktree' }),
     ).toThrow('worktreePath must be absolute');
+
+    expect(writeFileSpy).not.toHaveBeenCalled();
+    expect(copyFileSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid coordinatorBranch', () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    const copyFileSpy = vi.spyOn(fs, 'copyFileSync');
+
+    expect(() =>
+      validateStartMCPServerArgs({ ...VALID_ARGS, coordinatorBranch: 'bad branch' }),
+    ).toThrow('coordinatorBranch');
 
     expect(writeFileSpy).not.toHaveBeenCalled();
     expect(copyFileSpy).not.toHaveBeenCalled();

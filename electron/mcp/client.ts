@@ -8,6 +8,8 @@ import type {
   ApiDiffResult,
   ApiMergeResult,
   ApiReviewAndMergeResult,
+  ApiLandSelfResult,
+  LandSelfInput,
   WaitForSignalDoneResult,
 } from './types.js';
 
@@ -106,7 +108,19 @@ export class MCPClient {
   }
 
   async signalDone(taskId: string): Promise<void> {
-    const url = `${this.baseUrl}/api/tasks/${encodeURIComponent(taskId)}/done`;
+    await this.taskOwnerRequest('POST', `/api/tasks/${encodeURIComponent(taskId)}/done`, {});
+  }
+
+  async landSelf(taskId: string, input: LandSelfInput): Promise<ApiLandSelfResult> {
+    return this.taskOwnerRequest<ApiLandSelfResult>(
+      'POST',
+      `/api/tasks/${encodeURIComponent(taskId)}/land`,
+      input,
+    );
+  }
+
+  private async taskOwnerRequest<T>(method: string, path: string, body: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       'Content-Type': 'application/json',
@@ -114,11 +128,12 @@ export class MCPClient {
     // Per-task done token is sent as X-Done-Token so the server can verify task ownership
     // without needing per-task bearer token classification.
     if (this.doneToken) headers['X-Done-Token'] = this.doneToken;
-    const res = await fetch(url, { method: 'POST', headers, body: '{}' });
+    const res = await fetch(url, { method, headers, body: JSON.stringify(body) });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`API POST /api/tasks/.../done failed (${res.status}): ${text}`);
+      throw new Error(`API ${method} ${path} failed (${res.status}): ${text}`);
     }
+    return (await res.json()) as T;
   }
 
   async waitForSignalDone(

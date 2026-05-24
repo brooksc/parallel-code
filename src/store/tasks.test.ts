@@ -128,6 +128,7 @@ vi.stubGlobal('window', {
 });
 
 import {
+  createTask,
   initMCPListeners,
   setTaskControl,
   collapseTask,
@@ -138,9 +139,12 @@ import {
   markTaskMcpReady,
   markTaskMcpError,
   retryTaskMcpStartup,
+  clearTaskLandingReview,
 } from './tasks';
 import { getCoordinatorChildren } from './sidebar-order';
 import { markAgentSpawned, rescheduleTaskStatusPolling } from './taskStatus';
+import { saveState } from './persistence';
+import { getProjectBranchPrefix, getProjectPath, isProjectMissing } from './projects';
 
 // ─── Coordinator listener setup ───────────────────────────────────────────────
 
@@ -172,6 +176,7 @@ const baseEvent = {
   worktreePath: '/repo/.worktrees/sub-task-1',
   agentId: 'agent-sub-1',
   coordinatorTaskId: 'coordinator-1',
+  mcpLaunchArgs: ['--config', 'mcp_servers.parallel-code={ command = "node" }'],
 };
 
 describe('coordinator controlledBy state machine (item 9: UI disabled-state regression tests)', () => {
@@ -277,6 +282,11 @@ describe('MCP_TaskCreated IPC handler', () => {
   it('sets coordinatedBy to the coordinator task ID', () => {
     taskCreatedHandler(baseEvent);
     expect(mockTasks['sub-task-1'].coordinatedBy).toBe('coordinator-1');
+  });
+
+  it('stores MCP launch args so coordinated subtasks respawn with MCP configured', () => {
+    taskCreatedHandler(baseEvent);
+    expect(mockTasks['sub-task-1'].mcpLaunchArgs).toEqual(baseEvent.mcpLaunchArgs);
   });
 
   it('regression: sub-tasks must not be created without controlledBy defined', () => {
@@ -420,12 +430,60 @@ describe('MCP startup status transitions', () => {
       worktreePath: '/repo/.worktrees/coord',
     };
     mockAgents['agent-coord'] = { def: { command: 'claude', args: [] } };
-    mockInvoke.mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValueOnce({ mcpLaunchArgs: ['--mcp-config', '/tmp/coord.json'] });
 
     markTaskMcpPending('coord-1');
     await retryTaskMcpStartup('coord-1');
 
     expect(mockTasks['coord-1'].mcpStartupStatus).toBe('ready');
+    expect(mockTasks['coord-1'].mcpLaunchArgs).toEqual(['--mcp-config', '/tmp/coord.json']);
+  });
+
+  it('allows Claude Docker coordinator MCP startup with no launch args', async () => {
+    mockTasks['coord-1'] = {
+      agentIds: ['agent-coord'],
+      shellAgentIds: [],
+      coordinatorMode: true,
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      worktreePath: '/repo/.worktrees/coord',
+      dockerMode: true,
+    };
+    mockAgents['agent-coord'] = { def: { command: 'claude', args: [] } };
+    mockInvoke.mockResolvedValueOnce({ mcpLaunchArgs: [] });
+
+    markTaskMcpPending('coord-1');
+    await retryTaskMcpStartup('coord-1');
+
+    expect(mockTasks['coord-1'].mcpStartupStatus).toBe('ready');
+    expect(mockTasks['coord-1'].mcpStartupError).toBeUndefined();
+  });
+
+  it('missing MCP launch args leaves a Codex coordinated task in error', async () => {
+    mockTasks['coord-1'] = {
+      agentIds: [],
+      shellAgentIds: [],
+      coordinatorMode: true,
+      projectId: 'proj-1',
+      mcpStartupStatus: 'ready',
+    };
+    mockTasks['child-1'] = {
+      agentIds: ['agent-child'],
+      shellAgentIds: [],
+      coordinatedBy: 'coord-1',
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      worktreePath: '/repo/.worktrees/child-1',
+      branchName: 'task/child-1',
+    };
+    mockAgents['agent-child'] = { def: { command: 'codex', args: [] } };
+    mockInvoke.mockResolvedValueOnce({ mcpLaunchArgs: [] });
+
+    markTaskMcpPending('child-1');
+    await retryTaskMcpStartup('child-1');
+
+    expect(mockTasks['child-1'].mcpStartupStatus).toBe('error');
+    expect(String(mockTasks['child-1'].mcpStartupError)).toContain('no launch args');
   });
 
   it('child hydration failure marks only that child as error, leaving sibling spawnable', async () => {
@@ -456,7 +514,9 @@ describe('MCP startup status transitions', () => {
     };
 
     // child-a fails, child-b succeeds
-    mockInvoke.mockRejectedValueOnce(new Error('hydrate failed')).mockResolvedValueOnce(undefined);
+    mockInvoke
+      .mockRejectedValueOnce(new Error('hydrate failed'))
+      .mockResolvedValueOnce({ mcpLaunchArgs: ['--mcp-config', '/tmp/child-b.json'] });
 
     markTaskMcpPending('child-a');
     await retryTaskMcpStartup('child-a');
@@ -465,6 +525,7 @@ describe('MCP startup status transitions', () => {
 
     expect(mockTasks['child-a'].mcpStartupStatus).toBe('error');
     expect(mockTasks['child-b'].mcpStartupStatus).toBe('ready');
+    expect(mockTasks['child-b'].mcpLaunchArgs).toEqual(['--mcp-config', '/tmp/child-b.json']);
   });
 
   it('retry of child when coordinator is in error surfaces dependency message', async () => {
@@ -491,6 +552,67 @@ describe('MCP startup status transitions', () => {
     expect(mockTasks['child-1'].mcpStartupStatus).toBe('error');
     expect(String(mockTasks['child-1'].mcpStartupError)).toContain('coordinator');
     expect(mockInvoke).not.toHaveBeenCalledWith(IPC.MCP_HydrateCoordinatedTask, expect.anything());
+  });
+});
+
+describe('createTask coordinator base branch prompt', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
+    mockTasks = {};
+    mockAgents = {};
+    mockTaskOrder = [];
+    vi.mocked(getProjectPath).mockReturnValue('/repo');
+    vi.mocked(getProjectBranchPrefix).mockReturnValue('task');
+    vi.mocked(isProjectMissing).mockReturnValue(false);
+    mockInvoke.mockImplementation((channel: string) => {
+      if (channel === IPC.CreateTask) {
+        return Promise.resolve({
+          id: 'coord-1',
+          branch_name: 'task/coordinator-work',
+          worktree_path: '/repo/.worktrees/coordinator-work',
+        });
+      }
+      if (channel === IPC.StartMCPServer) {
+        return Promise.resolve({ mcpLaunchArgs: ['--mcp-config', '/tmp/coord.json'] });
+      }
+      return Promise.resolve(undefined);
+    });
+  });
+
+  it('tells coordinators to base sub-tasks on the coordinator branch, not its base branch', async () => {
+    await createTask({
+      name: 'Coordinator',
+      agentDef: {
+        id: 'agent-def',
+        name: 'Claude',
+        command: 'claude',
+        args: [],
+        resume_args: [],
+        skip_permissions_args: [],
+        description: 'Claude',
+      },
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      baseBranch: 'main',
+      initialPrompt: 'Pick a task',
+      coordinatorMode: true,
+    });
+
+    expect(mockTasks['coord-1'].initialPrompt).toContain(
+      'Use `task/coordinator-work` as the baseBranch for all sub-tasks.',
+    );
+    expect(mockTasks['coord-1'].initialPrompt).not.toContain(
+      'Use `main` as the baseBranch for all sub-tasks.',
+    );
+    expect(mockInvoke).toHaveBeenCalledWith(
+      IPC.StartMCPServer,
+      expect.objectContaining({ coordinatorBranch: 'task/coordinator-work' }),
+    );
+    expect(mockInvoke).toHaveBeenCalledWith(
+      IPC.MCP_CoordinatorRegistered,
+      expect.objectContaining({ coordinatorBranch: 'task/coordinator-work' }),
+    );
   });
 });
 
@@ -535,6 +657,20 @@ describe('sendPrompt', () => {
 
     expect(writePayloads()).toEqual(['\x1b[I', '\x1b[200~line 1\nline 2\x1b[201~', '\r']);
   });
+
+  it.each(['landed_pending_review', 'landed_cleanup_failed', 'reviewed'] as const)(
+    'does not write to the agent when the task is %s',
+    async (landingState) => {
+      mockTasks['task-1'].landingState = landingState;
+
+      await expect(sendPrompt('task-1', 'agent-1', 'hello Codex')).rejects.toThrow(
+        'no longer writable',
+      );
+
+      expect(writePayloads()).toEqual([]);
+      expect(mockSetStore).not.toHaveBeenCalledWith('tasks', 'task-1', 'lastPrompt', 'hello Codex');
+    },
+  );
 });
 
 // ─── MCP_TaskCleanupFailed IPC handler ───────────────────────────────────────
@@ -749,6 +885,49 @@ describe('MCP_TaskStateSync listener', () => {
     expect(mockTasks['task-1'].mcpConfigPath).toBeUndefined();
     expect(mockTasks['task-1'].mcpStartupStatus).toBeUndefined();
     expect(mockTasks['task-1'].mcpStartupError).toBeUndefined();
+  });
+
+  it('stores landed pending-review and verification sync fields', () => {
+    taskStateSyncHandler({
+      taskId: 'task-1',
+      verification: { checks: [{ name: 'test', command: 'npm test', result: 'passed' }] },
+      landingState: 'landed_pending_review',
+      landingSummary: 'implemented',
+      landedMetadata: {
+        taskId: 'task-1',
+        taskName: 'Task 1',
+        coordinatorTaskId: 'coord-1',
+        targetBranch: 'main',
+        landedCommit: 'abc123',
+        landedAt: '2026-05-24T00:00:00Z',
+        landedOrder: 1,
+        verification: { checks: [{ name: 'test', command: 'npm test', result: 'passed' }] },
+      },
+      needsReview: true,
+    });
+
+    expect(mockTasks['task-1'].landingState).toBe('landed_pending_review');
+    expect(
+      (mockTasks['task-1'].verification as { checks: Array<{ result: string }> }).checks[0].result,
+    ).toBe('passed');
+    expect((mockTasks['task-1'].landedMetadata as { landedCommit: string }).landedCommit).toBe(
+      'abc123',
+    );
+    expect(mockTasks['task-1'].needsReview).toBe(true);
+    expect(vi.mocked(saveState)).toHaveBeenCalled();
+  });
+
+  it('clears landed pending-review state locally', () => {
+    mockTasks['task-1'].landingState = 'landed_pending_review';
+    mockTasks['task-1'].needsReview = true;
+
+    clearTaskLandingReview('task-1');
+
+    expect(mockTasks['task-1'].landingState).toBe('reviewed');
+    expect(mockTasks['task-1'].needsReview).toBe(false);
+    expect(mockInvoke).toHaveBeenCalledWith(IPC.MCP_TaskLandingReviewCleared, {
+      taskId: 'task-1',
+    });
   });
 });
 

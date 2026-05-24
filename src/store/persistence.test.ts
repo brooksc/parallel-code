@@ -195,6 +195,52 @@ describe('loadState agent definition migrations', () => {
   });
 });
 
+describe('landing state persistence', () => {
+  it('hydrates landed metadata and verification fields', async () => {
+    const def = agentDef();
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [{ id: 'project-1', name: 'Repo', path: '/repo', color: 'hsl(0, 70%, 75%)' }],
+        lastProjectId: 'project-1',
+        lastAgentId: null,
+        taskOrder: ['task-1'],
+        collapsedTaskOrder: [],
+        tasks: {
+          'task-1': {
+            ...persistedTask(def),
+            coordinatedBy: 'coord-1',
+            needsReview: true,
+            verification: {
+              checks: [{ name: 'test', command: 'npm test', result: 'passed' }],
+            },
+            landingState: 'landed_pending_review',
+            landedMetadata: {
+              taskId: 'task-1',
+              taskName: 'Task',
+              coordinatorTaskId: 'coord-1',
+              targetBranch: 'main',
+              landedCommit: 'abc123',
+              landedAt: '2026-05-24T00:00:00Z',
+              landedOrder: 1,
+              verification: {
+                checks: [{ name: 'test', command: 'npm test', result: 'passed' }],
+              },
+            },
+          },
+        },
+        activeTaskId: 'task-1',
+        sidebarVisible: true,
+      }),
+    );
+
+    await loadState();
+
+    expect(store.tasks['task-1'].landingState).toBe('landed_pending_review');
+    expect(store.tasks['task-1'].landedMetadata?.landedCommit).toBe('abc123');
+    expect(store.tasks['task-1'].verification?.checks[0].result).toBe('passed');
+  });
+});
+
 // Minimal valid payload — no theme fields — used as a base for theme migration tests.
 function basePayload(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({

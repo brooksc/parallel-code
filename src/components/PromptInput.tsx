@@ -17,6 +17,7 @@ import {
   isTrustQuestionAutoHandled,
   isAutoTrustSettling,
   isAgentAskingQuestion,
+  isAgentIdle,
   getTaskFocusedPanel,
   setTaskFocusedPanel,
   setTaskLastInputAt,
@@ -25,8 +26,10 @@ import {
   showNotification,
 } from '../store/store';
 import { clearStagedNotification, setStagedNotificationUserEdited } from '../store/tasks';
+import { isLandedTaskState } from '../store/landing';
 import { processAutoFireTick } from './autofire-tick';
-import { shouldHandoffCoordinatorQuestion } from './prompt-control';
+import { shouldAckInitialPromptDelivery, shouldHandoffCoordinatorQuestion } from './prompt-control';
+import { isStartupBlockingAutoSend } from './prompt-autosend-readiness';
 import type { StagedNotification } from '../store/types';
 import { debug, warn as logWarn } from '../lib/log';
 import { theme } from '../lib/theme';
@@ -78,6 +81,7 @@ const AUTOSEND_MAX_WAIT_MS = 45_000;
 const PROMPT_VERIFY_TIMEOUT_MS = 5_000;
 const PROMPT_VERIFY_POLL_MS = 250;
 const PROMPT_MARKER_SCAN_CHARS = 500;
+const PROMPT_ECHO_HANDOFF_SUPPRESS_MS = 5_000;
 
 /** True when auto-send should be blocked by a question in the output.
  *  Trust-dialog questions are NOT blocking when auto-trust handles them. */
@@ -182,6 +186,7 @@ export function PromptInput(props: PromptInputProps) {
       // Don't tear down the auto-send mechanism if we can't send yet —
       // the quiescence timer needs to stay alive to retry after settling.
       if (isAutoTrustSettling(agentId)) return;
+      if (isStartupBlockingAutoSend(getAgentOutputTail(agentId))) return;
       cleanup();
       void handleSend('auto');
     }
@@ -201,6 +206,10 @@ export function PromptInput(props: PromptInputProps) {
       // agent's main prompt yet.  Re-register; we'll be called again once the
       // agent fires tryFireAgentReadyCallback after the trust flow completes.
       if (isAutoTrustSettling(agentId)) {
+        onAgentReady(agentId, onReady);
+        return;
+      }
+      if (isStartupBlockingAutoSend(getAgentOutputTail(agentId))) {
         onAgentReady(agentId, onReady);
         return;
       }
@@ -229,6 +238,10 @@ export function PromptInput(props: PromptInputProps) {
           pendingSendTimer = undefined;
           if (cancelled) return;
           const tail = getAgentOutputTail(agentId);
+          if (isStartupBlockingAutoSend(tail)) {
+            onAgentReady(agentId, onReady);
+            return;
+          }
           if (isQuestionBlockingAutoSend(tail)) {
             onAgentReady(agentId, onReady);
             return;
@@ -285,6 +298,11 @@ export function PromptInput(props: PromptInputProps) {
 
       const tail = getAgentOutputTail(agentId);
       if (!tail) return;
+      if (isStartupBlockingAutoSend(tail)) {
+        lastRawTail = tail;
+        stableSince = 0;
+        return;
+      }
 
       // If a prompt marker is visible, use the fast path's stability checks
       // instead of pure quiescence — they verify ❯ persists AND output is stable.
@@ -556,6 +574,16 @@ export function PromptInput(props: PromptInputProps) {
   // When the agent shows a question/dialog, focus the terminal so the user
   // can interact with the TUI directly.
   const questionActive = () => isAgentAskingQuestion(props.agentId);
+  const isRecentPromptEcho = (tail: string): boolean => {
+    const task = store.tasks[props.taskId];
+    const lastPrompt = task?.lastPrompt?.trim();
+    if (!lastPrompt || !task?.lastInputAt) return false;
+    const lastInputAt = Date.parse(task.lastInputAt);
+    if (!Number.isFinite(lastInputAt)) return false;
+    if (Date.now() - lastInputAt > PROMPT_ECHO_HANDOFF_SUPPRESS_MS) return false;
+    const snippet = stripAnsi(lastPrompt).slice(0, 40);
+    return Boolean(snippet && stripAnsi(tail).includes(snippet));
+  };
   createEffect(() => {
     if (questionActive() && getTaskFocusedPanel(props.taskId) === 'prompt') {
       setTaskFocusedPanel(props.taskId, 'ai-terminal');
@@ -572,9 +600,17 @@ export function PromptInput(props: PromptInputProps) {
         // is still true — that fires when the user explicitly clicks Release Control
         // but the tail buffer hasn't cleared yet, which immediately overrides them.
         const questionJustActivated = active && !prevActive;
+        const tail = getAgentOutputTail(props.agentId);
         if (
           questionJustActivated &&
-          shouldHandoffCoordinatorQuestion({ controlledBy, questionActive: active })
+          shouldHandoffCoordinatorQuestion({
+            controlledBy,
+            questionActive: active,
+            agentIdle: isAgentIdle(props.agentId),
+            startupBlocking: isStartupBlockingAutoSend(tail),
+            autoTrustSettling: isAutoTrustSettling(props.agentId),
+            recentPromptEcho: isRecentPromptEcho(tail),
+          })
         ) {
           setTaskControl(props.taskId, 'human');
           setTaskFocusedPanel(props.taskId, 'ai-terminal');
@@ -632,6 +668,7 @@ export function PromptInput(props: PromptInputProps) {
 
   async function handleSend(mode: 'manual' | 'auto' = 'manual') {
     if (sending()) return;
+    if (isLandedTaskState(store.tasks[props.taskId]?.landingState)) return;
     if (mode === 'manual' && props.controlledBy === 'coordinator') return;
     // Block sends while the agent is showing a question/dialog.
     // For auto-sends, use a fresh tail-buffer check instead of the reactive
@@ -639,6 +676,9 @@ export function PromptInput(props: PromptInputProps) {
     // the callers (onReady, quiescence timer) already verified with fresh data.
     if (mode === 'auto') {
       const tail = getAgentOutputTail(props.agentId);
+      if (isStartupBlockingAutoSend(tail)) {
+        return;
+      }
       if (isQuestionBlockingAutoSend(tail)) {
         return;
       }
@@ -671,6 +711,12 @@ export function PromptInput(props: PromptInputProps) {
 
     setSending(true);
     try {
+      const initialPromptSnapshot = props.initialPrompt?.trim();
+      const shouldAckInitialPrompt = shouldAckInitialPromptDelivery({
+        coordinatedBy: props.coordinatedBy,
+        initialPrompt: initialPromptSnapshot,
+        sentText: val,
+      });
       // Snapshot tail before send for verification comparison.
       const preSendTail = getAgentOutputTail(props.agentId);
       await sendPrompt(props.taskId, props.agentId, val);
@@ -682,11 +728,11 @@ export function PromptInput(props: PromptInputProps) {
 
       if (signal.aborted) return;
 
-      if (props.initialPrompt?.trim()) {
-        setAutoSentInitialPrompt(props.initialPrompt.trim());
-        if (props.coordinatedBy) {
-          invoke(IPC.MCP_CoordinatedTaskPromptDelivered, { taskId: props.taskId }).catch(() => {});
-        }
+      if (initialPromptSnapshot && val === initialPromptSnapshot) {
+        setAutoSentInitialPrompt(initialPromptSnapshot);
+      }
+      if (shouldAckInitialPrompt) {
+        invoke(IPC.MCP_CoordinatedTaskPromptDelivered, { taskId: props.taskId }).catch(() => {});
       }
       // If the user manually sent the staged notification text exactly, ack it
       const staged = props.stagedNotification;
