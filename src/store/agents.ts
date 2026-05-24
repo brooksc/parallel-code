@@ -113,7 +113,7 @@ export function restartAgent(agentId: string, useResumeArgs: boolean): void {
         s.agents[agentId].lastOutput = [];
         s.agents[agentId].resumed = useResumeArgs;
         s.agents[agentId].spawnDelayMs = undefined;
-        s.agents[agentId].attachExisting = undefined;
+        s.agents[agentId].attachExisting = false;
         s.agents[agentId].generation += 1;
       }
     }),
@@ -132,7 +132,7 @@ export function switchAgent(agentId: string, newDef: AgentDef): void {
         s.agents[agentId].lastOutput = [];
         s.agents[agentId].resumed = false;
         s.agents[agentId].spawnDelayMs = undefined;
-        s.agents[agentId].attachExisting = undefined;
+        s.agents[agentId].attachExisting = false;
         s.agents[agentId].generation += 1;
       }
     }),

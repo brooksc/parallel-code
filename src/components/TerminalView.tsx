@@ -72,7 +72,7 @@ interface TerminalViewProps {
   dockerImage?: string;
   spawnDelayMs?: number;
   attachExisting?: boolean;
-  preserveOnWindowUnload?: boolean;
+  preserveSessionOnCleanup?: boolean;
   dockerMountWorktreeParent?: boolean;
   onExit?: (exitInfo: {
     exit_code: number | null;
@@ -127,8 +127,8 @@ export function TerminalView(props: TerminalViewProps) {
     const taskId = props.taskId;
     const agentId = props.agentId;
     const initialFontSize = props.fontSize ?? 13;
-    const attachExisting = props.attachExisting;
-    const preserveOnWindowUnload = props.preserveOnWindowUnload === true;
+    const attachExisting = props.attachExisting ?? true;
+    const preserveSessionOnCleanup = props.preserveSessionOnCleanup === true;
 
     term = new Terminal({
       cursorBlink: true,
@@ -702,7 +702,7 @@ export function TerminalView(props: TerminalViewProps) {
     }
 
     onCleanup(() => {
-      const preserveSession = windowUnloading && preserveOnWindowUnload;
+      const preserveSession = preserveSessionOnCleanup;
       if (!windowUnloading || preserveSession) {
         flushPendingInput();
         flushPendingResize();
@@ -715,7 +715,7 @@ export function TerminalView(props: TerminalViewProps) {
       webglAddon?.dispose();
       webglAddon = undefined;
       unregisterTerminal(agentId);
-      if (preserveSession && ptyPaused) {
+      if (ptyPaused) {
         fireAndForget(IPC.ResumeAgent, { agentId });
         ptyPaused = false;
       }

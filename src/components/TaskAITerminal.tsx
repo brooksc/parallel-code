@@ -607,7 +607,7 @@ function AgentTerminalPane(props: {
                   )
                 }
                 attachExisting={a().attachExisting}
-                preserveOnWindowUnload
+                preserveSessionOnCleanup
                 onExit={(code) => markAgentExited(a().id, code)}
                 onData={(data) => markAgentOutput(a().id, data, props.task.id)}
                 onFileLink={props.onFileLink}

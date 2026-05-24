@@ -755,6 +755,30 @@ describe('spawnAgent session reattach', () => {
     ).not.toThrow();
     expect(mockPtySpawn).toHaveBeenCalledTimes(1);
   });
+
+  it('replaces an existing same-id PTY when attachExisting is explicitly false', () => {
+    const win = createMockWindow();
+    const agentId = 'agent-replace';
+    const args = buildSpawnArgs({
+      agentId,
+      command: 'claude',
+      args: [],
+      dockerMode: false,
+      onOutput: { __CHANNEL_ID__: 'channel-1' },
+    });
+
+    spawnAgent(win, args);
+    const oldProc = mockPtySpawn.mock.results[0].value as ReturnType<typeof mockPtySpawn>;
+
+    spawnAgent(win, {
+      ...args,
+      attachExisting: false,
+      onOutput: { __CHANNEL_ID__: 'channel-2' },
+    });
+
+    expect(oldProc.kill).toHaveBeenCalled();
+    expect(mockPtySpawn).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('validateCommand', () => {

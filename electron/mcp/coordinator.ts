@@ -137,10 +137,9 @@ export class Coordinator {
       }
     });
 
-    // Re-subscribe our output callback when the renderer respawns a managed agent.
-    // TerminalView kills the existing PTY (clearing all subscribers) then spawns a
-    // new one with the same agentId.  Without this, our outputCb is lost and we
-    // can never detect idle for that sub-task.
+    // Re-subscribe our output callback when the renderer reattaches to, or explicitly
+    // replaces, a managed agent. Without this, our outputCb is lost and we can never
+    // detect idle for that sub-task.
     onPtyEvent('spawn', (agentId) => {
       const outputCb = this.subscribers.get(agentId);
       if (!outputCb) return; // not a coordinated agent, or initial spawn (not yet subscribed)
