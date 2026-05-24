@@ -9,6 +9,9 @@ type MockStore = {
   collapsedTaskOrder: string[];
   projects: Array<{ id: string }>;
   focusedPanel: Record<string, string>;
+  sidebarFocused: boolean;
+  sidebarFocusedProjectId: string | null;
+  sidebarFocusedTaskId: string | null;
 };
 
 let mockStore: MockStore;
@@ -54,6 +57,9 @@ beforeEach(() => {
     collapsedTaskOrder: [],
     projects: [],
     focusedPanel: {},
+    sidebarFocused: false,
+    sidebarFocusedProjectId: null,
+    sidebarFocusedTaskId: null,
   };
 });
 
@@ -127,5 +133,18 @@ describe('jumpToTask', () => {
     mockStore.collapsedTaskOrder = ['task-3'];
     jumpToTask(2);
     expect(mockStore.activeTaskId).toBe(null);
+  });
+
+  it('moves the sidebar focus outline when jumping while the sidebar is focused', () => {
+    mockStore.activeTaskId = 'task-1';
+    mockStore.sidebarFocused = true;
+    mockStore.sidebarFocusedTaskId = 'task-1';
+    mockStore.sidebarFocusedProjectId = 'project-1';
+
+    jumpToTask(2);
+
+    expect(mockStore.activeTaskId).toBe('task-3');
+    expect(mockStore.sidebarFocusedTaskId).toBe('task-3');
+    expect(mockStore.sidebarFocusedProjectId).toBe(null);
   });
 });

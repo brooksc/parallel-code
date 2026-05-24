@@ -76,7 +76,12 @@ export function jumpToTask(index: number): void {
   // Index against taskOrder so Cmd+N matches the left-to-right tile order
   // shown in the main area (and the order Cmd+Left/Right cycles through).
   const id = store.taskOrder[index];
-  if (id) setActiveTask(id);
+  if (!id) return;
+  setActiveTask(id);
+  if (store.sidebarFocused) {
+    setStore('sidebarFocusedTaskId', id);
+    setStore('sidebarFocusedProjectId', null);
+  }
 }
 
 export function toggleNewTaskDialog(show?: boolean): void {
