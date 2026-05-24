@@ -729,6 +729,12 @@ describe('Coordinator waitForIdle', () => {
     await expect(coordinator.waitForIdle('task-1')).resolves.toEqual({ reason: 'human_control' });
   });
 
+  it('rejects control changes for unknown tasks', () => {
+    expect(() => coordinator.setTaskControl('missing-task', 'human')).toThrow(
+      'Task not found: missing-task',
+    );
+  });
+
   it('rejects after timeout when task never idles', async () => {
     vi.useFakeTimers();
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
@@ -752,6 +758,25 @@ describe('Coordinator waitForIdle', () => {
     const waitPromise = coordinator.waitForIdle('task-1');
     coordinator.setTaskControl('task-1', 'coordinator');
     await expect(waitPromise).resolves.toEqual({ reason: 'idle' });
+  });
+
+  it('notifies coordinator when releasing control after waitForIdle was interrupted', async () => {
+    await coordinator.createTask({ name: 'my-task', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    const waitPromise = coordinator.waitForIdle('task-1');
+
+    coordinator.setTaskControl('task-1', 'human');
+    await expect(waitPromise).resolves.toEqual({ reason: 'human_control' });
+    mockNotifyRenderer.mockClear();
+
+    coordinator.setTaskControl('task-1', 'coordinator');
+
+    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+      'mcp_coordinator_notification_staged',
+      expect.objectContaining({
+        coordinatorTaskId: 'coord-1',
+        text: expect.stringContaining('"my-task" has been returned to coordinator control'),
+      }),
+    );
   });
 });
 
@@ -2462,10 +2487,11 @@ describe('Coordinator removeCoordinatedTask', () => {
     expect(vi.mocked(unsubscribeFromAgent)).toHaveBeenCalledWith(agentId, expect.any(Function));
   });
 
-  it('cleans up internal resource maps (subscribers, tailBuffers, decoders, controlMap, blockedByHumanControl)', async () => {
+  it('cleans up internal resource maps (subscribers, tailBuffers, decoders, controlMap, human control markers)', async () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const agentId = getAgentId();
     coordinator.setTaskControl('task-1', 'human');
+    await coordinator.waitForIdle('task-1');
     await coordinator.sendPrompt('task-1', 'hello').catch(() => {});
 
     coordinator.removeCoordinatedTask('task-1');
@@ -2476,12 +2502,14 @@ describe('Coordinator removeCoordinatedTask', () => {
       decoders: Map<string, unknown>;
       controlMap: Map<string, unknown>;
       blockedByHumanControl: Set<string>;
+      interruptedByHumanControl: Set<string>;
     };
     expect(c.subscribers.has(agentId)).toBe(false);
     expect(c.tailBuffers.has(agentId)).toBe(false);
     expect(c.decoders.has(agentId)).toBe(false);
     expect(c.controlMap.has('task-1')).toBe(false);
     expect(c.blockedByHumanControl.has('task-1')).toBe(false);
+    expect(c.interruptedByHumanControl.has('task-1')).toBe(false);
   });
 
   it('deregister detaches child task state and preserves review only after prompt delivery', async () => {

@@ -1333,17 +1333,25 @@ export function retryTaskMcpStartup(taskId: string): Promise<void> {
 
 export function setTaskControl(taskId: string, who: 'coordinator' | 'human'): void {
   const task = store.tasks[taskId];
+  if (!task) return;
   const prev = task?.controlledBy;
   setStore('tasks', taskId, 'controlledBy', who);
   // Coordinator tasks manage their own control state in the frontend only.
   // Sub-tasks need to notify the backend Coordinator so it can gate send_prompt.
-  if (!task?.coordinatorMode) {
-    invoke(IPC.MCP_ControlChanged, { taskId, controlledBy: who }).catch((err: unknown) => {
+  if (task.coordinatorMode) {
+    void saveState();
+    return;
+  }
+
+  invoke(IPC.MCP_ControlChanged, { taskId, controlledBy: who })
+    .then(() => {
+      void saveState();
+    })
+    .catch((err: unknown) => {
       console.warn('[tasks] setTaskControl IPC failed, rolling back controlledBy', err);
       setStore('tasks', taskId, 'controlledBy', prev);
+      void saveState();
     });
-  }
-  void saveState();
 }
 
 export function setPlanContent(

@@ -629,8 +629,14 @@ function tryAutoTrust(agentId: string, rawTail: string): boolean {
     // auto-trust suppressed the question state, release it back to coordinator.
     const taskId = state.taskId;
     if (taskId && isAutoTrustForced(agentId) && store.tasks[taskId]?.controlledBy === 'human') {
-      setStore('tasks', taskId, 'controlledBy', 'coordinator');
-      invoke(IPC.MCP_ControlChanged, { taskId, controlledBy: 'coordinator' }).catch(() => {});
+      invoke(IPC.MCP_ControlChanged, { taskId, controlledBy: 'coordinator' })
+        .then(() => setStore('tasks', taskId, 'controlledBy', 'coordinator'))
+        .catch((err) => {
+          logWarn('tasks.autoTrust', 'MCP_ControlChanged failed during auto-trust release', {
+            taskId,
+            err,
+          });
+        });
     }
     // Cooldown: ignore trust patterns for 1s so the same dialog
     // isn't re-matched while the PTY output transitions.

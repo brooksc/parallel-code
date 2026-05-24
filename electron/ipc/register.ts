@@ -1174,7 +1174,8 @@ export function registerAllHandlers(win: BrowserWindow): void {
         if (args.controlledBy !== 'coordinator' && args.controlledBy !== 'human') {
           throw new Error(`Invalid controlledBy: ${String(args.controlledBy)}`);
         }
-        coordinator?.setTaskControl(args.taskId, args.controlledBy);
+        if (!coordinator) throw new Error('coordinator mode not initialized');
+        coordinator.setTaskControl(args.taskId, args.controlledBy);
       },
     );
 

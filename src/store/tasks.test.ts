@@ -2,11 +2,14 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { IPC } from '../../electron/ipc/channels';
 
 // Hoisted so these refs are available both in vi.mock() factories and in test bodies.
-const { mockInvoke, mockIsAgentBracketedPasteEnabled, mockSetStore } = vi.hoisted(() => ({
-  mockInvoke: vi.fn(),
-  mockIsAgentBracketedPasteEnabled: vi.fn(),
-  mockSetStore: vi.fn(),
-}));
+const { mockInvoke, mockIsAgentBracketedPasteEnabled, mockSaveState, mockSetStore } = vi.hoisted(
+  () => ({
+    mockInvoke: vi.fn(),
+    mockIsAgentBracketedPasteEnabled: vi.fn(),
+    mockSaveState: vi.fn(),
+    mockSetStore: vi.fn(),
+  }),
+);
 
 // ─── Coordinator test infrastructure ─────────────────────────────────────────
 
@@ -82,7 +85,7 @@ vi.mock('./core', () => ({
 }));
 
 vi.mock('../lib/ipc', () => ({ Channel: vi.fn(), invoke: mockInvoke }));
-vi.mock('./persistence', () => ({ saveState: vi.fn() }));
+vi.mock('./persistence', () => ({ saveState: mockSaveState }));
 vi.mock('./focus', () => ({ setTaskFocusedPanel: vi.fn() }));
 vi.mock('./projects', () => ({
   getProject: vi.fn(),
@@ -156,6 +159,7 @@ beforeEach(() => {
   mockCollapsedTaskOrder = [];
   mockProjects = [];
   mockInvoke.mockResolvedValue(undefined);
+  mockSaveState.mockResolvedValue(undefined);
 });
 
 // ─── Coordinator tests ────────────────────────────────────────────────────────
@@ -200,6 +204,38 @@ describe('coordinator controlledBy state machine (item 9: UI disabled-state regr
 
   it('9d: setTaskControl is a no-op for unknown taskId (no crash)', () => {
     expect(() => setTaskControl('nonexistent-task', 'human')).not.toThrow();
+    expect(mockInvoke).not.toHaveBeenCalledWith(IPC.MCP_ControlChanged, expect.anything());
+  });
+
+  it('rolls back sub-task control when backend acknowledgement fails', async () => {
+    taskCreatedHandler(baseEvent);
+    mockInvoke.mockRejectedValueOnce(new Error('coordinator missing'));
+
+    setTaskControl('sub-task-1', 'human');
+    expect(mockTasks['sub-task-1'].controlledBy).toBe('human');
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockTasks['sub-task-1'].controlledBy).toBe('coordinator');
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists sub-task control only after backend acknowledgement succeeds', async () => {
+    taskCreatedHandler(baseEvent);
+
+    setTaskControl('sub-task-1', 'human');
+    expect(mockSaveState).not.toHaveBeenCalled();
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockTasks['sub-task-1'].controlledBy).toBe('human');
+    expect(mockInvoke).toHaveBeenCalledWith(IPC.MCP_ControlChanged, {
+      taskId: 'sub-task-1',
+      controlledBy: 'human',
+    });
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
   });
 
   it('9e: removing a coordinator task leaves no entry in mockTasks', () => {

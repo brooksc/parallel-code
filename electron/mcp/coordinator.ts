@@ -76,6 +76,7 @@ export class Coordinator {
   private decoders = new Map<string, TextDecoder>();
   private controlMap = new Map<string, 'coordinator' | 'human'>();
   private blockedByHumanControl = new Set<string>();
+  private interruptedByHumanControl = new Set<string>();
   private closingTaskIds = new Set<string>();
   private activeSignalWaitCounts = new Map<string, number>();
   private recentlyDelivered = new ReplayCache<WaitForSignalDoneResult>();
@@ -158,14 +159,14 @@ export class Coordinator {
 
   setTaskControl(taskId: string, who: 'coordinator' | 'human'): void {
     if (!this.tasks.has(taskId)) {
-      console.warn(`setTaskControl: unknown taskId ${taskId}`);
-      return;
+      throw new Error(`Task not found: ${taskId}`);
     }
     this.controlMap.set(taskId, who);
     if (who === 'human') {
       // Resolve any pending idle waiters immediately — human has taken over
       const resolvers = this.idleResolvers.get(taskId);
       if (resolvers?.length) {
+        this.interruptedByHumanControl.add(taskId);
         for (const resolve of resolvers) resolve({ reason: 'human_control' });
         this.idleResolvers.delete(taskId);
       }
@@ -177,9 +178,10 @@ export class Coordinator {
         for (const resolve of resolvers) resolve({ reason: 'idle' });
         this.idleResolvers.delete(taskId);
       }
-      // Notify coordinator if it tried to send a prompt while blocked
-      if (this.blockedByHumanControl.has(taskId)) {
+      // Notify coordinator if it tried to send a prompt or had an idle wait interrupted.
+      if (this.blockedByHumanControl.has(taskId) || this.interruptedByHumanControl.has(taskId)) {
         this.blockedByHumanControl.delete(taskId);
+        this.interruptedByHumanControl.delete(taskId);
         const task = this.tasks.get(taskId);
         const coordinator = task ? this.coordinators.get(task.coordinatorTaskId) : null;
         if (task && coordinator) {
@@ -811,6 +813,7 @@ export class Coordinator {
     const task = this.tasks.get(taskId);
     if (!task) return Promise.reject(new Error(`Task not found: ${taskId}`));
     if (this.controlMap.get(taskId) === 'human') {
+      this.interruptedByHumanControl.add(taskId);
       return Promise.resolve({ reason: 'human_control' }); // resolve immediately — caller gets control-change event instead
     }
     if (task.status === 'exited') return Promise.resolve({ reason: 'exited' });
@@ -1037,6 +1040,7 @@ export class Coordinator {
 
     this.tasks.delete(taskId);
     this.blockedByHumanControl.delete(taskId);
+    this.interruptedByHumanControl.delete(taskId);
     this.controlMap.delete(taskId);
   }
 
@@ -1121,6 +1125,7 @@ export class Coordinator {
     this.tasks.delete(taskId);
     this.controlMap.delete(taskId);
     this.blockedByHumanControl.delete(taskId);
+    this.interruptedByHumanControl.delete(taskId);
     this.closingTaskIds.delete(taskId);
 
     // Notify renderer
@@ -1419,6 +1424,7 @@ export class Coordinator {
       // Transfer control to human so the user can decide what to do with orphaned tasks
       this.controlMap.set(taskId, 'human');
       this.blockedByHumanControl.delete(taskId);
+      this.interruptedByHumanControl.delete(taskId);
 
       if (task.mcpConfigPath) {
         try {
