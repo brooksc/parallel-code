@@ -1012,7 +1012,15 @@ export class Coordinator {
       return { queued: true };
     }
 
-    await this.writePromptToTask(task, prompt);
+    // Acquire write lock synchronously before the first await so a concurrent
+    // sendPrompt call sees the lock and queues rather than writing through.
+    this.writingPromptTaskIds.add(task.id);
+    try {
+      await this.writePromptToTask(task, prompt);
+    } finally {
+      this.writingPromptTaskIds.delete(task.id);
+      void this.flushNextQueuedPrompt(task);
+    }
     return { queued: false };
   }
 

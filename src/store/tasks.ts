@@ -1553,8 +1553,21 @@ export function setTaskPromptDraftActive(taskId: string, active: boolean): void 
 export function setTaskTerminalInputPending(taskId: string, pending: boolean): void {
   if (!store.tasks[taskId]) return;
   setStore('tasks', taskId, 'terminalInputPending', pending || undefined);
+  if (!pending) setStore('tasks', taskId, 'terminalInputPendingFromQuestion', undefined);
   if (pending) markTaskUserActivity(taskId);
   else scheduleTaskAutomationRelease(taskId);
+}
+
+export function setTaskTerminalInputPendingFromQuestion(taskId: string): void {
+  if (store.tasks[taskId]) {
+    setStore('tasks', taskId, 'terminalInputPendingFromQuestion', true);
+  }
+}
+
+export function clearTerminalInputPendingFromQuestion(taskId: string): void {
+  if (store.tasks[taskId]?.terminalInputPendingFromQuestion) {
+    setStore('tasks', taskId, 'terminalInputPendingFromQuestion', undefined);
+  }
 }
 
 /** Toggles steps tracking for a task and remembers the choice as the new default. */

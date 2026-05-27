@@ -19,6 +19,7 @@ import {
   markTaskUserActivity,
   setTaskTerminalInputPending,
 } from '../store/store';
+import { clearTerminalInputPendingFromQuestion } from '../store/tasks';
 import { isLandedTaskState } from '../store/landing';
 import { warn as logWarn } from '../lib/log';
 import { registerTerminal, unregisterTerminal, markDirty } from '../lib/terminalFitManager';
@@ -588,7 +589,13 @@ export function TerminalView(props: TerminalViewProps) {
     function noteUserTerminalInput(data: string) {
       if (props.isShell || !store.tasks[props.taskId]) return;
       const hadActivity = hasTerminalUserActivity(data);
-      if (hadActivity) markTaskUserActivity(props.taskId);
+      if (hadActivity) {
+        markTaskUserActivity(props.taskId);
+        // Real typing overrides the synthetic question-handoff pending flag so
+        // that a false-positive/self-resolving question doesn't clear pending
+        // while the user still has unsubmitted input in the terminal.
+        clearTerminalInputPendingFromQuestion(props.taskId);
+      }
       const pending = nextTerminalInputPending(
         store.tasks[props.taskId]?.terminalInputPending === true,
         data,

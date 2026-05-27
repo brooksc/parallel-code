@@ -131,6 +131,7 @@ export interface Task {
   userActivityHoldUntil?: number;
   promptDraftActive?: boolean;
   terminalInputPending?: boolean;
+  terminalInputPendingFromQuestion?: boolean;
   // Coordinator fields
   coordinatorMode?: boolean;
   propagateSkipPermissions?: boolean;

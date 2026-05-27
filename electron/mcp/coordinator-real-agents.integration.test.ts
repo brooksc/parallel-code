@@ -130,6 +130,11 @@ describeRealAgents('Coordinator real agent startup smoke', () => {
       let taskId: string | undefined;
       const token = `PARALLEL_CODE_REAL_AGENT_SMOKE_${name.toUpperCase()}`;
 
+      // Isolate spawned CLIs from host dotfiles/credentials.
+      const tempHome = mkdtempSync(join(tmpdir(), 'parallel-code-test-home-'));
+      const origHome = process.env.HOME;
+      process.env.HOME = tempHome;
+
       try {
         coordinator.setWindow(createMockWindow(rendererEvents));
         coordinator.setDefaultProject('proj-1', repo);
@@ -167,12 +172,14 @@ describeRealAgents('Coordinator real agent startup smoke', () => {
           });
         expect(realChanges).toEqual([]);
       } finally {
+        process.env.HOME = origHome;
         if (taskId) {
           await coordinator.closeTask(taskId).catch(() => undefined);
         }
         if (existsSync(repo)) {
           rmSync(repo, { recursive: true, force: true });
         }
+        rmSync(tempHome, { recursive: true, force: true });
       }
     },
     120_000,
