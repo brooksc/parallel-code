@@ -622,8 +622,8 @@ export function PromptInput(props: PromptInputProps) {
   createEffect(
     on(
       // eslint-disable-next-line solid/reactivity
-      [questionActive, () => props.controlledBy, () => props.taskName] as const,
-      ([active, controlledBy, taskName], prev) => {
+      [questionActive, () => props.controlledBy] as const,
+      ([active, controlledBy], prev) => {
         const prevActive = prev?.[0] ?? false;
         // Trigger only when the question becomes newly active (false→true).
         // Do not restart the handoff when the internal activity lease changes while questionActive

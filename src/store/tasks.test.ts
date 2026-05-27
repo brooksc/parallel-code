@@ -138,6 +138,8 @@ import {
   markTaskUserActivity,
   setTaskPromptDraftActive,
   setTaskTerminalInputPending,
+  setTaskTerminalInputPendingFromQuestion,
+  clearTerminalInputPendingFromQuestion,
   markTaskMcpPending,
   markTaskMcpReady,
   markTaskMcpError,
@@ -361,6 +363,48 @@ describe('task automation activity lease', () => {
     setTaskTerminalInputPending('sub-task-1', false);
     vi.runOnlyPendingTimers();
     expect(mockTasks['sub-task-1'].controlledBy).toBe('coordinator');
+  });
+});
+
+describe('terminalInputPendingFromQuestion — real typing survives self-resolving question', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
+    mockTasks['sub-task-1'] = {
+      agentIds: ['agent-sub-1'],
+      shellAgentIds: [],
+      coordinatedBy: 'coordinator-1',
+      controlledBy: 'coordinator' as const,
+    };
+    mockTaskOrder.push('sub-task-1');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    mockTaskOrder.length = 0;
+  });
+
+  it('clearing the question flag does not clear terminalInputPending', () => {
+    // Question appears: mark pending as question-originated.
+    setTaskTerminalInputPendingFromQuestion('sub-task-1');
+    setTaskTerminalInputPending('sub-task-1', true);
+    expect(mockTasks['sub-task-1'].terminalInputPendingFromQuestion).toBe(true);
+    expect(mockTasks['sub-task-1'].terminalInputPending).toBe(true);
+
+    // User types in the terminal before question self-dismisses: clears the flag, not pending.
+    clearTerminalInputPendingFromQuestion('sub-task-1');
+    expect(mockTasks['sub-task-1'].terminalInputPendingFromQuestion).toBeUndefined();
+    expect(mockTasks['sub-task-1'].terminalInputPending).toBe(true);
+  });
+
+  it('setTaskTerminalInputPending(false) also clears the question flag when pending is cleared', () => {
+    setTaskTerminalInputPendingFromQuestion('sub-task-1');
+    setTaskTerminalInputPending('sub-task-1', true);
+    // Question resolves with flag still set (no real typing happened).
+    setTaskTerminalInputPending('sub-task-1', false);
+    expect(mockTasks['sub-task-1'].terminalInputPending).toBeUndefined();
+    expect(mockTasks['sub-task-1'].terminalInputPendingFromQuestion).toBeUndefined();
   });
 });
 

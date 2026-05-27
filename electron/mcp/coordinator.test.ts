@@ -1458,7 +1458,7 @@ describe('Coordinator waitForIdle', () => {
     await expect(waitPromise).resolves.toEqual({ reason: 'idle' });
   });
 
-  it('notifies coordinator when releasing control after waitForIdle was interrupted', async () => {
+  it('does not stage a manual-control notification when control returns to coordinator', async () => {
     await coordinator.createTask({ name: 'my-task', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const waitPromise = coordinator.waitForIdle('task-1');
 
@@ -1468,12 +1468,9 @@ describe('Coordinator waitForIdle', () => {
 
     coordinator.setTaskControl('task-1', 'coordinator');
 
-    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+    expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
       'mcp_coordinator_notification_staged',
-      expect.objectContaining({
-        coordinatorTaskId: 'coord-1',
-        text: expect.stringContaining('"my-task" has been returned to coordinator control'),
-      }),
+      expect.anything(),
     );
   });
 });
@@ -1687,6 +1684,32 @@ describe('Coordinator sendPrompt', () => {
       signalDoneConsumed: false,
       needsReview: false,
     });
+  });
+
+  it('second concurrent sendPrompt is queued while the first write lock is held', async () => {
+    vi.useFakeTimers();
+    try {
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      coordinator.markPromptDelivered('task-1');
+
+      // First sendPrompt: acquires writingPromptTaskIds lock, awaits 50ms write delay.
+      const firstPromise = coordinator.sendPrompt('task-1', 'first');
+      // Second concurrent call: lock is already held, must queue rather than write through.
+      const secondResult = await coordinator.sendPrompt('task-1', 'second');
+      expect(secondResult).toEqual({ queued: true });
+
+      // Advance through the first write delay + flush's write delay.
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(firstPromise).resolves.toEqual({ queued: false });
+
+      // Both prompts written in order, not interleaved.
+      const textCalls = mockWriteToAgent.mock.calls
+        .map((c) => c[1] as string)
+        .filter((t) => t === 'first' || t === 'second');
+      expect(textCalls).toEqual(['first', 'second']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -3287,7 +3310,6 @@ describe('Coordinator removeCoordinatedTask', () => {
     await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
     const agentId = getAgentId();
     coordinator.setTaskControl('task-1', 'human');
-    await coordinator.waitForIdle('task-1');
     await coordinator.sendPrompt('task-1', 'hello').catch(() => {});
 
     coordinator.removeCoordinatedTask('task-1');
