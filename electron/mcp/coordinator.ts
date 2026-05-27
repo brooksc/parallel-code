@@ -271,6 +271,13 @@ export class Coordinator {
     if (!task.assignedPromptDelivered || !task.suppressNextIdleNotification) return false;
     const suppressUntil = task.suppressNextIdleNotificationUntil;
     if (suppressUntil !== undefined && Date.now() < suppressUntil) {
+      task.suppressNextIdleCount = (task.suppressNextIdleCount ?? 0) + 1;
+      if (task.suppressNextIdleCount > 10) {
+        logWarn('coordinator.suppress_echo', 'excessive prompt-echo suppressions per delivery', {
+          taskId: task.id,
+          count: task.suppressNextIdleCount,
+        });
+      }
       this.tailBuffers.set(task.agentId, '');
       return true;
     }
@@ -985,6 +992,11 @@ export class Coordinator {
   async sendPrompt(taskId: string, prompt: string): Promise<{ queued: boolean }> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (prompt.length > MAX_PROMPT_BYTES)
+      throw new Error(`Prompt exceeds ${MAX_PROMPT_BYTES} byte limit`);
+    const queueLen = task.pendingPrompts?.length ?? 0;
+    if (queueLen >= MAX_PENDING_PROMPTS)
+      throw new Error(`Prompt queue full (${MAX_PENDING_PROMPTS} pending)`);
     if (task.initialPrompt && !task.assignedPromptDelivered) {
       task.pendingPrompts = [...(task.pendingPrompts ?? []), prompt];
       this.clearInitialPromptTimer(task.id);
@@ -995,7 +1007,7 @@ export class Coordinator {
       task.pendingPrompts = [...task.pendingPrompts, prompt];
       return { queued: true };
     }
-    if (this.controlMap.get(taskId) === 'human') {
+    if (this.controlMap.get(taskId) === 'human' || this.writingPromptTaskIds.has(taskId)) {
       task.pendingPrompts = [...(task.pendingPrompts ?? []), prompt];
       return { queued: true };
     }
@@ -1007,16 +1019,21 @@ export class Coordinator {
   private async flushNextQueuedPrompt(task: CoordinatedTask): Promise<void> {
     if (this.controlMap.get(task.id) === 'human') return;
     if (task.initialPrompt && !task.assignedPromptDelivered) return;
+    if (this.writingPromptTaskIds.has(task.id)) return;
     const prompt = task.pendingPrompts?.shift();
     if (!prompt) {
       task.pendingPrompts = undefined;
       return;
     }
+    this.writingPromptTaskIds.add(task.id);
     try {
       await this.writePromptToTask(task, prompt);
     } catch (err) {
-      task.pendingPrompts = [prompt, ...(task.pendingPrompts ?? [])];
+      task.pendingPrompts ??= [];
+      task.pendingPrompts.unshift(prompt);
       throw err;
+    } finally {
+      this.writingPromptTaskIds.delete(task.id);
     }
     if (task.pendingPrompts?.length === 0) task.pendingPrompts = undefined;
   }
@@ -2108,6 +2125,7 @@ export class Coordinator {
       task.suppressNextIdleNotification = true;
       task.suppressNextIdleNotificationUntil = undefined;
     }
+    task.suppressNextIdleCount = 0;
     this.tailBuffers.set(task.agentId, '');
     if (task.status !== 'exited' && task.status !== 'error') task.status = 'running';
   }

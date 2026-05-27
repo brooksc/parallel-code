@@ -12,10 +12,6 @@ export function isStartupBlockingAutoSend(tail: string): boolean {
   return STARTUP_BLOCKING_PATTERNS.some((re) => re.test(frame));
 }
 
-export function shouldKeepWaitingForInitialPromptOutput(tail: string): boolean {
-  return !normalizeCurrentFrame(tail);
-}
-
 export function shouldAbortInitialPromptAfterTimeout(params: {
   elapsedMs: number;
   maxWaitMs: number;
@@ -24,5 +20,5 @@ export function shouldAbortInitialPromptAfterTimeout(params: {
 }): boolean {
   if (params.elapsedMs <= params.maxWaitMs) return false;
   if (params.coordinatedBy) return false;
-  return !shouldKeepWaitingForInitialPromptOutput(params.tail);
+  return Boolean(normalizeCurrentFrame(params.tail));
 }

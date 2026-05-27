@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   isStartupBlockingAutoSend,
   shouldAbortInitialPromptAfterTimeout,
-  shouldKeepWaitingForInitialPromptOutput,
 } from './prompt-autosend-readiness';
+import { normalizeCurrentFrame } from '../store/taskStatus';
 
 describe('isStartupBlockingAutoSend', () => {
   it('blocks while Codex is still loading the model', () => {
@@ -28,17 +28,17 @@ describe('isStartupBlockingAutoSend', () => {
   });
 });
 
-describe('shouldKeepWaitingForInitialPromptOutput', () => {
-  it('keeps initial prompt delivery alive while no renderer tail has been observed', () => {
-    expect(shouldKeepWaitingForInitialPromptOutput('')).toBe(true);
+describe('normalizeCurrentFrame (used to gate initial-prompt delivery)', () => {
+  it('returns falsy while no renderer tail has been observed', () => {
+    expect(normalizeCurrentFrame('')).toBeFalsy();
   });
 
-  it('keeps initial prompt delivery alive for control-only renderer output', () => {
-    expect(shouldKeepWaitingForInitialPromptOutput('\x1b[?2004h\x1b[?1004h')).toBe(true);
+  it('returns falsy for control-only renderer output', () => {
+    expect(normalizeCurrentFrame('\x1b[?2004h\x1b[?1004h')).toBeFalsy();
   });
 
-  it('allows timeout fallback once any renderer tail has been observed', () => {
-    expect(shouldKeepWaitingForInitialPromptOutput('› Explain this codebase')).toBe(false);
+  it('returns truthy once any renderer tail has been observed', () => {
+    expect(normalizeCurrentFrame('› Explain this codebase')).toBeTruthy();
   });
 });
 

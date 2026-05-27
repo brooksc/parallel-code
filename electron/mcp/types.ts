@@ -29,6 +29,7 @@ export interface CoordinatedTask {
   // Ignore the prompt that was already visible when a coordinator-delivered prompt was sent.
   suppressNextIdleNotification?: boolean;
   suppressNextIdleNotificationUntil?: number;
+  suppressNextIdleCount?: number;
   reviewNotificationQueued?: boolean;
   /** Coordinator Docker container name. Set when the coordinator runs in Docker mode.
    *  Sub-tasks each get their own `docker run` container; this is not used for spawning

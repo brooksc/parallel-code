@@ -5,6 +5,7 @@ import { store, setStore } from './core';
 import type { WorktreeStatus } from '../ipc/types';
 import type { TaskGitStatusSnapshot } from './types';
 import { warn as logWarn } from '../lib/log';
+import { AGENT_READY_TAIL_PATTERNS } from '../../electron/mcp/prompt-detect';
 
 // --- Trust-specific patterns (subset of QUESTION_PATTERNS) ---
 // These are auto-accepted when autoTrustFolders is enabled.
@@ -156,14 +157,8 @@ function looksLikeBareShellPrompt(line: string): boolean {
 
 /**
  * Patterns for known agent main input prompts (ready for a new task).
- * Tested against the stripped data chunk (not a single line), because TUI
- * apps like Claude Code use cursor positioning instead of newlines.
+ * Imported from prompt-detect.ts — do not duplicate here.
  */
-const AGENT_READY_TAIL_PATTERNS: RegExp[] = [
-  /❯/, // Claude Code
-  /›/, // Codex CLI
-  /(?:^|\s)>\s*(?:Type your message|$)/i, // Gemini CLI
-];
 
 /** Check stripped output for known agent prompt characters.
  *  Only checks the tail of the chunk — the agent's main prompt renders near

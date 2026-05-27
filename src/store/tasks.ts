@@ -517,6 +517,12 @@ function removeTaskFromStore(taskId: string, agentIds: string[]): void {
     clearAgentActivity(agentId);
   }
 
+  const activityTimer = activityReleaseTimers.get(taskId);
+  if (activityTimer !== undefined) {
+    clearTimeout(activityTimer);
+    activityReleaseTimers.delete(taskId);
+  }
+
   // Phase 1: mark as removing so UI can animate
   setStore('tasks', taskId, 'closingStatus', 'removing');
 
@@ -1446,6 +1452,7 @@ export function setTaskControl(taskId: string, who: 'coordinator' | 'human'): vo
   const task = store.tasks[taskId];
   if (!task) return;
   const prev = task?.controlledBy;
+  // Load-bearing: prevents IPC storms from per-keystroke markTaskUserActivity calls.
   if (prev === who) return;
   setStore('tasks', taskId, 'controlledBy', who);
   // Coordinator tasks manage their own control state in the frontend only.
@@ -1526,7 +1533,10 @@ function scheduleTaskAutomationRelease(taskId: string): void {
 export function markTaskUserActivity(taskId: string): void {
   const task = store.tasks[taskId];
   if (!task) return;
-  setStore('tasks', taskId, 'userActivityHoldUntil', Date.now() + USER_ACTIVITY_HOLD_MS);
+  const next = Date.now() + USER_ACTIVITY_HOLD_MS;
+  if (next - (task.userActivityHoldUntil ?? 0) > 250) {
+    setStore('tasks', taskId, 'userActivityHoldUntil', next);
+  }
   if (task.coordinatedBy && task.controlledBy !== 'human') {
     setTaskControl(taskId, 'human');
   }

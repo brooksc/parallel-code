@@ -260,7 +260,7 @@ describe('Coordinator registerCoordinator — idempotency', () => {
     }
   });
 
-  it('delivers a coordinated initial prompt even if startup control is human', async () => {
+  it('holds initial prompt delivery while control is human, delivers after control returns to coordinator', async () => {
     vi.useFakeTimers();
     try {
       coordinator.registerCoordinator('coord-1', 'proj-1');
@@ -274,6 +274,17 @@ describe('Coordinator registerCoordinator — idempotency', () => {
 
       coordinator.setTaskControl(task.id, 'human');
       output(encode('ready ❯ '));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(50);
+
+      // Still blocked — human control held
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+
+      // Control returns to coordinator; next reschedule cycle delivers
+      coordinator.setTaskControl(task.id, 'coordinator');
       await vi.advanceTimersByTimeAsync(1_500);
       await vi.advanceTimersByTimeAsync(50);
 

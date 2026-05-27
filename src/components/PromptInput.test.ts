@@ -105,7 +105,7 @@ describe('processAutoFireTick — user activity blockers', () => {
       tail: promptTail,
       currentMissCount: 0,
     });
-    expect(result.outcome).toBe('waiting-for-user-draft');
+    expect(result.outcome).toBe('waiting');
   });
 
   it('waits while terminal input may be pending', () => {
@@ -118,7 +118,7 @@ describe('processAutoFireTick — user activity blockers', () => {
       tail: promptTail,
       currentMissCount: 0,
     });
-    expect(result.outcome).toBe('waiting-for-terminal-input');
+    expect(result.outcome).toBe('waiting');
   });
 
   it('waits while a recent user activity lease is active', () => {
@@ -131,7 +131,7 @@ describe('processAutoFireTick — user activity blockers', () => {
       tail: promptTail,
       currentMissCount: 0,
     });
-    expect(result.outcome).toBe('waiting-for-user-activity');
+    expect(result.outcome).toBe('waiting');
   });
 });
 

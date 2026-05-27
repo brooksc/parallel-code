@@ -5,12 +5,7 @@ const PROMPT_MARKER_SCAN_CHARS = 500;
 export type AutoFireTickResult =
   | { outcome: 'too-soon' }
   | { outcome: 'paused' }
-  | {
-      outcome:
-        | 'waiting-for-user-draft'
-        | 'waiting-for-terminal-input'
-        | 'waiting-for-user-activity';
-    }
+  | { outcome: 'waiting' }
   | { outcome: 'no-prompt'; newMissCount: number }
   | { outcome: 'fire' };
 
@@ -35,16 +30,12 @@ export function processAutoFireTick(params: {
     return { outcome: 'too-soon' };
   }
 
-  if (params.promptDraftActive) {
-    return { outcome: 'waiting-for-user-draft' };
-  }
-
-  if (params.terminalInputPending) {
-    return { outcome: 'waiting-for-terminal-input' };
+  if (params.promptDraftActive || params.terminalInputPending) {
+    return { outcome: 'waiting' };
   }
 
   if ((params.userActivityHoldUntil ?? 0) > params.now) {
-    return { outcome: 'waiting-for-user-activity' };
+    return { outcome: 'waiting' };
   }
 
   // A question/dialog is active — the ❯ visible in the TUI is a selection

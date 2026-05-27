@@ -501,12 +501,7 @@ export function PromptInput(props: PromptInputProps) {
         });
         return;
       }
-      if (
-        tick.outcome === 'paused' ||
-        tick.outcome === 'waiting-for-user-draft' ||
-        tick.outcome === 'waiting-for-terminal-input' ||
-        tick.outcome === 'waiting-for-user-activity'
-      ) {
+      if (tick.outcome === 'paused' || tick.outcome === 'waiting') {
         return;
       }
       if (tick.outcome === 'no-prompt') {
@@ -635,6 +630,7 @@ export function PromptInput(props: PromptInputProps) {
         // is still true — activity lease changes can happen before the tail buffer
         // has cleared, which would immediately override the user's terminal answer.
         const questionJustActivated = active && !prevActive;
+        const questionJustResolved = !active && prevActive;
         const tail = getAgentOutputTail(props.agentId);
         if (
           questionJustActivated &&
@@ -802,8 +798,9 @@ export function PromptInput(props: PromptInputProps) {
           .catch(() => {});
       } else if (staged && staged.notificationIds.length > 0) {
         // User sent their own message while a coordinator notification was pending.
-        // Reschedule the re-stage timer so the pending notifications reappear after
-        // COORDINATOR_RESTAMP_DELAY_MS, independently of new sub-task completions.
+        // Clear locally so stale staged text can't re-fire on the next autofire tick,
+        // then reschedule the re-stage timer so notifications reappear after the delay.
+        clearStagedNotification(props.taskId);
         invoke(IPC.MCP_CoordinatorRestageAfterUserSend, {
           coordinatorTaskId: props.taskId,
         }).catch(() => {});

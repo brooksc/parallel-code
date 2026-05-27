@@ -47,7 +47,7 @@ export function nextTerminalInputPending(currentPending: boolean, data: string):
     } else if (ch === '\x1b') {
       i = skipEscapeSequence(data, i);
     } else if (ch === '\x7f') {
-      pending = pending || currentPending;
+      // Backspace: can't know if line is now empty without a char counter; leave pending unchanged.
     } else if (ch >= ' ') {
       pending = true;
     }

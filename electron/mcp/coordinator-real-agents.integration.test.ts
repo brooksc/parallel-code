@@ -6,7 +6,12 @@ import { describe, expect, it } from 'vitest';
 import { Coordinator } from './coordinator.js';
 
 const RUN_REAL_AGENT_SMOKE = process.env.RUN_REAL_AGENT_SMOKE === '1';
-const describeRealAgents = RUN_REAL_AGENT_SMOKE ? describe : describe.skip;
+// Dangerous flags (--dangerously-bypass-approvals-and-sandbox, --dangerously-skip-permissions)
+// run agents with no sandbox on the host machine. Require a second opt-in to avoid accidental
+// credential exposure on dev machines running with credentials in scope.
+const RUN_REAL_AGENT_DANGEROUS = process.env.RUN_REAL_AGENT_DANGEROUS === '1';
+const describeRealAgents =
+  RUN_REAL_AGENT_SMOKE && RUN_REAL_AGENT_DANGEROUS ? describe : describe.skip;
 
 interface RealAgentProfile {
   name: 'codex' | 'claude' | 'gemini';
@@ -107,9 +112,7 @@ async function waitForInitialPromptDelivery(
     const status = coordinator.getTaskStatus(taskId);
     if (status?.status === 'exited' || status?.status === 'error') {
       throw new Error(
-        `Task exited before initial prompt delivery. Last output:\n${coordinator.getTaskOutput(
-          taskId,
-        )}`,
+        `Task exited before initial prompt delivery. Last output:\n${coordinator.getTaskOutput(taskId)?.slice(-2048) ?? ''}`,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
