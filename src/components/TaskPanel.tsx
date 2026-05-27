@@ -42,6 +42,7 @@ import { theme } from '../lib/theme';
 import { isMac } from '../lib/platform';
 import type { Task } from '../store/types';
 import type { CommitInfo } from '../ipc/types';
+import { isLandedTaskState } from '../store/landing';
 
 interface TaskPanelProps {
   task: Task;
@@ -78,10 +79,7 @@ export function TaskPanel(props: TaskPanelProps) {
   const [showPushConfirm, setShowPushConfirm] = createSignal(false);
   const [pushSuccess, setPushSuccess] = createSignal(false);
   const [pushing, setPushing] = createSignal(false);
-  const isLandedTask = () =>
-    props.task.landingState === 'landed_pending_review' ||
-    props.task.landingState === 'landed_cleanup_failed' ||
-    props.task.landingState === 'reviewed';
+  const isLandedTask = () => isLandedTaskState(props.task.landingState);
   let pushSuccessTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(pushSuccessTimer));
   const [diffScrollTarget, setDiffScrollTarget] = createSignal<string | null>(null);

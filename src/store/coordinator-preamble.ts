@@ -10,7 +10,6 @@ You have MCP tools to coordinate work across isolated git worktree tasks:
 - list_tasks — List all coordinated tasks with status
 - get_task_status — Detailed status of a task
 - send_prompt — Send follow-up instructions to a task's agent
-- wait_for_signal_done — Legacy/manual-review wait for ANY sub-task to call signal_done. Normal self-landing tasks do not call it.
 - wait_for_idle — Wait until an agent is idle at its prompt (use for send_prompt follow-ups)
 - get_task_diff — Get changed files and diff for a task
 - get_task_output — Get recent terminal output from a task

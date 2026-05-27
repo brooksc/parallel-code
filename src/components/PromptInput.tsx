@@ -81,6 +81,8 @@ const AUTOSEND_MAX_WAIT_MS = 45_000;
 const PROMPT_VERIFY_TIMEOUT_MS = 5_000;
 const PROMPT_VERIFY_POLL_MS = 250;
 const PROMPT_MARKER_SCAN_CHARS = 500;
+// 5s covers the typical round-trip from send → pty echo; 40 chars is enough to
+// uniquely identify the prompt without risking a false match on short snippets.
 const PROMPT_ECHO_HANDOFF_SUPPRESS_MS = 5_000;
 
 /** True when auto-send should be blocked by a question in the output.

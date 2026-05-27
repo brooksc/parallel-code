@@ -1328,6 +1328,7 @@ export function applyTaskMcpLaunchResult(
   taskId: string,
   result: { mcpLaunchArgs?: string[] } | undefined,
 ): boolean {
+  if (!store.tasks[taskId]) return false;
   const args = result?.mcpLaunchArgs;
   if ((!Array.isArray(args) || args.length === 0) && taskRequiresMcpLaunchArgs(taskId)) {
     markTaskMcpError(taskId, 'MCP startup returned no launch args');

@@ -657,12 +657,7 @@ export function TerminalView(props: TerminalViewProps) {
     function startSpawn() {
       if (!term || spawnStarted) return;
       const landingState = store.tasks[taskId]?.landingState;
-      if (
-        landingState === 'landed_pending_review' ||
-        landingState === 'landed_cleanup_failed' ||
-        landingState === 'reviewed'
-      )
-        return;
+      if (isLandedTaskState(landingState)) return;
       spawnStarted = true;
       invoke(IPC.SpawnAgent, {
         taskId,

@@ -66,6 +66,7 @@ import { IPC } from '../ipc/channels.js';
 
 const DEFAULT_WAIT_TIMEOUT_MS = 300_000; // 5 minutes
 const PROMPT_WRITE_DELAY_MS = 50;
+const GIT_LOCK_RETRY_DELAY_MS = 2_000;
 const REST_COORDINATOR_SENTINEL = 'api';
 const PREAMBLE_ARTIFACT_PATHS = new Set([
   'AGENTS.md',
@@ -1000,6 +1001,11 @@ export class Coordinator {
   }
 
   private syncLandingState(task: CoordinatedTask): void {
+    // Detach renderer MCP state only after a successful merge (landed states);
+    // escalation/failure states leave it attached so the task stays reachable.
+    const detachMcpState =
+      task.landingState === 'landed_pending_review' ||
+      task.landingState === 'landed_cleanup_failed';
     this.notifyRenderer(IPC.MCP_TaskStateSync, {
       taskId: task.id,
       verification: task.verification,
@@ -1012,21 +1018,9 @@ export class Coordinator {
         task.landingState === 'landed_cleanup_failed' ||
         task.landingState === 'landing_escalated' ||
         task.landingState === 'landing_failed',
-      controlledBy:
-        task.landingState === 'landed_pending_review' ||
-        task.landingState === 'landed_cleanup_failed'
-          ? null
-          : undefined,
-      mcpConfigPath:
-        task.landingState === 'landed_pending_review' ||
-        task.landingState === 'landed_cleanup_failed'
-          ? null
-          : undefined,
-      mcpStartupStatus:
-        task.landingState === 'landed_pending_review' ||
-        task.landingState === 'landed_cleanup_failed'
-          ? null
-          : undefined,
+      controlledBy: detachMcpState ? null : undefined,
+      mcpConfigPath: detachMcpState ? null : undefined,
+      mcpStartupStatus: detachMcpState ? null : undefined,
     });
   }
 
@@ -1082,6 +1076,15 @@ export class Coordinator {
     }
 
     if (dirtyPaths.length > 0) {
+      // nonPreamblePaths check above guarantees every path here is a preamble artifact.
+      const unexpectedPaths = dirtyPaths.filter(
+        (p) => !preambleFiles.has(p) || !PREAMBLE_ARTIFACT_PATHS.has(p),
+      );
+      if (unexpectedPaths.length > 0) {
+        throw new Error(
+          `Unexpected non-preamble paths staged before cleanup commit: ${unexpectedPaths.join(', ')}`,
+        );
+      }
       await execAsync('git', ['add', '-A', '--', ...dirtyPaths], { cwd: task.worktreePath });
       try {
         await execAsync('git', ['commit', '-m', 'Remove Parallel Code sub-task preamble'], {
@@ -1122,7 +1125,7 @@ export class Coordinator {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('Another git process') || msg.includes('index.lock')) {
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, GIT_LOCK_RETRY_DELAY_MS));
         result = await runMerge();
       } else {
         throw err;
@@ -1210,9 +1213,6 @@ export class Coordinator {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
 
-    task.verification = input.verification;
-    task.landingSummary = input.summary;
-
     if (!this.coordinators.has(task.coordinatorTaskId)) {
       const reason = `Cannot self-land orphaned task: coordinator ${task.coordinatorTaskId} is not registered`;
       this.escalateLanding(task, 'landing_escalated', reason);
@@ -1224,6 +1224,11 @@ export class Coordinator {
       this.escalateLanding(task, 'landing_escalated', reason);
       throw new Error(reason);
     }
+
+    // Only persist verification/summary after all validation passes so rejected
+    // calls don't leave bogus data visible in the renderer.
+    task.verification = input.verification;
+    task.landingSummary = input.summary;
 
     try {
       await this.prepareCleanSelfLandingWorktree(task);
@@ -1366,6 +1371,10 @@ export class Coordinator {
     }
 
     const hasManualReviewSignal = task.signalDoneAt !== undefined;
+    // landing_escalated unlocks merge_task as an escape hatch for the coordinator.
+    // This is not an authority leak: sub-task tokens can only reach land_self (via
+    // the /api/tasks/:id/land endpoint); merge_task is a coordinator-only MCP tool,
+    // so only a coordinator agent can invoke it here.
     const hasLandingEscalation =
       task.landingState === 'landing_escalated' || task.landingState === 'landing_failed';
     if (task.status === 'running' && !hasManualReviewSignal && !hasLandingEscalation) {

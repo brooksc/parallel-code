@@ -19,6 +19,7 @@ import { handleDragReorder } from '../lib/dragReorder';
 import { getTaskDockerBadgeLabel } from '../lib/docker';
 import { displayTaskNameFromPrompt, shouldUsePromptDerivedTaskName } from '../lib/clean-task-name';
 import type { Task } from '../store/types';
+import { isLandedTaskState } from '../store/landing';
 
 interface TaskTitleBarProps {
   task: Task;
@@ -33,10 +34,7 @@ interface TaskTitleBarProps {
 
 export function TaskTitleBar(props: TaskTitleBarProps) {
   const dockerBadgeLabel = () => getTaskDockerBadgeLabel(props.task.dockerSource);
-  const isLandedTask = () =>
-    props.task.landingState === 'landed_pending_review' ||
-    props.task.landingState === 'landed_cleanup_failed' ||
-    props.task.landingState === 'reviewed';
+  const isLandedTask = () => isLandedTaskState(props.task.landingState);
   const landingBadge = () => {
     switch (props.task.landingState) {
       case 'landed_pending_review':
