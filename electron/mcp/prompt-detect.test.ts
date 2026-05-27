@@ -96,9 +96,13 @@ describe('chunkContainsAgentPrompt', () => {
     expect(chunkContainsAgentPrompt('❯')).toBe(true);
   });
 
-  it('returns true for ❯ in the last 300 chars', () => {
+  it('returns true for a standalone ❯ prompt line in the tail', () => {
+    expect(chunkContainsAgentPrompt(`work complete\n❯`)).toBe(true);
+  });
+
+  it('returns false for ❯ embedded in ordinary output', () => {
     const prefix = 'A'.repeat(200);
-    expect(chunkContainsAgentPrompt(`${prefix}❯`)).toBe(true);
+    expect(chunkContainsAgentPrompt(`${prefix}❯`)).toBe(false);
   });
 
   it('returns false when ❯ appears only in the body (TUI selection menu), not the tail', () => {

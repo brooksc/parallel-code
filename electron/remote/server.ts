@@ -32,6 +32,7 @@ export interface MCPLogEntry {
 
 const MAX_LOG_ENTRIES = 200;
 const REST_COORDINATOR_SENTINEL = 'api';
+const MAX_REST_PROMPT_BYTES = 16 * 1024;
 const mcpLogs: MCPLogEntry[] = [];
 
 function mcpLog(level: 'info' | 'error', msg: string): void {
@@ -39,6 +40,32 @@ function mcpLog(level: 'info' | 'error', msg: string): void {
   mcpLogs.push(entry);
   if (mcpLogs.length > MAX_LOG_ENTRIES) mcpLogs.splice(0, mcpLogs.length - MAX_LOG_ENTRIES);
   console.warn(`[MCP ${level}] ${msg}`);
+}
+
+function sanitizePromptText(prompt: string): string {
+  return (
+    prompt
+      // eslint-disable-next-line no-control-regex -- REST prompts are written to a PTY.
+      .replace(/[\x00-\x1f\x7f]/g, ' ')
+      .trim()
+  );
+}
+
+function validateRestPrompt(
+  value: unknown,
+  required: boolean,
+): string | undefined | { error: string } {
+  if (value === undefined) {
+    return required ? { error: 'prompt must be a non-empty string' } : undefined;
+  }
+  if (typeof value !== 'string')
+    return { error: required ? 'prompt must be a non-empty string' : 'prompt must be a string' };
+  const sanitized = sanitizePromptText(value);
+  if (!sanitized) return required ? { error: 'prompt must be a non-empty string' } : undefined;
+  if (Buffer.byteLength(sanitized, 'utf8') > MAX_REST_PROMPT_BYTES) {
+    return { error: `prompt must be ${MAX_REST_PROMPT_BYTES} bytes or fewer` };
+  }
+  return sanitized;
 }
 
 export function getMCPLogs(): MCPLogEntry[] {
@@ -410,8 +437,8 @@ export function startRemoteServer(opts: {
               // eslint-disable-next-line no-control-regex
               body.name = (body.name as string).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
               if (!body.name) return jsonReply(400, { error: 'name must be a non-empty string' });
-              if (body.prompt !== undefined && typeof body.prompt !== 'string')
-                return jsonReply(400, { error: 'prompt must be a string' });
+              const prompt = validateRestPrompt(body.prompt, false);
+              if (prompt && typeof prompt !== 'string') return jsonReply(400, prompt);
               if (body.projectId !== undefined && typeof body.projectId !== 'string')
                 return jsonReply(400, { error: 'projectId must be a string' });
               if (body.gitIsolation !== undefined)
@@ -443,7 +470,7 @@ export function startRemoteServer(opts: {
               mcpLog('info', `create_task name=${body.name} baseBranch=${baseBranch ?? 'default'}`);
               const result = await orch.createTask({
                 name: body.name as string,
-                prompt: body.prompt as string | undefined,
+                prompt,
                 coordinatorTaskId,
                 projectId: body.projectId as string | undefined,
                 baseBranch,
@@ -486,14 +513,14 @@ export function startRemoteServer(opts: {
           readBody()
             .then(async (body) => {
               const taskId = decodeURIComponent(taskIdMatch[1]);
-              if (typeof body.prompt !== 'string' || !body.prompt)
-                return jsonReply(400, { error: 'prompt must be a non-empty string' });
+              const prompt = validateRestPrompt(body.prompt, true);
+              if (!prompt || typeof prompt !== 'string') return jsonReply(400, prompt);
               const detail = orch.getTaskStatus(taskId);
               if (!detail) return jsonReply(404, { error: 'task not found' });
               if (!ownedByCallerOrUnscoped(detail.coordinatorTaskId))
                 return jsonReply(403, { error: 'forbidden' });
               mcpLog('info', `send_prompt id=${taskId}`);
-              const result = await orch.sendPrompt(taskId, body.prompt);
+              const result = await orch.sendPrompt(taskId, prompt);
               jsonReply(200, { ok: true, ...result });
             })
             .catch((err) => {

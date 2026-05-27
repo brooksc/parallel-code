@@ -921,9 +921,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
       assertString(args.body, 'body');
       assertStringArray(args.taskIds, 'taskIds');
       const ctx = { title: args.title, body: args.body, taskIds: args.taskIds };
+      const warnCtx = { taskIds: args.taskIds };
       logDebug('notification', 'show requested', ctx);
       if (!Notification.isSupported()) {
-        logWarn('notification', 'native notifications are not supported', ctx);
+        logWarn('notification', 'native notifications are not supported', warnCtx);
         return { ok: false, reason: 'unsupported' };
       }
       const notification = new Notification({
@@ -937,7 +938,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
       });
       notification.on('failed', (_event, error) => {
         release();
-        logWarn('notification', 'show failed', { ...ctx, err: error });
+        logWarn('notification', 'show failed', { ...warnCtx, err: error });
       });
       notification.on('click', () => {
         release();

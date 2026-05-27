@@ -2,7 +2,7 @@
 /* global process, setTimeout */
 
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 
 function argValue(name, fallback = '') {
   const idx = process.argv.indexOf(name);
@@ -19,8 +19,12 @@ function write(text) {
 
 function capture(payload) {
   if (!capturePath) return;
-  mkdirSync(dirname(capturePath), { recursive: true });
-  appendFileSync(capturePath, `${JSON.stringify({ profile, payload, at: Date.now() })}\n`);
+  const safeCapturePath = resolve(capturePath);
+  if (!safeCapturePath.includes(`${sep}.captures${sep}`)) {
+    throw new Error('--capture must point inside a .captures fixture directory');
+  }
+  mkdirSync(dirname(safeCapturePath), { recursive: true });
+  appendFileSync(safeCapturePath, `${JSON.stringify({ profile, payload, at: Date.now() })}\n`);
 }
 
 function prompt() {

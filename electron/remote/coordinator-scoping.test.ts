@@ -339,6 +339,21 @@ describe('coordinator scoping', () => {
       await expect(res.json()).resolves.toEqual({ ok: true, queued: false });
     });
 
+    it('strips control characters before sending prompt to the task PTY', async () => {
+      const res = await post(`/api/tasks/${taskA.id}/prompt`, { prompt: 'hi\x03\rthere' }, COORD_A);
+      expect(res.status).toBe(200);
+      expect(mockCoord.sendPrompt).toHaveBeenLastCalledWith(taskA.id, 'hi  there');
+    });
+
+    it('rejects oversized prompts before sending them to the coordinator', async () => {
+      const res = await post(
+        `/api/tasks/${taskA.id}/prompt`,
+        { prompt: 'x'.repeat(16 * 1024 + 1) },
+        COORD_A,
+      );
+      expect(res.status).toBe(400);
+    });
+
     it('returns queued status when the prompt is parked behind a hold', async () => {
       vi.mocked(mockCoord.sendPrompt).mockResolvedValueOnce({ queued: true });
 
@@ -443,6 +458,14 @@ describe('coordinator scoping', () => {
         COORD_A,
       );
       expect(res.status).toBe(201);
+    });
+
+    it('strips control characters before using a create_task prompt', async () => {
+      const res = await post('/api/tasks', { name: 'new task', prompt: 'do\x1b[200~it' }, COORD_A);
+      expect(res.status).toBe(201);
+      expect(mockCoord.createTask).toHaveBeenLastCalledWith(
+        expect.objectContaining({ prompt: 'do [200~it' }),
+      );
     });
   });
 

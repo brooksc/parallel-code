@@ -196,6 +196,7 @@ export interface ApiTaskDetail extends ApiTaskSummary {
   agentId: string;
   exitCode: number | null;
   pendingPrompt?: string;
+  pendingPrompts?: string[];
   pendingPromptCount?: number;
 }
 

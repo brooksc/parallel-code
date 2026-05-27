@@ -418,9 +418,9 @@ describe('Coordinator registerCoordinator — idempotency', () => {
       await vi.advanceTimersByTimeAsync(1_500);
       await vi.advanceTimersByTimeAsync(50);
       output(encode('done one ❯ '));
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(100);
       output(encode('done follow one ❯ '));
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(100);
 
       const textWrites = mockWriteToAgent.mock.calls
         .filter(([agentId, text]) => agentId === task.agentId && text !== '\r')
@@ -1642,6 +1642,7 @@ describe('Coordinator sendPrompt', () => {
     coordinator.setTaskControl('task-1', 'human');
     await expect(coordinator.sendPrompt('task-1', 'hello')).resolves.toEqual({ queued: true });
     expect(coordinator.getTaskStatus('task-1')?.pendingPrompt).toBe('hello');
+    expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toEqual(['hello']);
   });
 
   it('flushes a queued prompt when the user activity lease clears', async () => {
@@ -2459,6 +2460,32 @@ describe('Coordinator hydrateTask — restart hydration', () => {
 
     await expect(coordinator.sendPrompt('hydrated-1', 'hello')).resolves.toEqual({ queued: true });
     expect(coordinator.getTaskStatus('hydrated-1')?.pendingPrompt).toBe('hello');
+  });
+
+  it('hydrateTask uses the shared output callback to flush queued prompts after restart', async () => {
+    coordinator.hydrateTask({
+      id: 'hydrated-1',
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId: 'agent-hydrated',
+      coordinatorTaskId: 'coord-1',
+      controlledBy: 'human',
+    });
+    coordinator.markPromptDelivered('hydrated-1');
+    await coordinator.sendPrompt('hydrated-1', 'hello');
+    coordinator.setTaskControl('hydrated-1', 'coordinator');
+
+    const cb = mockSubscribeToAgent.mock.calls.find((call) => call[0] === 'agent-hydrated')?.[1] as
+      | ((encoded: string) => void)
+      | undefined;
+    expect(cb).toBeDefined();
+    cb?.(encode('❯'));
+    await new Promise((resolve) => setTimeout(resolve, 70));
+
+    expect(coordinator.getTaskStatus('hydrated-1')?.pendingPrompt).toBeUndefined();
   });
 });
 

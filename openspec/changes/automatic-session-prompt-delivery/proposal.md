@@ -36,8 +36,9 @@ to learn take/release control.
   prompts, and coordinator follow-up prompts.
 - Preserves landed/detached task behavior: closed or landed sessions still do
   not accept input.
-- Existing persisted control metadata remains compatibility data and is not a
-  user input gate.
+- Existing persisted control metadata remains compatibility data for live user
+  input, while still gating coordinator-owned automation writes during the
+  transition.
 
 ## Out Of Scope
 

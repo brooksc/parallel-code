@@ -126,6 +126,8 @@ export class Coordinator {
   private writingPromptTaskIds = new Set<string>();
   private initialPromptTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private initialPromptReadyTasks = new Set<string>();
+  private promptReadySeenAt = new Map<string, number>();
+  private queuedPromptFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private closingTaskIds = new Set<string>();
   private activeSignalWaitCounts = new Map<string, number>();
   private recentlyDelivered = new ReplayCache<WaitForSignalDoneResult>();
@@ -240,18 +242,57 @@ export class Coordinator {
   }
 
   private normalizedTail(agentId: string): string {
-    const tail = this.tailBuffers.get(agentId) ?? '';
+    const tail = (this.tailBuffers.get(agentId) ?? '').slice(-300);
     return (
       stripAnsi(tail)
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\x00-\x1f\x7f]/g, ' ')
-        .replace(/\s+/g, ' ')
+        // eslint-disable-next-line no-control-regex -- preserve newlines for anchored prompt detection.
+        .replace(/[\x00-\x09\x0b-\x1f\x7f]/g, ' ')
+        .replace(/[ \t]+/g, ' ')
         .trim()
     );
   }
 
   private tailHasAgentPrompt(task: CoordinatedTask): boolean {
     return chunkContainsAgentPrompt(this.normalizedTail(task.agentId));
+  }
+
+  private markAgentPromptReady(task: CoordinatedTask, hasAgentPrompt: boolean): boolean {
+    if (!hasAgentPrompt) {
+      this.promptReadySeenAt.delete(task.id);
+      return false;
+    }
+    const now = Date.now();
+    const firstSeenAt = this.promptReadySeenAt.get(task.id);
+    if (firstSeenAt === undefined) {
+      this.promptReadySeenAt.set(task.id, now);
+      return false;
+    }
+    return now - firstSeenAt >= PROMPT_WRITE_DELAY_MS;
+  }
+
+  private scheduleQueuedPromptFlush(task: CoordinatedTask): void {
+    if (!task.pendingPrompts?.length || this.queuedPromptFlushTimers.has(task.id)) return;
+    const timer = setTimeout(() => {
+      this.queuedPromptFlushTimers.delete(task.id);
+      if (!this.tasks.has(task.id)) return;
+      if (this.controlMap.get(task.id) === 'human') return;
+      if (!task.pendingPrompts?.length) return;
+      if (!this.tailHasAgentPrompt(task)) return;
+      if (this.writingPromptTaskIds.has(task.id)) {
+        this.scheduleQueuedPromptFlush(task);
+        return;
+      }
+      void this.flushNextQueuedPrompt(task);
+    }, PROMPT_WRITE_DELAY_MS);
+    if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+    this.queuedPromptFlushTimers.set(task.id, timer);
+  }
+
+  private clearQueuedPromptFlushTimer(taskId: string): void {
+    const timer = this.queuedPromptFlushTimers.get(taskId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.queuedPromptFlushTimers.delete(taskId);
   }
 
   private suppressPromptEchoIdleNotification(task: CoordinatedTask): void {
@@ -304,6 +345,13 @@ export class Coordinator {
     this.initialPromptReadyTasks.delete(taskId);
   }
 
+  private clearPromptDeliveryState(taskId: string): void {
+    this.clearInitialPromptDeliveryState(taskId);
+    this.clearQueuedPromptFlushTimer(taskId);
+    this.promptReadySeenAt.delete(taskId);
+    this.writingPromptTaskIds.delete(taskId);
+  }
+
   private scheduleInitialPromptDelivery(
     task: CoordinatedTask,
     delayMs = INITIAL_PROMPT_READY_DELAY_MS,
@@ -324,6 +372,58 @@ export class Coordinator {
       agentId: task.agentId,
       delayMs,
     });
+  }
+
+  private buildAgentOutputCb(task: CoordinatedTask): (encoded: string) => void {
+    return (encoded: string) => {
+      const bytes = Buffer.from(encoded, 'base64');
+      const text = (this.decoders.get(task.agentId) ?? new TextDecoder()).decode(bytes, {
+        stream: true,
+      });
+      const prev = this.tailBuffers.get(task.agentId) ?? '';
+      const combined = prev + text;
+      this.tailBuffers.set(
+        task.agentId,
+        combined.length > 4096 ? combined.slice(combined.length - 4096) : combined,
+      );
+
+      const hasAgentPrompt = this.tailHasAgentPrompt(task);
+      const stableAgentPrompt = this.markAgentPromptReady(task, hasAgentPrompt);
+      if (!hasAgentPrompt && task.assignedPromptDelivered) {
+        this.clearExpiredPromptEchoSuppression(task);
+      }
+      if (hasAgentPrompt) {
+        this.scheduleInitialPromptDelivery(task, INITIAL_PROMPT_READY_DELAY_MS, true);
+        if (
+          !task.initialPrompt &&
+          task.assignedPromptDelivered &&
+          this.controlMap.get(task.id) !== 'human' &&
+          task.pendingPrompts?.length
+        ) {
+          if (stableAgentPrompt && !this.writingPromptTaskIds.has(task.id)) {
+            void this.flushNextQueuedPrompt(task);
+          } else {
+            this.scheduleQueuedPromptFlush(task);
+          }
+          return;
+        }
+        if (task.suppressNextIdleNotification && this.suppressPromptEchoIdleIfNeeded(task)) {
+          return;
+        }
+        if (task.status === 'running') {
+          task.status = 'idle';
+          this.maybeQueueReviewNotification(task, 'idle', null);
+        }
+        const resolvers = this.idleResolvers.get(task.id);
+        if (resolvers?.length) {
+          for (const resolve of resolvers) resolve({ reason: 'idle' });
+          this.idleResolvers.delete(task.id);
+        }
+      } else if (task.status === 'idle') {
+        task.status = 'running';
+        this.suppressPendingNotificationForTask(task);
+      }
+    };
   }
 
   private async tryDeliverInitialPrompt(taskId: string): Promise<void> {
@@ -669,52 +769,7 @@ export class Coordinator {
     const decoder = new TextDecoder();
     this.decoders.set(agentId, decoder);
 
-    const outputCb = (encoded: string) => {
-      const bytes = Buffer.from(encoded, 'base64');
-      const text = (this.decoders.get(agentId) ?? new TextDecoder()).decode(bytes, {
-        stream: true,
-      });
-      const prev = this.tailBuffers.get(agentId) ?? '';
-      const combined = prev + text;
-      this.tailBuffers.set(
-        agentId,
-        combined.length > 4096 ? combined.slice(combined.length - 4096) : combined,
-      );
-
-      // Check for agent prompt
-      const hasAgentPrompt = this.tailHasAgentPrompt(task);
-      if (!hasAgentPrompt && task.assignedPromptDelivered) {
-        this.clearExpiredPromptEchoSuppression(task);
-      }
-      if (hasAgentPrompt) {
-        this.scheduleInitialPromptDelivery(task, INITIAL_PROMPT_READY_DELAY_MS, true);
-        if (
-          !task.initialPrompt &&
-          task.assignedPromptDelivered &&
-          this.controlMap.get(task.id) !== 'human' &&
-          task.pendingPrompts?.length
-        ) {
-          void this.flushNextQueuedPrompt(task);
-          return;
-        }
-        if (task.suppressNextIdleNotification && this.suppressPromptEchoIdleIfNeeded(task)) {
-          return;
-        }
-        if (task.status === 'running') {
-          task.status = 'idle';
-          this.maybeQueueReviewNotification(task, 'idle', null);
-        }
-        // Resolve any waiting promises
-        const resolvers = this.idleResolvers.get(task.id);
-        if (resolvers?.length) {
-          for (const resolve of resolvers) resolve({ reason: 'idle' });
-          this.idleResolvers.delete(task.id);
-        }
-      } else if (task.status === 'idle') {
-        task.status = 'running';
-        this.suppressPendingNotificationForTask(task);
-      }
-    };
+    const outputCb = this.buildAgentOutputCb(task);
     this.subscribers.set(agentId, outputCb);
 
     // Spawn the agent process
@@ -975,6 +1030,7 @@ export class Coordinator {
       coordinatorTaskId: task.coordinatorTaskId,
       exitCode: task.exitCode,
       pendingPrompt: task.pendingPrompts?.[0],
+      pendingPrompts: task.pendingPrompts ? [...task.pendingPrompts] : undefined,
       pendingPromptCount: task.pendingPrompts?.length,
       signalDoneAt: task.signalDoneAt?.toISOString(),
       verification: task.verification,
@@ -1039,11 +1095,23 @@ export class Coordinator {
     } catch (err) {
       task.pendingPrompts ??= [];
       task.pendingPrompts.unshift(prompt);
-      throw err;
+      logWarn(
+        'coordinator.prompt_queue',
+        'queued prompt write failed; will retry on next ready prompt',
+        {
+          taskId: task.id,
+          err: err instanceof Error ? err.message : String(err),
+        },
+      );
+      this.scheduleQueuedPromptFlush(task);
     } finally {
       this.writingPromptTaskIds.delete(task.id);
     }
-    if (task.pendingPrompts?.length === 0) task.pendingPrompts = undefined;
+    if (task.pendingPrompts?.length === 0) {
+      task.pendingPrompts = undefined;
+    } else if (task.pendingPrompts?.length) {
+      this.scheduleQueuedPromptFlush(task);
+    }
   }
 
   private async writePromptToTask(task: CoordinatedTask, prompt: string): Promise<void> {
@@ -1407,7 +1475,7 @@ export class Coordinator {
       task.status = 'exited';
       task.exitCode = 0;
       this.tasks.delete(task.id);
-      this.clearInitialPromptDeliveryState(task.id);
+      this.clearPromptDeliveryState(task.id);
       this.controlMap.delete(task.id);
       this.notifyRenderer(IPC.MCP_TaskClosed, { taskId: task.id });
     } finally {
@@ -1650,7 +1718,7 @@ export class Coordinator {
     // No additional docker cleanup needed here.
 
     this.tasks.delete(taskId);
-    this.clearInitialPromptDeliveryState(taskId);
+    this.clearPromptDeliveryState(taskId);
     this.controlMap.delete(taskId);
   }
 
@@ -1733,7 +1801,7 @@ export class Coordinator {
       }
     }
     this.tasks.delete(taskId);
-    this.clearInitialPromptDeliveryState(taskId);
+    this.clearPromptDeliveryState(taskId);
     this.controlMap.delete(taskId);
     this.closingTaskIds.delete(taskId);
 
@@ -1852,44 +1920,7 @@ export class Coordinator {
 
       this.tailBuffers.set(agentId, '');
       this.decoders.set(agentId, new TextDecoder());
-      const outputCb = (encoded: string) => {
-        const bytes = Buffer.from(encoded, 'base64');
-        const text = (this.decoders.get(agentId) ?? new TextDecoder()).decode(bytes, {
-          stream: true,
-        });
-        const prev = this.tailBuffers.get(agentId) ?? '';
-        const combined = prev + text;
-        this.tailBuffers.set(
-          agentId,
-          combined.length > 4096 ? combined.slice(combined.length - 4096) : combined,
-        );
-        const stripped = stripAnsi(combined)
-          // eslint-disable-next-line no-control-regex
-          .replace(/[\x00-\x1f\x7f]/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        const hasAgentPrompt = chunkContainsAgentPrompt(stripped);
-        if (!hasAgentPrompt && task.assignedPromptDelivered) {
-          this.clearExpiredPromptEchoSuppression(task);
-        }
-        if (hasAgentPrompt) {
-          if (task.suppressNextIdleNotification && this.suppressPromptEchoIdleIfNeeded(task)) {
-            return;
-          }
-          if (task.status === 'running') {
-            task.status = 'idle';
-            this.maybeQueueReviewNotification(task, 'idle', null);
-          }
-          const resolvers = this.idleResolvers.get(task.id);
-          if (resolvers?.length) {
-            for (const resolve of resolvers) resolve({ reason: 'idle' });
-            this.idleResolvers.delete(task.id);
-          }
-        } else if (task.status === 'idle') {
-          task.status = 'running';
-          this.suppressPendingNotificationForTask(task);
-        }
-      };
+      const outputCb = this.buildAgentOutputCb(task);
       this.subscribers.set(agentId, outputCb);
       // Subscribe immediately if the agent is already spawned (restart scenario where
       // PTY existed before hydration). The spawn handler covers the deferred case.
@@ -1904,7 +1935,7 @@ export class Coordinator {
       this.tailBuffers.delete(agentId);
       this.decoders.delete(agentId);
       this.subscribers.delete(agentId);
-      this.clearInitialPromptDeliveryState(task.id);
+      this.clearPromptDeliveryState(task.id);
       this.tasks.delete(task.id);
       throw err;
     }
@@ -2126,7 +2157,7 @@ export class Coordinator {
   markPromptDelivered(taskId: string): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    this.clearInitialPromptDeliveryState(taskId);
+    this.clearPromptDeliveryState(taskId);
     task.initialPrompt = undefined;
     task.assignedPromptDelivered = true;
     if (!task.suppressNextIdleNotification) {

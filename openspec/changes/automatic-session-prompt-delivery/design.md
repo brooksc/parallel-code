@@ -105,8 +105,10 @@ detached tasks still disable input because there is no live PTY to receive it.
 ## Compatibility
 
 Existing persisted `controlledBy` data can remain in saved state and task sync
-payloads during the transition. Code should treat it as legacy compatibility
-metadata rather than as permission for the user to type.
+payloads during the transition. Code should not treat it as permission for the
+user to type into live sessions, but it may continue to gate coordinator-owned
+automation writes until prompt drafts, terminal input, and short user-activity
+leases are represented by backend-owned state.
 
 A later cleanup can remove or rename that metadata after the activity-based
 delivery model has settled.

@@ -5,7 +5,7 @@ import { store, setStore } from './core';
 import type { WorktreeStatus } from '../ipc/types';
 import type { TaskGitStatusSnapshot } from './types';
 import { warn as logWarn } from '../lib/log';
-import { AGENT_READY_TAIL_PATTERNS } from '../../electron/mcp/prompt-detect';
+import { chunkContainsAgentPrompt } from '../../electron/mcp/prompt-detect';
 
 // --- Trust-specific patterns (subset of QUESTION_PATTERNS) ---
 // These are auto-accepted when autoTrustFolders is enabled.
@@ -153,23 +153,6 @@ function looksLikeBareAgentPrompt(line: string): boolean {
 
 function looksLikeBareShellPrompt(line: string): boolean {
   return /(?:^|\s)[$%#]\s*$/.test(line.trimEnd());
-}
-
-/**
- * Patterns for known agent main input prompts (ready for a new task).
- * Imported from prompt-detect.ts — do not duplicate here.
- */
-
-/** Check stripped output for known agent prompt characters.
- *  Only checks the tail of the chunk — the agent's main prompt renders near
- *  the end of the visible content, while TUI selection UIs place ❯ earlier in
- *  the render followed by option text and other choices.
- *  300 chars covers both Claude Code (❯ at the very end) and Copilot CLI
- *  (❯ ~200 chars from end — box border and a footer line appear below it). */
-function chunkContainsAgentPrompt(stripped: string): boolean {
-  if (stripped.length === 0) return false;
-  const tail = stripped.slice(-300);
-  return AGENT_READY_TAIL_PATTERNS.some((re) => re.test(tail));
 }
 
 // --- Agent ready event callbacks ---

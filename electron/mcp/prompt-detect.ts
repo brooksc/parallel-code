@@ -30,9 +30,9 @@ export const PROMPT_PATTERNS: RegExp[] = [
  * apps like Claude Code use cursor positioning instead of newlines.
  */
 export const AGENT_READY_TAIL_PATTERNS: RegExp[] = [
-  /❯/, // Claude Code
-  /›/, // Codex CLI
-  /(?:^|\s)>\s*(?:Type your message|$)/i, // Gemini CLI
+  /^\s*❯\s*$/, // Claude Code
+  /^\s*›\s*$/, // Codex CLI
+  /^\s*>\s*(?:Type your message|$)/i, // Gemini CLI
 ];
 
 const AGENT_STARTUP_OR_DIALOG_PATTERNS: RegExp[] = [
@@ -60,5 +60,9 @@ export function chunkContainsAgentPrompt(stripped: string): boolean {
   const tail = stripped.slice(-300);
   if (AGENT_STARTUP_OR_DIALOG_PATTERNS.some((re) => re.test(tail))) return false;
   if (AGENT_BUSY_TAIL_PATTERNS.some((re) => re.test(tail))) return false;
-  return AGENT_READY_TAIL_PATTERNS.some((re) => re.test(tail));
+  const lines = tail
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.some((line) => AGENT_READY_TAIL_PATTERNS.some((re) => re.test(line)));
 }
