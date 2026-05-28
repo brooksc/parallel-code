@@ -554,7 +554,7 @@ describe('Coordinator coordinator notifications', () => {
     }
   });
 
-  it('keeps suppressing repeated prompt echoes during the prompt delivery window', async () => {
+  it('suppresses only the stale prompt echo and accepts a quick completed idle', async () => {
     vi.useFakeTimers();
     try {
       coordinator.registerCoordinator('coord-1', 'proj-1');
@@ -575,17 +575,12 @@ describe('Coordinator coordinator notifications', () => {
       mockNotifyRenderer.mockClear();
 
       outputCb(encode('❯ '));
-      outputCb(encode('more startup echo ❯ '));
-      await vi.advanceTimersByTimeAsync(1_000);
-      outputCb(encode('still echoing ❯ '));
-
       expect(mockNotifyRenderer).not.toHaveBeenCalledWith(
         'mcp_coordinator_notification_staged',
         expect.anything(),
       );
 
-      await vi.advanceTimersByTimeAsync(1_100);
-      outputCb(encode('Working...'));
+      await vi.advanceTimersByTimeAsync(400);
       outputCb(encode('Done ❯ '));
 
       expect(mockNotifyRenderer).toHaveBeenCalledWith(
@@ -1687,6 +1682,15 @@ describe('Coordinator sendPrompt', () => {
     });
   });
 
+  it('enforces the prompt size limit in UTF-8 bytes', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-1');
+
+    await expect(coordinator.sendPrompt('task-1', '😀'.repeat(20_000))).rejects.toThrow(
+      'byte limit',
+    );
+  });
+
   it('second concurrent sendPrompt is queued while the first write lock is held', async () => {
     vi.useFakeTimers();
     try {
@@ -1709,6 +1713,36 @@ describe('Coordinator sendPrompt', () => {
         .filter((t) => t === 'first' || t === 'second');
       expect(textCalls).toEqual(['first', 'second']);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry a queued prompt body when only the Enter write fails', async () => {
+    vi.useFakeTimers();
+    try {
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      coordinator.markPromptDelivered('task-1');
+      coordinator.setTaskControl('task-1', 'human');
+      await coordinator.sendPrompt('task-1', 'queued');
+
+      mockWriteToAgent.mockClear();
+      mockWriteToAgent.mockImplementation((agentId: string, data: string) => {
+        if (data === '\r') throw new Error('pty enter failed');
+        return { id: agentId };
+      });
+
+      coordinator.setTaskControl('task-1', 'coordinator');
+      await vi.advanceTimersByTimeAsync(100);
+
+      const bodyWrites = mockWriteToAgent.mock.calls.filter(([, data]) => data === 'queued');
+      expect(bodyWrites).toHaveLength(1);
+      expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toBeUndefined();
+    } finally {
+      mockWriteToAgent.mockReset();
+      mockWriteToAgent.mockImplementation((agentId: string, data: string) => ({
+        id: agentId,
+        data,
+      }));
       vi.useRealTimers();
     }
   });
@@ -2389,6 +2423,24 @@ describe('Coordinator hydrateTask — restart hydration', () => {
     expect(task?.agentId).toBe('agent-hydrated');
     expect(task?.coordinatorTaskId).toBe('coord-1');
     expect(task?.status).toBe('exited');
+  });
+
+  it('hydrateTask restores an undelivered initial prompt for backend delivery', () => {
+    coordinator.hydrateTask({
+      id: 'hydrated-1',
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId: 'agent-hydrated',
+      coordinatorTaskId: 'coord-1',
+      initialPrompt: 'do the restored work',
+    });
+
+    const task = coordinator.getTask('hydrated-1');
+    expect(task?.initialPrompt).toBe('do the restored work');
+    expect(task?.assignedPromptDelivered).toBe(false);
   });
 
   it('hydrateTask + waitForIdle resolves immediately for exited status', async () => {

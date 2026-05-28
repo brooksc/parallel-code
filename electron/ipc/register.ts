@@ -382,6 +382,10 @@ export function registerAllHandlers(win: BrowserWindow): void {
   ipcMain.handle(IPC.WriteToAgent, (_e, args) => {
     assertString(args.agentId, 'agentId');
     assertString(args.data, 'data');
+    if (args.taskId !== undefined) {
+      assertString(args.taskId, 'taskId');
+      if (coordinator?.isAutomationWriteInFlight(args.taskId)) return false;
+    }
     return writeToAgent(args.agentId, args.data);
   });
   ipcMain.handle(IPC.ResizeAgent, (_e, args) => {
@@ -1325,6 +1329,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           mcpConfigPath?: string;
           agentCommand?: string;
           preambleFileExistedBefore?: boolean;
+          initialPrompt?: string;
         },
       ) => {
         assertString(args.id, 'id');
@@ -1340,6 +1345,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
         validateUUID(args.coordinatorTaskId, 'coordinatorTaskId');
         if (!coordinator) throw new Error('coordinator mode not initialized');
         if (args.agentCommand !== undefined) assertString(args.agentCommand, 'agentCommand');
+        if (args.initialPrompt !== undefined) assertString(args.initialPrompt, 'initialPrompt');
         const result = coordinator.hydrateTask({
           id: args.id,
           name: args.name,
@@ -1361,6 +1367,7 @@ export function registerAllHandlers(win: BrowserWindow): void {
           mcpConfigPath: args.mcpConfigPath,
           agentCommand: args.agentCommand,
           preambleFileExistedBefore: args.preambleFileExistedBefore,
+          initialPrompt: args.initialPrompt,
         });
         // Signal to renderer that MCP hydration is complete — gates TerminalView auto-spawn.
         if (!win.isDestroyed()) {

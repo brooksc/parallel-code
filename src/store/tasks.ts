@@ -1257,6 +1257,7 @@ export function initMCPListeners(): () => void {
         initialPrompt?: string | null;
         coordinatedBy?: string | null;
         controlledBy?: 'coordinator' | 'human' | null;
+        automationWriteInFlight?: boolean;
         mcpConfigPath?: string | null;
         mcpStartupStatus?: 'pending' | 'ready' | 'error' | null;
         mcpStartupError?: string | null;
@@ -1292,6 +1293,8 @@ export function initMCPListeners(): () => void {
           setStore('tasks', evt.taskId, 'coordinatedBy', evt.coordinatedBy ?? undefined);
         if (evt.controlledBy !== undefined)
           setStore('tasks', evt.taskId, 'controlledBy', evt.controlledBy ?? undefined);
+        if (evt.automationWriteInFlight !== undefined)
+          setStore('tasks', evt.taskId, 'automationWriteInFlight', evt.automationWriteInFlight);
         if (evt.mcpConfigPath !== undefined)
           setStore('tasks', evt.taskId, 'mcpConfigPath', evt.mcpConfigPath ?? undefined);
         if (evt.mcpStartupStatus !== undefined)

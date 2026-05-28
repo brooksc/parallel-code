@@ -80,6 +80,18 @@ const PREAMBLE_ARTIFACT_PATHS = new Set([
 ]);
 const UNRESOLVED_LANDED_COMMIT = 'unresolved';
 
+class PromptWriteError extends Error {
+  constructor(
+    message: string,
+    readonly phase: 'body' | 'enter',
+    cause: unknown,
+  ) {
+    const suffix = cause instanceof Error ? `: ${cause.message}` : '';
+    super(`${message}${suffix}`);
+    this.name = 'PromptWriteError';
+  }
+}
+
 function isPassedVerification(verification: SubtaskVerification | undefined): boolean {
   return Boolean(
     verification?.checks.length && verification.checks.every((check) => check.result === 'passed'),
@@ -296,40 +308,34 @@ export class Coordinator {
   }
 
   private suppressPromptEchoIdleNotification(task: CoordinatedTask): void {
-    task.suppressNextIdleNotification = true;
-    task.suppressNextIdleNotificationUntil = Date.now() + PROMPT_ECHO_IDLE_SUPPRESSION_MS;
+    task.suppressIdleUntil = Date.now() + PROMPT_ECHO_IDLE_SUPPRESSION_MS;
   }
 
-  private clearExpiredPromptEchoSuppression(task: CoordinatedTask): void {
-    if (!task.suppressNextIdleNotification) return;
-    const suppressUntil = task.suppressNextIdleNotificationUntil;
-    if (suppressUntil !== undefined && Date.now() < suppressUntil) return;
-    task.suppressNextIdleNotification = false;
-    task.suppressNextIdleNotificationUntil = undefined;
+  private isPromptEchoOutput(task: CoordinatedTask, text: string): boolean {
+    const prompt = task.lastPromptEchoText;
+    if (!prompt) return false;
+    const normalized = stripAnsi(text)
+      // eslint-disable-next-line no-control-regex -- compare printable prompt echo text only.
+      .replace(/[\x00-\x1f\x7f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return Boolean(
+      normalized &&
+      (prompt.includes(normalized) ||
+        (normalized.startsWith('[SUB-TASK MODE]') && prompt.startsWith('[SUB-TASK MODE]'))),
+    );
   }
 
   private suppressPromptEchoIdleIfNeeded(task: CoordinatedTask): boolean {
-    if (!task.assignedPromptDelivered || !task.suppressNextIdleNotification) return false;
-    const suppressUntil = task.suppressNextIdleNotificationUntil;
-    if (suppressUntil !== undefined && Date.now() < suppressUntil) {
-      task.suppressNextIdleCount = (task.suppressNextIdleCount ?? 0) + 1;
-      if (task.suppressNextIdleCount > 10) {
-        logWarn('coordinator.suppress_echo', 'excessive prompt-echo suppressions per delivery', {
-          taskId: task.id,
-          count: task.suppressNextIdleCount,
-        });
-      }
+    if (!task.assignedPromptDelivered || task.suppressIdleUntil === undefined) return false;
+    if (Date.now() < task.suppressIdleUntil) {
+      task.suppressIdleUntil = undefined;
+      task.lastPromptEchoText = undefined;
       this.tailBuffers.set(task.agentId, '');
       return true;
     }
-    if (suppressUntil === undefined) {
-      task.suppressNextIdleNotification = false;
-      task.suppressNextIdleNotificationUntil = undefined;
-      this.tailBuffers.set(task.agentId, '');
-      return true;
-    }
-    task.suppressNextIdleNotification = false;
-    task.suppressNextIdleNotificationUntil = undefined;
+    task.suppressIdleUntil = undefined;
+    task.lastPromptEchoText = undefined;
     return false;
   }
 
@@ -390,7 +396,10 @@ export class Coordinator {
       const hasAgentPrompt = this.tailHasAgentPrompt(task);
       const stableAgentPrompt = this.markAgentPromptReady(task, hasAgentPrompt);
       if (!hasAgentPrompt && task.assignedPromptDelivered) {
-        this.clearExpiredPromptEchoSuppression(task);
+        if (task.suppressIdleUntil !== undefined && !this.isPromptEchoOutput(task, text)) {
+          task.suppressIdleUntil = undefined;
+          task.lastPromptEchoText = undefined;
+        }
       }
       if (hasAgentPrompt) {
         this.scheduleInitialPromptDelivery(task, INITIAL_PROMPT_READY_DELAY_MS, true);
@@ -407,7 +416,7 @@ export class Coordinator {
           }
           return;
         }
-        if (task.suppressNextIdleNotification && this.suppressPromptEchoIdleIfNeeded(task)) {
+        if (task.suppressIdleUntil !== undefined && this.suppressPromptEchoIdleIfNeeded(task)) {
           return;
         }
         if (task.status === 'running') {
@@ -460,7 +469,22 @@ export class Coordinator {
         taskId: task.id,
         initialPrompt: null,
       });
-    } catch {
+    } catch (err) {
+      if (err instanceof PromptWriteError && err.phase === 'enter') {
+        logWarn(
+          'coordinator.initial_prompt',
+          'initial prompt body was written but Enter failed; not retrying body',
+          {
+            taskId: task.id,
+            err: err.message,
+          },
+        );
+        this.notifyRenderer(IPC.MCP_TaskStateSync, {
+          taskId: task.id,
+          initialPrompt: null,
+        });
+        return;
+      }
       if (this.tasks.has(task.id)) {
         task.initialPrompt = prompt;
         this.scheduleInitialPromptDelivery(task, INITIAL_PROMPT_READY_DELAY_MS, promptReady);
@@ -552,7 +576,7 @@ export class Coordinator {
     // Always notify for exits — a task killed before prompt delivery still needs to be
     // reported so the coordinator doesn't think it's still running.
     if (!task.assignedPromptDelivered && state !== 'exited') return;
-    if (state === 'idle' && task.suppressNextIdleNotification) {
+    if (state === 'idle' && task.suppressIdleUntil !== undefined) {
       if (this.suppressPromptEchoIdleIfNeeded(task)) return;
     }
 
@@ -1048,7 +1072,7 @@ export class Coordinator {
   async sendPrompt(taskId: string, prompt: string): Promise<{ queued: boolean }> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
-    if (prompt.length > MAX_PROMPT_BYTES)
+    if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_BYTES)
       throw new Error(`Prompt exceeds ${MAX_PROMPT_BYTES} byte limit`);
     const queueLen = task.pendingPrompts?.length ?? 0;
     if (queueLen >= MAX_PENDING_PROMPTS)
@@ -1093,17 +1117,28 @@ export class Coordinator {
     try {
       await this.writePromptToTask(task, prompt);
     } catch (err) {
-      task.pendingPrompts ??= [];
-      task.pendingPrompts.unshift(prompt);
-      logWarn(
-        'coordinator.prompt_queue',
-        'queued prompt write failed; will retry on next ready prompt',
-        {
-          taskId: task.id,
-          err: err instanceof Error ? err.message : String(err),
-        },
-      );
-      this.scheduleQueuedPromptFlush(task);
+      if (err instanceof PromptWriteError && err.phase === 'enter') {
+        logWarn(
+          'coordinator.prompt_queue',
+          'queued prompt body was written but Enter failed; not retrying body',
+          {
+            taskId: task.id,
+            err: err.message,
+          },
+        );
+      } else {
+        task.pendingPrompts ??= [];
+        task.pendingPrompts.unshift(prompt);
+        logWarn(
+          'coordinator.prompt_queue',
+          'queued prompt write failed; will retry on next ready prompt',
+          {
+            taskId: task.id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+        );
+        this.scheduleQueuedPromptFlush(task);
+      }
     } finally {
       this.writingPromptTaskIds.delete(task.id);
     }
@@ -1116,19 +1151,50 @@ export class Coordinator {
 
   private async writePromptToTask(task: CoordinatedTask, prompt: string): Promise<void> {
     // Send text then Enter separately (like the frontend does)
-    writeToAgent(task.agentId, prompt);
-    await new Promise((r) => setTimeout(r, PROMPT_WRITE_DELAY_MS));
-    writeToAgent(task.agentId, '\r');
-    task.status = 'running';
-    task.signalDoneAt = undefined;
-    this.suppressPromptEchoIdleNotification(task);
-    this.tailBuffers.set(task.agentId, '');
+    this.setAutomationWriteInFlight(task, true);
+    try {
+      try {
+        writeToAgent(task.agentId, prompt);
+      } catch (err) {
+        throw new PromptWriteError('Prompt body write failed', 'body', err);
+      }
+      await new Promise((r) => setTimeout(r, PROMPT_WRITE_DELAY_MS));
+      try {
+        writeToAgent(task.agentId, '\r');
+      } catch (err) {
+        throw new PromptWriteError('Prompt Enter write failed', 'enter', err);
+      }
+      task.status = 'running';
+      task.signalDoneAt = undefined;
+      task.lastPromptEchoText = stripAnsi(prompt)
+        // eslint-disable-next-line no-control-regex -- compare printable prompt echo text only.
+        .replace(/[\x00-\x1f\x7f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      this.suppressPromptEchoIdleNotification(task);
+      this.tailBuffers.set(task.agentId, '');
+    } finally {
+      this.setAutomationWriteInFlight(task, false);
+    }
     this.notifyRenderer(IPC.MCP_TaskStateSync, {
       taskId: task.id,
       signalDoneReceived: false,
       signalDoneAt: null,
       signalDoneConsumed: false,
       needsReview: false,
+    });
+  }
+
+  isAutomationWriteInFlight(taskId: string): boolean {
+    return this.tasks.get(taskId)?.automationWriteInFlight === true;
+  }
+
+  private setAutomationWriteInFlight(task: CoordinatedTask, value: boolean): void {
+    if (task.automationWriteInFlight === value) return;
+    task.automationWriteInFlight = value;
+    this.notifyRenderer(IPC.MCP_TaskStateSync, {
+      taskId: task.id,
+      automationWriteInFlight: value,
     });
   }
 
@@ -1834,6 +1900,9 @@ export class Coordinator {
     mcpConfigPath?: string;
     agentCommand?: string;
     preambleFileExistedBefore?: boolean;
+    initialPrompt?: string;
+    pendingPrompts?: string[];
+    assignedPromptDelivered?: boolean;
   }): { mcpLaunchArgs?: string[] } {
     if (!this.coordinators.has(opts.coordinatorTaskId)) {
       throw new Error(`coordinator ${opts.coordinatorTaskId} is not registered`);
@@ -1880,6 +1949,9 @@ export class Coordinator {
       coordinatorTaskId: opts.coordinatorTaskId,
       status: 'exited',
       exitCode: null,
+      initialPrompt: opts.initialPrompt,
+      pendingPrompts: opts.pendingPrompts?.length ? [...opts.pendingPrompts] : undefined,
+      assignedPromptDelivered: opts.assignedPromptDelivered ?? !opts.initialPrompt,
       signalDoneAt: opts.signalDoneAt ? new Date(opts.signalDoneAt) : undefined,
       signalDoneConsumed: opts.signalDoneConsumed,
       verification: opts.verification,
@@ -2124,8 +2196,7 @@ export class Coordinator {
       if (!task.assignedPromptDelivered) {
         task.reviewNotificationQueued = true;
       } else {
-        task.suppressNextIdleNotification = false;
-        task.suppressNextIdleNotificationUntil = undefined;
+        task.suppressIdleUntil = undefined;
       }
 
       // Transfer control to human so the user can decide what to do with orphaned tasks
@@ -2160,11 +2231,7 @@ export class Coordinator {
     this.clearPromptDeliveryState(taskId);
     task.initialPrompt = undefined;
     task.assignedPromptDelivered = true;
-    if (!task.suppressNextIdleNotification) {
-      task.suppressNextIdleNotification = true;
-      task.suppressNextIdleNotificationUntil = undefined;
-    }
-    task.suppressNextIdleCount = 0;
+    task.suppressIdleUntil ??= Date.now() + PROMPT_ECHO_IDLE_SUPPRESSION_MS;
     this.tailBuffers.set(task.agentId, '');
     if (task.status !== 'exited' && task.status !== 'error') task.status = 'running';
   }
@@ -2246,8 +2313,7 @@ export class Coordinator {
     const task = this.tasks.get(taskId);
     if (!task) return false;
     task.assignedPromptDelivered = true;
-    task.suppressNextIdleNotification = false;
-    task.suppressNextIdleNotificationUntil = undefined;
+    task.suppressIdleUntil = undefined;
     task.signalDoneAt = new Date();
     task.signalDoneConsumed = false;
 

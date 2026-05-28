@@ -144,6 +144,7 @@ export function TerminalView(props: TerminalViewProps) {
     }
 
     function canForwardInput(): boolean {
+      if (store.tasks[taskId]?.automationWriteInFlight) return false;
       return !taskPtyDetached();
     }
 
@@ -565,7 +566,7 @@ export function TerminalView(props: TerminalViewProps) {
         inputFlushTimer = undefined;
       }
       if (!canForwardInput()) return;
-      fireAndForget(IPC.WriteToAgent, { agentId, data });
+      fireAndForget(IPC.WriteToAgent, { agentId, taskId, data });
       if (!props.isShell && (data.includes('\r') || data.includes('\n'))) {
         setTaskLastInputAt(props.taskId);
       }

@@ -467,6 +467,7 @@ function App() {
           mcpConfigPath: task.mcpConfigPath,
           agentCommand: store.agents[task.agentIds[0]]?.def.command ?? 'claude',
           preambleFileExistedBefore: task.preambleFileExistedBefore,
+          initialPrompt: task.initialPrompt,
         })
           .then((result) => {
             applyTaskMcpLaunchResult(task.id, result);

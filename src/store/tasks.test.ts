@@ -1000,6 +1000,15 @@ describe('MCP_TaskStateSync listener', () => {
     expect(mockTasks['task-1'].mcpStartupError).toBeUndefined();
   });
 
+  it('stores automation write lock sync fields', () => {
+    taskStateSyncHandler({
+      taskId: 'task-1',
+      automationWriteInFlight: true,
+    });
+
+    expect(mockTasks['task-1'].automationWriteInFlight).toBe(true);
+  });
+
   it('stores landed pending-review and verification sync fields', () => {
     taskStateSyncHandler({
       taskId: 'task-1',

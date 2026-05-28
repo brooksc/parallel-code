@@ -14,6 +14,7 @@ export interface CoordinatedTask {
   exitCode: number | null;
   pendingPrompts?: string[];
   initialPrompt?: string;
+  automationWriteInFlight?: boolean;
   mcpConfigPath?: string; // path to per-task tmp config, deleted on cleanup
   doneToken?: string; // per-task token; only the owning sub-task may call /done
   preambleFileExistedBefore?: boolean; // true if the preamble file existed before injection (even if empty)
@@ -27,9 +28,8 @@ export interface CoordinatedTask {
   // Coordinator notification lifecycle flags
   assignedPromptDelivered?: boolean;
   // Ignore the prompt that was already visible when a coordinator-delivered prompt was sent.
-  suppressNextIdleNotification?: boolean;
-  suppressNextIdleNotificationUntil?: number;
-  suppressNextIdleCount?: number;
+  suppressIdleUntil?: number;
+  lastPromptEchoText?: string;
   reviewNotificationQueued?: boolean;
   /** Coordinator Docker container name. Set when the coordinator runs in Docker mode.
    *  Sub-tasks each get their own `docker run` container; this is not used for spawning

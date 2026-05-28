@@ -137,6 +137,7 @@ export interface Task {
   propagateSkipPermissions?: boolean;
   coordinatedBy?: string;
   controlledBy?: 'coordinator' | 'human';
+  automationWriteInFlight?: boolean;
   mcpConfigPath?: string;
   mcpLaunchArgs?: string[];
   preambleFileExistedBefore?: boolean;
