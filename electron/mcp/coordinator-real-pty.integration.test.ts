@@ -110,7 +110,7 @@ async function expectPromptDeliveredOnce(params: {
 
     expect(matching).toHaveLength(1);
     expect(matching[0].profile).toBe(params.profile);
-    expect(matching[0].payload).toContain('[SUB-TASK MODE]');
+    expect(matching[0].payload).toMatch(/\[SUB-TASK MODE]|<sub-task-mode>/);
 
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(
@@ -159,4 +159,12 @@ describeRealPty('Coordinator real PTY initial prompt delivery', () => {
     },
     15_000,
   );
+
+  it('waits long enough for a fake Claude paste to settle before submitting', async () => {
+    await expectPromptDeliveredOnce({
+      profile: 'claude',
+      extraArgs: ['--bracketed-paste', '--min-enter-delay-ms', '200'],
+      promptSuffix: '-settled-paste',
+    });
+  }, 15_000);
 });

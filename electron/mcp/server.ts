@@ -10,62 +10,17 @@ import { selectTools } from './mcp-tool-list.js';
 import { validateBranchName } from './validation.js';
 import type { LandSelfInput } from './types.js';
 
-// Parse CLI args
-const args = process.argv.slice(2);
-let url = '';
-let taskId = ''; // set for sub-tasks: enables signal_done
-let coordinatorId = ''; // set for coordinator: sent as coordinatorTaskId in create_task
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--url' && args[i + 1]) {
-    url = args[++i];
-  } else if (args[i] === '--task-id' && args[i + 1]) {
-    taskId = args[++i];
-  } else if (args[i] === '--coordinator-id' && args[i + 1]) {
-    coordinatorId = args[++i];
-  }
+export interface MCPToolHandlerContext {
+  client: MCPClient;
+  taskId: string;
+  coordinatorId: string;
 }
 
-const token = process.env.PARALLEL_CODE_MCP_TOKEN ?? '';
-const doneToken = process.env.PARALLEL_CODE_MCP_DONE_TOKEN || undefined;
-
-if (!url || !token) {
-  console.error(
-    'Usage: node server.js --url <remote-server-url> [--task-id <taskId>] [--coordinator-id <coordinatorId>]\n' +
-      'Token must be set via PARALLEL_CODE_MCP_TOKEN environment variable.',
-  );
-  process.exit(1);
-}
-
-// Reject coordinator/task IDs that contain HTTP header-unsafe characters.
-// These values are forwarded as X-Coordinator-Id / X-Task-Id headers; a newline
-// would allow header injection into every outgoing request.
-if (coordinatorId && /[\r\n]/.test(coordinatorId)) {
-  console.error('Invalid --coordinator-id: must not contain newline characters.');
-  process.exit(1);
-}
-if (taskId && /[\r\n]/.test(taskId)) {
-  console.error('Invalid --task-id: must not contain newline characters.');
-  process.exit(1);
-}
-
-const client = new MCPClient(url, token, coordinatorId || undefined, doneToken);
-
-const server = new Server(
-  { name: 'parallel-code', version: '1.0.0' },
-  { capabilities: { tools: {} } },
-);
-
-// --- Tool definitions ---
-
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools: selectTools(taskId, coordinatorId) };
-});
-
-// --- Tool execution ---
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: params } = request.params;
-
+export async function handleMCPToolCall(
+  { client, taskId, coordinatorId }: MCPToolHandlerContext,
+  name: string,
+  params: unknown,
+) {
   // Sub-tasks may only call sub-task scoped terminal tools.
   if (taskId && !coordinatorId && name !== 'signal_done' && name !== 'land_self') {
     return {
@@ -83,12 +38,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case 'create_task': {
         const p = params as Record<string, unknown>;
+        if (typeof p.prompt !== 'string' || !p.prompt.trim()) {
+          return {
+            content: [{ type: 'text', text: 'Error: prompt must be a non-empty string' }],
+            isError: true,
+          };
+        }
         const rawBranch = p.baseBranch;
         const baseBranch =
           rawBranch !== undefined ? validateBranchName(rawBranch, 'baseBranch') : undefined;
         const result = await client.createTask({
           name: p.name as string,
-          prompt: p.prompt as string | undefined,
+          prompt: p.prompt,
           coordinatorTaskId: coordinatorId || undefined,
           baseBranch,
         });
@@ -108,10 +69,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'send_prompt': {
-        const result = await client.sendPrompt(
-          (params as Record<string, unknown>).taskId as string,
-          (params as Record<string, unknown>).prompt as string,
-        );
+        const p = params as Record<string, unknown>;
+        if (typeof p.taskId !== 'string' || !p.taskId.trim()) {
+          return {
+            content: [{ type: 'text', text: 'Error: taskId must be a non-empty string' }],
+            isError: true,
+          };
+        }
+        if (typeof p.prompt !== 'string' || !p.prompt.trim()) {
+          return {
+            content: [{ type: 'text', text: 'Error: prompt must be a non-empty string' }],
+            isError: true,
+          };
+        }
+        const result = await client.sendPrompt(p.taskId, p.prompt);
         return {
           content: [
             {
@@ -274,15 +245,71 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       isError: true,
     };
   }
-});
+}
 
-// Start the server
-async function main() {
+function parseArgs(argv: string[]): { url: string; taskId: string; coordinatorId: string } {
+  let url = '';
+  let taskId = ''; // set for sub-tasks: enables signal_done
+  let coordinatorId = ''; // set for coordinator: sent as coordinatorTaskId in create_task
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--url' && argv[i + 1]) {
+      url = argv[++i];
+    } else if (argv[i] === '--task-id' && argv[i + 1]) {
+      taskId = argv[++i];
+    } else if (argv[i] === '--coordinator-id' && argv[i + 1]) {
+      coordinatorId = argv[++i];
+    }
+  }
+  return { url, taskId, coordinatorId };
+}
+
+async function main(): Promise<void> {
+  const { url, taskId, coordinatorId } = parseArgs(process.argv.slice(2));
+  const token = process.env.PARALLEL_CODE_MCP_TOKEN ?? '';
+  const doneToken = process.env.PARALLEL_CODE_MCP_DONE_TOKEN || undefined;
+
+  if (!url || !token) {
+    console.error(
+      'Usage: node server.js --url <remote-server-url> [--task-id <taskId>] [--coordinator-id <coordinatorId>]\n' +
+        'Token must be set via PARALLEL_CODE_MCP_TOKEN environment variable.',
+    );
+    process.exit(1);
+  }
+
+  // Reject coordinator/task IDs that contain HTTP header-unsafe characters.
+  // These values are forwarded as X-Coordinator-Id / X-Task-Id headers; a newline
+  // would allow header injection into every outgoing request.
+  if (coordinatorId && /[\r\n]/.test(coordinatorId)) {
+    console.error('Invalid --coordinator-id: must not contain newline characters.');
+    process.exit(1);
+  }
+  if (taskId && /[\r\n]/.test(taskId)) {
+    console.error('Invalid --task-id: must not contain newline characters.');
+    process.exit(1);
+  }
+
+  const client = new MCPClient(url, token, coordinatorId || undefined, doneToken);
+  const server = new Server(
+    { name: 'parallel-code', version: '1.0.0' },
+    { capabilities: { tools: {} } },
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return { tools: selectTools(taskId, coordinatorId) };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: params } = request.params;
+    return handleMCPToolCall({ client, taskId, coordinatorId }, name, params);
+  });
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
-main().catch((err) => {
-  console.error('MCP server failed to start:', err);
-  process.exit(1);
-});
+if (process.env.NODE_ENV !== 'test') {
+  main().catch((err) => {
+    console.error('MCP server failed to start:', err);
+    process.exit(1);
+  });
+}

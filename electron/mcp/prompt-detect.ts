@@ -31,17 +31,34 @@ export const PROMPT_PATTERNS: RegExp[] = [
  */
 export const AGENT_READY_TAIL_PATTERNS: RegExp[] = [
   /^\s*❯\s*$/, // Claude Code
+  /^\s*--\s*INSERT\s*--(?:$|\s|[^\w].*$)/i, // Claude Code vim-style input mode
   /^\s*›\s*$/, // Codex CLI
   /^\s*>\s*(?:Type your message|$)/i, // Gemini CLI
 ];
 
+export const AGENT_READY_TAIL_CHARS = 1000;
+const AGENT_BLOCKER_TAIL_CHARS = 500;
+
+export type AgentPromptReadinessReason = 'ready' | 'startup_or_dialog' | 'busy' | 'no_prompt';
+
+export interface AgentPromptReadiness {
+  ready: boolean;
+  reason: AgentPromptReadinessReason;
+  tail: string;
+}
+
 const AGENT_STARTUP_OR_DIALOG_PATTERNS: RegExp[] = [
-  /\bDo\s+you\s+trust\b/i,
-  /\bPress\s+enter\s+to\s+continue\b/i,
   /\bmodel:\s*loading\b/i,
   /\bBooting\s+MCP\s+server\b/i,
-  /\bStarting\s+MCP\s+servers?\b/i,
 ];
+
+const AGENT_TRUST_DIALOG_PATTERNS: RegExp[] = [
+  /\bDo\s+you\s+trust\b/i,
+  /\bPress\s+enter\s+to\s+continue\b/i,
+];
+
+const AGENT_MCP_STARTUP_PATTERN = /\bStarting\s+MCP\s+servers?\s*\(/i;
+const AGENT_MCP_STARTUP_COMPLETE_PATTERN = /\bStarting\s+MCP\s+servers?\s+complete\b/i;
 
 const AGENT_BUSY_TAIL_PATTERNS: RegExp[] = [
   /\bq*Working\s*\(/i,
@@ -54,15 +71,35 @@ const AGENT_BUSY_TAIL_PATTERNS: RegExp[] = [
  *  Only checks the tail of the chunk — the agent's main prompt renders near
  *  the end of the visible content, while TUI selection UIs place ❯/› earlier
  *  in the render followed by option text and other choices.
- *  300 chars covers Codex's footer/status lines below the input prompt. */
-export function chunkContainsAgentPrompt(stripped: string): boolean {
-  if (stripped.length === 0) return false;
-  const tail = stripped.slice(-300);
-  if (AGENT_STARTUP_OR_DIALOG_PATTERNS.some((re) => re.test(tail))) return false;
-  if (AGENT_BUSY_TAIL_PATTERNS.some((re) => re.test(tail))) return false;
+ *  AGENT_READY_TAIL_CHARS covers long worktree paths in footer/status lines
+ *  below the input prompt. */
+export function getAgentPromptReadiness(stripped: string): AgentPromptReadiness {
+  if (stripped.length === 0) return { ready: false, reason: 'no_prompt', tail: '' };
+  const tail = stripped.slice(-AGENT_READY_TAIL_CHARS);
+  const blockerTail = tail.slice(-AGENT_BLOCKER_TAIL_CHARS);
+  if (AGENT_BUSY_TAIL_PATTERNS.some((re) => re.test(blockerTail))) {
+    return { ready: false, reason: 'busy', tail };
+  }
   const lines = tail
-    .split(/\r?\n/)
+    .split(/\r\n?|\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  return lines.some((line) => AGENT_READY_TAIL_PATTERNS.some((re) => re.test(line)));
+  const ready = lines.some((line) => AGENT_READY_TAIL_PATTERNS.some((re) => re.test(line)));
+  if (AGENT_STARTUP_OR_DIALOG_PATTERNS.some((re) => re.test(blockerTail))) {
+    return { ready: false, reason: 'startup_or_dialog', tail };
+  }
+  if (
+    AGENT_MCP_STARTUP_PATTERN.test(blockerTail) &&
+    !AGENT_MCP_STARTUP_COMPLETE_PATTERN.test(blockerTail)
+  ) {
+    return { ready: false, reason: 'startup_or_dialog', tail };
+  }
+  if (!ready && AGENT_TRUST_DIALOG_PATTERNS.some((re) => re.test(blockerTail))) {
+    return { ready: false, reason: 'startup_or_dialog', tail };
+  }
+  return { ready, reason: ready ? 'ready' : 'no_prompt', tail };
+}
+
+export function chunkContainsAgentPrompt(stripped: string): boolean {
+  return getAgentPromptReadiness(stripped).ready;
 }

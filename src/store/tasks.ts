@@ -1540,7 +1540,7 @@ export function markTaskUserActivity(taskId: string): void {
   if (next - (task.userActivityHoldUntil ?? 0) > 250) {
     setStore('tasks', taskId, 'userActivityHoldUntil', next);
   }
-  if (task.coordinatedBy && task.controlledBy !== 'human') {
+  if (task.coordinatedBy && task.controlledBy !== 'human' && !task.initialPrompt) {
     setTaskControl(taskId, 'human');
   }
   scheduleTaskAutomationRelease(taskId);

@@ -161,7 +161,7 @@ describeDocker('Docker MCP integration', () => {
 
       const createResult = await client.callTool({
         name: 'create_task',
-        arguments: { name: 'Created from Docker MCP' },
+        arguments: { name: 'Created from Docker MCP', prompt: 'do the docker MCP work' },
       });
 
       expect(createdTaskName).toBe('Created from Docker MCP');
@@ -537,7 +537,7 @@ describeDocker('Layer 4 — Production-path coordinator Docker scenario', () => 
       // create_task reaches the coordinator
       const result = await client.callTool({
         name: 'create_task',
-        arguments: { name: 'prod-path-test-task' },
+        arguments: { name: 'prod-path-test-task', prompt: 'do the production path work' },
       });
 
       expect(createdTaskName).toBe('prod-path-test-task');

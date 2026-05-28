@@ -46,7 +46,12 @@ import {
   getDiffBaseSha,
   mergeTask as gitMergeTask,
 } from '../ipc/git.js';
-import { stripAnsi, chunkContainsAgentPrompt } from './prompt-detect.js';
+import {
+  stripAnsi,
+  chunkContainsAgentPrompt,
+  getAgentPromptReadiness,
+  AGENT_READY_TAIL_CHARS,
+} from './prompt-detect.js';
 import { SUB_TASK_PREAMBLE } from './sub-task-preamble.js';
 import { info as logInfo, warn as logWarn } from '../log.js';
 import type {
@@ -71,6 +76,9 @@ const INITIAL_PROMPT_READY_DELAY_MS = 1_500;
 const MAX_PENDING_PROMPTS = 32;
 const MAX_PROMPT_BYTES = 64 * 1024;
 const PROMPT_ECHO_IDLE_SUPPRESSION_MS = 2_000;
+const FOCUS_IN = '\x1b[I';
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
 const REST_COORDINATOR_SENTINEL = 'api';
 const PREAMBLE_ARTIFACT_PATHS = new Set([
   'AGENTS.md',
@@ -79,6 +87,11 @@ const PREAMBLE_ARTIFACT_PATHS = new Set([
   '.claude/settings.local.json',
 ]);
 const UNRESOLVED_LANDED_COMMIT = 'unresolved';
+
+function pasteDelayMs(text: string): number {
+  const lines = text.split('\n').length;
+  return Math.min(500, Math.max(50, lines * 15));
+}
 
 class PromptWriteError extends Error {
   constructor(
@@ -140,6 +153,7 @@ export class Coordinator {
   private initialPromptReadyTasks = new Set<string>();
   private promptReadySeenAt = new Map<string, number>();
   private queuedPromptFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private bracketedPasteAgentIds = new Set<string>();
   private closingTaskIds = new Set<string>();
   private activeSignalWaitCounts = new Map<string, number>();
   private recentlyDelivered = new ReplayCache<WaitForSignalDoneResult>();
@@ -208,12 +222,14 @@ export class Coordinator {
     onPtyEvent('spawn', (agentId) => {
       const outputCb = this.subscribers.get(agentId);
       if (!outputCb) return; // not a coordinated agent, or initial spawn (not yet subscribed)
-      this.tailBuffers.set(agentId, ''); // discard stale data from the killed PTY
+      this.tailBuffers.set(agentId, ''); // replaced PTYs should not inherit old prompt text
       for (const task of this.tasks.values()) {
         if (task.agentId === agentId && task.status === 'exited') {
           task.status = 'running';
           task.exitCode = null;
-          break;
+        }
+        if (task.agentId === agentId) {
+          this.updateTailFromScrollback(task);
         }
       }
       subscribeToAgent(agentId, outputCb);
@@ -221,8 +237,15 @@ export class Coordinator {
   }
 
   setTaskControl(taskId: string, who: 'coordinator' | 'human'): void {
-    if (!this.tasks.has(taskId)) {
+    const task = this.tasks.get(taskId);
+    if (!task) {
       throw new Error(`Task not found: ${taskId}`);
+    }
+    if (who === 'human' && task.initialPrompt && !task.assignedPromptDelivered) {
+      logInfo('coordinator.control', 'ignored human hold before initial prompt delivery', {
+        taskId,
+      });
+      return;
     }
     this.controlMap.set(taskId, who);
     if (who === 'human') {
@@ -234,7 +257,6 @@ export class Coordinator {
       }
     }
     if (who === 'coordinator') {
-      const task = this.tasks.get(taskId);
       const hasQueuedWork = Boolean(
         task?.initialPrompt || (task?.pendingPrompts && task.pendingPrompts.length > 0),
       );
@@ -254,11 +276,11 @@ export class Coordinator {
   }
 
   private normalizedTail(agentId: string): string {
-    const tail = (this.tailBuffers.get(agentId) ?? '').slice(-300);
+    const tail = (this.tailBuffers.get(agentId) ?? '').slice(-AGENT_READY_TAIL_CHARS * 2);
     return (
       stripAnsi(tail)
-        // eslint-disable-next-line no-control-regex -- preserve newlines for anchored prompt detection.
-        .replace(/[\x00-\x09\x0b-\x1f\x7f]/g, ' ')
+        // eslint-disable-next-line no-control-regex -- preserve line breaks for anchored prompt detection.
+        .replace(/[\x00-\x09\x0b-\x0c\x0e-\x1f\x7f]/g, ' ')
         .replace(/[ \t]+/g, ' ')
         .trim()
     );
@@ -266,6 +288,34 @@ export class Coordinator {
 
   private tailHasAgentPrompt(task: CoordinatedTask): boolean {
     return chunkContainsAgentPrompt(this.normalizedTail(task.agentId));
+  }
+
+  private updateBracketedPasteMode(agentId: string, text: string): void {
+    // eslint-disable-next-line no-control-regex -- PTYs report bracketed paste mode with CSI ? 2004 h/l.
+    const re = /\x1b\[\?2004([hl])/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(text)) !== null) {
+      if (match[1] === 'h') this.bracketedPasteAgentIds.add(agentId);
+      else this.bracketedPasteAgentIds.delete(agentId);
+    }
+  }
+
+  private updateTailFromScrollback(task: CoordinatedTask): boolean {
+    const scrollback = getAgentScrollback(task.agentId);
+    if (!scrollback) return false;
+    const decoded = Buffer.from(scrollback, 'base64').toString('utf8');
+    this.updateBracketedPasteMode(task.agentId, decoded);
+    this.tailBuffers.set(
+      task.agentId,
+      decoded.length > 4096 ? decoded.slice(decoded.length - 4096) : decoded,
+    );
+    const hasAgentPrompt = this.tailHasAgentPrompt(task);
+    if (hasAgentPrompt) {
+      this.scheduleInitialPromptDelivery(task, INITIAL_PROMPT_READY_DELAY_MS, true);
+      task.status = 'idle';
+      this.maybeQueueReviewNotification(task, 'idle', null);
+    }
+    return hasAgentPrompt;
   }
 
   private markAgentPromptReady(task: CoordinatedTask, hasAgentPrompt: boolean): boolean {
@@ -386,6 +436,7 @@ export class Coordinator {
       const text = (this.decoders.get(task.agentId) ?? new TextDecoder()).decode(bytes, {
         stream: true,
       });
+      this.updateBracketedPasteMode(task.agentId, text);
       const prev = this.tailBuffers.get(task.agentId) ?? '';
       const combined = prev + text;
       this.tailBuffers.set(
@@ -440,12 +491,17 @@ export class Coordinator {
     if (!task?.initialPrompt || task.assignedPromptDelivered) return;
     if (task.status === 'exited' || task.status === 'error') return;
 
-    const promptReady = this.initialPromptReadyTasks.has(taskId) || this.tailHasAgentPrompt(task);
+    const readiness = getAgentPromptReadiness(this.normalizedTail(task.agentId));
+    const promptReady = this.initialPromptReadyTasks.has(taskId) || readiness.ready;
     if (!promptReady) {
       logInfo('coordinator.initial_prompt', 'waiting_for_prompt', {
         taskId: task.id,
         agentId: task.agentId,
+        reason: readiness.reason,
+        pendingPromptCount: task.pendingPrompts?.length ?? 0,
+        tailSample: readiness.tail.slice(-300),
       });
+      this.scheduleInitialPromptDelivery(task, INITIAL_PROMPT_READY_DELAY_MS);
       return;
     }
 
@@ -955,25 +1011,9 @@ export class Coordinator {
       subscribeToAgent(agentId, outputCb);
       task.status = 'running';
 
-      // Check scrollback in case the prompt was emitted before we subscribed
-      const scrollback = getAgentScrollback(agentId);
-      if (scrollback) {
-        const decoded = Buffer.from(scrollback, 'base64').toString('utf8');
-        this.tailBuffers.set(
-          agentId,
-          decoded.length > 4096 ? decoded.slice(decoded.length - 4096) : decoded,
-        );
-        const stripped = stripAnsi(decoded)
-          // eslint-disable-next-line no-control-regex
-          .replace(/[\x00-\x1f\x7f]/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        if (chunkContainsAgentPrompt(stripped)) {
-          this.scheduleInitialPromptDelivery(task, INITIAL_PROMPT_READY_DELAY_MS, true);
-          task.status = 'idle';
-          this.maybeQueueReviewNotification(task, 'idle', null);
-        }
-      }
+      // Check scrollback in case the prompt was emitted before we subscribed.
+      this.updateTailFromScrollback(task);
+      this.scheduleInitialPromptDelivery(task, INITIAL_PROMPT_READY_DELAY_MS);
 
       // Notify renderer after backend startup begins. The backend owns delivery
       // of coordinated initial assignments so background sub-tasks start even
@@ -991,6 +1031,7 @@ export class Coordinator {
         agentId: task.agentId,
         coordinatorTaskId: task.coordinatorTaskId,
         mcpConfigPath: subTaskMcpConfigPath,
+        prompt: task.initialPrompt,
         preambleFileExistedBefore: task.preambleFileExistedBefore,
         agentCommand: agentCommand,
         agentArgs: notifyAgentArgs,
@@ -1154,16 +1195,36 @@ export class Coordinator {
     this.setAutomationWriteInFlight(task, true);
     try {
       try {
-        writeToAgent(task.agentId, prompt);
+        writeToAgent(task.agentId, FOCUS_IN);
+      } catch (err) {
+        throw new PromptWriteError('Prompt focus write failed', 'body', err);
+      }
+      const promptBody = this.bracketedPasteAgentIds.has(task.agentId)
+        ? `${BRACKETED_PASTE_START}${prompt}${BRACKETED_PASTE_END}`
+        : prompt;
+      try {
+        writeToAgent(task.agentId, promptBody);
       } catch (err) {
         throw new PromptWriteError('Prompt body write failed', 'body', err);
       }
-      await new Promise((r) => setTimeout(r, PROMPT_WRITE_DELAY_MS));
+      logInfo('coordinator.prompt_write', 'body_written', {
+        taskId: task.id,
+        agentId: task.agentId,
+        bytes: Buffer.byteLength(prompt, 'utf8'),
+        bracketedPaste: this.bracketedPasteAgentIds.has(task.agentId),
+      });
+      const submitDelayMs = pasteDelayMs(prompt);
+      await new Promise((r) => setTimeout(r, submitDelayMs));
       try {
         writeToAgent(task.agentId, '\r');
       } catch (err) {
         throw new PromptWriteError('Prompt Enter write failed', 'enter', err);
       }
+      logInfo('coordinator.prompt_write', 'enter_written', {
+        taskId: task.id,
+        agentId: task.agentId,
+        delayMs: submitDelayMs,
+      });
       task.status = 'running';
       task.signalDoneAt = undefined;
       task.lastPromptEchoText = stripAnsi(prompt)
@@ -1529,6 +1590,7 @@ export class Coordinator {
       }
       this.idleResolvers.delete(task.id);
       this.tailBuffers.delete(task.agentId);
+      this.bracketedPasteAgentIds.delete(task.agentId);
       this.decoders.delete(task.agentId);
       if (task.mcpConfigPath) {
         try {
@@ -1763,6 +1825,7 @@ export class Coordinator {
     }
 
     this.tailBuffers.delete(task.agentId);
+    this.bracketedPasteAgentIds.delete(task.agentId);
     this.decoders.delete(task.agentId);
 
     const resolvers = this.idleResolvers.get(taskId);
@@ -1821,6 +1884,7 @@ export class Coordinator {
       });
     } catch (err) {
       console.warn('Failed to delete coordinated task worktree:', err);
+      this.clearPromptDeliveryState(taskId);
       this.closingTaskIds.delete(taskId);
       this.notifyRenderer(IPC.MCP_TaskCleanupFailed, {
         taskId,
@@ -1857,6 +1921,7 @@ export class Coordinator {
       this.finishSignalWait(coordinatorId);
     }
     this.tailBuffers.delete(task.agentId);
+    this.bracketedPasteAgentIds.delete(task.agentId);
     this.decoders.delete(task.agentId);
     // Delete per-task MCP config tmp file
     if (task.mcpConfigPath) {
@@ -1969,7 +2034,7 @@ export class Coordinator {
         Math.max(current, opts.landedMetadata.landedOrder),
       );
     }
-    if (opts.controlledBy === 'human') {
+    if (opts.controlledBy === 'human' && (!task.initialPrompt || task.assignedPromptDelivered)) {
       this.controlMap.set(task.id, 'human');
     }
 
@@ -2005,6 +2070,7 @@ export class Coordinator {
     } catch (err) {
       // Clean up partial map entries so the agentId doesn't linger in state.
       this.tailBuffers.delete(agentId);
+      this.bracketedPasteAgentIds.delete(agentId);
       this.decoders.delete(agentId);
       this.subscribers.delete(agentId);
       this.clearPromptDeliveryState(task.id);
@@ -2180,7 +2246,9 @@ export class Coordinator {
         this.subscribers.delete(task.agentId);
       }
       this.tailBuffers.delete(task.agentId);
+      this.bracketedPasteAgentIds.delete(task.agentId);
       this.decoders.delete(task.agentId);
+      this.clearPromptDeliveryState(taskId);
 
       // Resolve pending idle waiters so callers aren't left hanging
       const resolvers = this.idleResolvers.get(taskId);

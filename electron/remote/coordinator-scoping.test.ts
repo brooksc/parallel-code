@@ -345,6 +345,56 @@ describe('coordinator scoping', () => {
       expect(mockCoord.sendPrompt).toHaveBeenLastCalledWith(taskA.id, 'hi  there');
     });
 
+    it('rejects missing prompts before sending them to the coordinator', async () => {
+      const beforeCalls = vi.mocked(mockCoord.sendPrompt).mock.calls.length;
+
+      const res = await post(`/api/tasks/${taskA.id}/prompt`, {}, COORD_A);
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({ error: 'prompt must be a non-empty string' });
+      expect(vi.mocked(mockCoord.sendPrompt).mock.calls).toHaveLength(beforeCalls);
+    });
+
+    it('rejects blank prompts before sending them to the coordinator', async () => {
+      const beforeCalls = vi.mocked(mockCoord.sendPrompt).mock.calls.length;
+
+      const res = await post(`/api/tasks/${taskA.id}/prompt`, { prompt: '  ' }, COORD_A);
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({ error: 'prompt must be a non-empty string' });
+      expect(vi.mocked(mockCoord.sendPrompt).mock.calls).toHaveLength(beforeCalls);
+    });
+
+    it('rejects non-string prompts before sending them to the coordinator', async () => {
+      const beforeCalls = vi.mocked(mockCoord.sendPrompt).mock.calls.length;
+
+      const res = await post(`/api/tasks/${taskA.id}/prompt`, { prompt: 123 }, COORD_A);
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({ error: 'prompt must be a non-empty string' });
+      expect(vi.mocked(mockCoord.sendPrompt).mock.calls).toHaveLength(beforeCalls);
+    });
+
+    it('rejects control-character-only prompts after sanitization', async () => {
+      const beforeCalls = vi.mocked(mockCoord.sendPrompt).mock.calls.length;
+
+      const res = await post(`/api/tasks/${taskA.id}/prompt`, { prompt: '\x03\r\n' }, COORD_A);
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({ error: 'prompt must be a non-empty string' });
+      expect(vi.mocked(mockCoord.sendPrompt).mock.calls).toHaveLength(beforeCalls);
+    });
+
+    it('returns 404 for send_prompt to a missing task before calling the coordinator send path', async () => {
+      const beforeCalls = vi.mocked(mockCoord.sendPrompt).mock.calls.length;
+
+      const res = await post('/api/tasks/missing-task/prompt', { prompt: 'hello' }, COORD_A);
+
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'task not found' });
+      expect(vi.mocked(mockCoord.sendPrompt).mock.calls).toHaveLength(beforeCalls);
+    });
+
     it('rejects oversized prompts before sending them to the coordinator', async () => {
       const res = await post(
         `/api/tasks/${taskA.id}/prompt`,
@@ -354,6 +404,31 @@ describe('coordinator scoping', () => {
       expect(res.status).toBe(400);
     });
 
+    it('passes an in-limit Unicode prompt exactly to the coordinator', async () => {
+      const prompt = `continue with ${'火'.repeat(100)} 😀`;
+
+      const res = await post(`/api/tasks/${taskA.id}/prompt`, { prompt }, COORD_A);
+
+      expect(res.status).toBe(200);
+      expect(mockCoord.sendPrompt).toHaveBeenLastCalledWith(taskA.id, prompt);
+    });
+
+    it('rejects oversized multi-byte prompts before sending them to the coordinator', async () => {
+      const beforeCalls = vi.mocked(mockCoord.sendPrompt).mock.calls.length;
+
+      const res = await post(
+        `/api/tasks/${taskA.id}/prompt`,
+        { prompt: '😀'.repeat(5_000) },
+        COORD_A,
+      );
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({
+        error: 'prompt must be 16384 bytes or fewer',
+      });
+      expect(vi.mocked(mockCoord.sendPrompt).mock.calls).toHaveLength(beforeCalls);
+    });
+
     it('returns queued status when the prompt is parked behind a hold', async () => {
       vi.mocked(mockCoord.sendPrompt).mockResolvedValueOnce({ queued: true });
 
@@ -361,6 +436,15 @@ describe('coordinator scoping', () => {
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({ ok: true, queued: true });
+    });
+
+    it('returns 500 when coordinator sendPrompt fails', async () => {
+      vi.mocked(mockCoord.sendPrompt).mockRejectedValueOnce(new Error('Prompt queue full'));
+
+      const res = await post(`/api/tasks/${taskA.id}/prompt`, { prompt: 'hello' }, COORD_A);
+
+      expect(res.status).toBe(500);
+      await expect(res.json()).resolves.toEqual({ error: 'Error: Prompt queue full' });
     });
 
     it('returns 403 when coordinator A sends prompt to coordinator B task', async () => {
@@ -431,7 +515,7 @@ describe('coordinator scoping', () => {
 
   describe('create_task scoping', () => {
     it('uses X-Coordinator-Id as coordinatorTaskId when body omits it', async () => {
-      const res = await post('/api/tasks', { name: 'new task' }, COORD_A);
+      const res = await post('/api/tasks', { name: 'new task', prompt: 'do the work' }, COORD_A);
       expect(res.status).toBe(201);
       // createTask should have been called with COORD_A as coordinatorTaskId
       const coord = mockCoord as unknown as ReturnType<typeof makeMockCoordinator>;
@@ -443,7 +527,7 @@ describe('coordinator scoping', () => {
     it('returns 403 when body coordinatorTaskId differs from X-Coordinator-Id header', async () => {
       const res = await post(
         '/api/tasks',
-        { name: 'new task', coordinatorTaskId: COORD_B },
+        { name: 'new task', prompt: 'do the work', coordinatorTaskId: COORD_B },
         COORD_A,
       );
       expect(res.status).toBe(403);
@@ -454,10 +538,37 @@ describe('coordinator scoping', () => {
     it('accepts body coordinatorTaskId that matches X-Coordinator-Id header', async () => {
       const res = await post(
         '/api/tasks',
-        { name: 'new task', coordinatorTaskId: COORD_A },
+        { name: 'new task', prompt: 'do the work', coordinatorTaskId: COORD_A },
         COORD_A,
       );
       expect(res.status).toBe(201);
+    });
+
+    it('returns 400 when create_task omits the initial prompt', async () => {
+      const res = await post('/api/tasks', { name: 'new task' }, COORD_A);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body).toMatchObject({ error: 'prompt must be a non-empty string' });
+    });
+
+    it('returns 400 when create_task prompt is not a string', async () => {
+      const beforeCalls = vi.mocked(mockCoord.createTask).mock.calls.length;
+
+      const res = await post('/api/tasks', { name: 'new task', prompt: 123 }, COORD_A);
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({ error: 'prompt must be a non-empty string' });
+      expect(vi.mocked(mockCoord.createTask).mock.calls).toHaveLength(beforeCalls);
+    });
+
+    it('returns 400 when create_task prompt is empty after sanitization', async () => {
+      const beforeCalls = vi.mocked(mockCoord.createTask).mock.calls.length;
+
+      const res = await post('/api/tasks', { name: 'new task', prompt: '\x03\r\n' }, COORD_A);
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({ error: 'prompt must be a non-empty string' });
+      expect(vi.mocked(mockCoord.createTask).mock.calls).toHaveLength(beforeCalls);
     });
 
     it('strips control characters before using a create_task prompt', async () => {
@@ -466,6 +577,44 @@ describe('coordinator scoping', () => {
       expect(mockCoord.createTask).toHaveBeenLastCalledWith(
         expect.objectContaining({ prompt: 'do [200~it' }),
       );
+    });
+
+    it('passes an in-limit Unicode create_task prompt exactly to the coordinator', async () => {
+      const prompt = `summarize ${'火'.repeat(100)} 😀`;
+
+      const res = await post('/api/tasks', { name: 'new task', prompt }, COORD_A);
+
+      expect(res.status).toBe(201);
+      expect(mockCoord.createTask).toHaveBeenLastCalledWith(expect.objectContaining({ prompt }));
+    });
+
+    it('rejects oversized multi-byte create_task prompts before calling the coordinator', async () => {
+      const beforeCalls = vi.mocked(mockCoord.createTask).mock.calls.length;
+
+      const res = await post(
+        '/api/tasks',
+        { name: 'new task', prompt: '😀'.repeat(5_000) },
+        COORD_A,
+      );
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toEqual({
+        error: 'prompt must be 16384 bytes or fewer',
+      });
+      expect(vi.mocked(mockCoord.createTask).mock.calls).toHaveLength(beforeCalls);
+    });
+
+    it('returns 500 when coordinator createTask fails', async () => {
+      vi.mocked(mockCoord.createTask).mockRejectedValueOnce(
+        new Error('coordinator coordinator-a is not registered'),
+      );
+
+      const res = await post('/api/tasks', { name: 'new task', prompt: 'do the work' }, COORD_A);
+
+      expect(res.status).toBe(500);
+      await expect(res.json()).resolves.toEqual({
+        error: 'Error: coordinator coordinator-a is not registered',
+      });
     });
   });
 

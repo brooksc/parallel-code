@@ -58,6 +58,38 @@ describe('selectTools — role-based tool list', () => {
     );
   });
 
+  it('create_task requires an initial prompt', () => {
+    const createTask = COORDINATOR_TOOLS.find((tool) => tool.name === 'create_task');
+    expect(createTask?.inputSchema.required).toContain('prompt');
+  });
+
+  it('create_task declares prompt as a string input', () => {
+    const createTask = COORDINATOR_TOOLS.find((tool) => tool.name === 'create_task');
+    const properties = createTask?.inputSchema.properties as
+      | Record<string, { type?: string }>
+      | undefined;
+    expect(properties?.prompt?.type).toBe('string');
+  });
+
+  it('send_prompt requires a prompt', () => {
+    const sendPrompt = COORDINATOR_TOOLS.find((tool) => tool.name === 'send_prompt');
+    expect(sendPrompt?.inputSchema.required).toContain('prompt');
+  });
+
+  it('send_prompt requires a taskId', () => {
+    const sendPrompt = COORDINATOR_TOOLS.find((tool) => tool.name === 'send_prompt');
+    expect(sendPrompt?.inputSchema.required).toContain('taskId');
+  });
+
+  it('send_prompt declares taskId and prompt as string inputs', () => {
+    const sendPrompt = COORDINATOR_TOOLS.find((tool) => tool.name === 'send_prompt');
+    const properties = sendPrompt?.inputSchema.properties as
+      | Record<string, { type?: string }>
+      | undefined;
+    expect(properties?.taskId?.type).toBe('string');
+    expect(properties?.prompt?.type).toBe('string');
+  });
+
   it('sub-task tools do NOT include any coordinator lifecycle tools', () => {
     const names = selectTools('task-abc', '').map((t: ToolDef) => t.name);
     for (const forbidden of ['create_task', 'merge_task', 'close_task', 'wait_for_signal_done']) {

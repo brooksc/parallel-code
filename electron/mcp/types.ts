@@ -130,7 +130,7 @@ export interface LandedMetadata {
 
 export interface CreateTaskInput {
   name: string;
-  prompt?: string;
+  prompt: string;
   projectId?: string;
 }
 

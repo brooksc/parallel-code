@@ -7,7 +7,16 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { stripAnsi, chunkContainsAgentPrompt, PROMPT_PATTERNS } from './prompt-detect.js';
+import {
+  stripAnsi,
+  chunkContainsAgentPrompt,
+  getAgentPromptReadiness,
+  PROMPT_PATTERNS,
+} from './prompt-detect.js';
+import {
+  NOT_READY_AGENT_FRAME_FIXTURES,
+  READY_AGENT_FRAME_FIXTURES,
+} from './agent-frame-fixtures.js';
 
 // ── stripAnsi ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +101,89 @@ describe('PROMPT_PATTERNS — last-line detection', () => {
 // ── chunkContainsAgentPrompt ──────────────────────────────────────────────────
 
 describe('chunkContainsAgentPrompt', () => {
+  it.each(READY_AGENT_FRAME_FIXTURES)('classifies recorded ready frame: $name', ({ frame }) => {
+    expect(getAgentPromptReadiness(frame)).toMatchObject({ ready: true, reason: 'ready' });
+    expect(chunkContainsAgentPrompt(frame)).toBe(true);
+  });
+
+  it.each(NOT_READY_AGENT_FRAME_FIXTURES)(
+    'classifies recorded not-ready frame: $name',
+    ({ frame, reason }) => {
+      expect(getAgentPromptReadiness(frame)).toMatchObject({ ready: false, reason });
+      expect(chunkContainsAgentPrompt(frame)).toBe(false);
+    },
+  );
+
+  it.each([
+    [
+      'Claude prompt above long footer',
+      `❯\n\n${'opus · /Users/brooksc/code/project/.worktrees/task/'.repeat(8)}`,
+    ],
+    [
+      'Claude empty insert mode',
+      ['│ >', '-- INSERT --', 'opus · /repo/.worktrees/task/example · ctx:0/200k'].join('\n'),
+    ],
+    [
+      'Codex prompt above long footer',
+      `›\n\n${'gpt-5.5 default · /Users/brooksc/code/project/.worktrees/task/'.repeat(8)}`,
+    ],
+    ['Gemini typed-message prompt', 'workspace branch sandbox /model quota\n > Type your message'],
+    [
+      'Claude prompt after accepted trust dialog scrollback',
+      ['Do you trust the files in this folder?', '❯ Yes  No', 'Trust accepted', '❯'].join('\n'),
+    ],
+    [
+      'Claude prompt with carriage-return TUI redraws',
+      [
+        'Claude Code v2.1.153',
+        '────────────────────────────────',
+        '❯ ',
+        '────────────────────────────────',
+        '--INSERT--',
+        'Sonnet 4 | ~/repo/.worktrees/task/example',
+      ].join('\r'),
+    ],
+    [
+      'Gemini prompt after MCP startup completion scrollback',
+      ['Starting MCP servers (0/1): parallel-code', 'Starting MCP servers complete', '>'].join(
+        '\n',
+      ),
+    ],
+  ])('classifies ready agent fixture: %s', (_name, fixture) => {
+    expect(getAgentPromptReadiness(fixture)).toMatchObject({ ready: true, reason: 'ready' });
+    expect(chunkContainsAgentPrompt(fixture)).toBe(true);
+  });
+
+  it.each([
+    [
+      'Codex working status',
+      [
+        '› Improve documentation in @filename',
+        'gpt-5.5 default · ~/repo/worktree',
+        'Working (18m 51s • esc to interrupt) • /stop to close',
+      ].join('\n'),
+      'busy',
+    ],
+    [
+      'Codex startup screen',
+      'Starting MCP servers (0/2): codex_apps, parallel-code\n›',
+      'startup_or_dialog',
+    ],
+    [
+      'trust dialog',
+      [
+        'Do you trust the contents of this directory?',
+        '› 1. Yes, continue',
+        'Press enter to continue',
+      ].join('\n'),
+      'startup_or_dialog',
+    ],
+    ['selection menu', `❯ Option A\n${'more menu text '.repeat(30)}`, 'no_prompt'],
+  ])('classifies not-ready agent fixture: %s', (_name, fixture, reason) => {
+    expect(getAgentPromptReadiness(fixture)).toMatchObject({ ready: false, reason });
+    expect(chunkContainsAgentPrompt(fixture)).toBe(false);
+  });
+
   it('returns true for a plain ❯ at the tail', () => {
     expect(chunkContainsAgentPrompt('❯')).toBe(true);
   });
@@ -123,6 +215,25 @@ describe('chunkContainsAgentPrompt', () => {
   it('returns true for Codex CLI › prompt above footer/status text', () => {
     const footer = '\n\ngpt-5.5 default · ~/repo/worktree';
     expect(chunkContainsAgentPrompt(`›${footer}`)).toBe(true);
+  });
+
+  it('returns true for Codex CLI › prompt above a long footer/status text', () => {
+    const footer = `\n\n${'gpt-5.5 default · /Users/brooksc/code/project/.worktrees/task/'.repeat(8)}`;
+    expect(chunkContainsAgentPrompt(`›${footer}`)).toBe(true);
+  });
+
+  it('returns true for Claude Code ❯ prompt above a long footer/status text', () => {
+    const footer = `\n\n${'opus · /Users/brooksc/code/project/.worktrees/task/'.repeat(8)}`;
+    expect(chunkContainsAgentPrompt(`❯${footer}`)).toBe(true);
+  });
+
+  it('returns true for Claude Code empty insert-mode prompt', () => {
+    const tail = [
+      '│ >',
+      '-- INSERT --',
+      'opus · /Users/brooksc/code/project/.worktrees/task/example · ctx:0/200k',
+    ].join('\n');
+    expect(chunkContainsAgentPrompt(tail)).toBe(true);
   });
 
   it('does not treat Codex working status as ready even when the input prompt is visible', () => {
@@ -169,6 +280,15 @@ describe('chunkContainsAgentPrompt', () => {
     // The caller strips ANSI before passing to chunkContainsAgentPrompt.
     // Simulate what the coordinator sees after stripAnsi().
     const stripped = stripAnsi('\x1b[32m❯\x1b[0m');
+    expect(chunkContainsAgentPrompt(stripped)).toBe(true);
+  });
+
+  it.each([
+    ['Claude', '\x1b[?25l\x1b[32m❯\x1b[0m\x1b[?25h\nopus · /repo/.worktrees/task'],
+    ['Codex', '\x1b[2K\r\x1b[36m›\x1b[0m\n\ngpt-5.5 default · /repo/.worktrees/task'],
+  ])('detects %s ready prompt after stripping ANSI control sequences', (_name, raw) => {
+    const stripped = stripAnsi(raw);
+    expect(getAgentPromptReadiness(stripped)).toMatchObject({ ready: true, reason: 'ready' });
     expect(chunkContainsAgentPrompt(stripped)).toBe(true);
   });
 

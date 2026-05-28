@@ -12,6 +12,8 @@ function argValue(name, fallback = '') {
 const profile = argValue('--profile', 'codex');
 const capturePath = argValue('--capture');
 const transientReady = process.argv.includes('--transient-ready');
+const minEnterDelayMs = Number(argValue('--min-enter-delay-ms', '0'));
+const bracketedPaste = process.argv.includes('--bracketed-paste');
 
 function write(text) {
   process.stdout.write(text);
@@ -28,6 +30,7 @@ function capture(payload) {
 }
 
 function prompt() {
+  if (bracketedPaste) write('\x1b[?2004h');
   if (profile === 'codex') {
     write('gpt-5 default  ~/fake-worktree\n› ');
     return;
@@ -95,14 +98,21 @@ function boot() {
 }
 
 let inputBuffer = '';
+let lastBodyAt = 0;
 
 process.stdin.setEncoding('utf8');
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
 process.stdin.on('data', (chunk) => {
+  if (chunk && !/^\r+$/.test(chunk)) lastBodyAt = Date.now();
   inputBuffer += chunk;
   let submitIdx = inputBuffer.indexOf('\r');
   while (submitIdx >= 0) {
+    if (minEnterDelayMs > 0 && Date.now() - lastBodyAt < minEnterDelayMs) {
+      inputBuffer = inputBuffer.replace('\r', '');
+      submitIdx = inputBuffer.indexOf('\r');
+      continue;
+    }
     const payload = inputBuffer.slice(0, submitIdx);
     inputBuffer = inputBuffer.slice(submitIdx + 1);
     if (payload.trim()) {

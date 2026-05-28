@@ -47,7 +47,7 @@ export class MCPClient {
 
   async createTask(opts: {
     name: string;
-    prompt?: string;
+    prompt: string;
     projectId?: string;
     coordinatorTaskId?: string;
     skipPermissions?: boolean;

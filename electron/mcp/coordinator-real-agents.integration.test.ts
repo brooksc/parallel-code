@@ -1,17 +1,21 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { Coordinator } from './coordinator.js';
+import { writeToAgent } from '../ipc/pty.js';
 
 const RUN_REAL_AGENT_SMOKE = process.env.RUN_REAL_AGENT_SMOKE === '1';
 // Dangerous flags (--dangerously-bypass-approvals-and-sandbox, --dangerously-skip-permissions)
 // run agents with no sandbox on the host machine. Require a second opt-in to avoid accidental
 // credential exposure on dev machines running with credentials in scope.
 const RUN_REAL_AGENT_DANGEROUS = process.env.RUN_REAL_AGENT_DANGEROUS === '1';
+const RUN_REAL_AGENT_HOST_HOME = process.env.RUN_REAL_AGENT_HOST_HOME === '1';
 const describeRealAgents =
   RUN_REAL_AGENT_SMOKE && RUN_REAL_AGENT_DANGEROUS ? describe : describe.skip;
+const projectRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 interface RealAgentProfile {
   name: 'codex' | 'claude' | 'gemini';
@@ -117,23 +121,57 @@ async function waitForInitialPromptDelivery(
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`Timed out waiting for initial prompt delivery to ${taskId}`);
+  const status = coordinator.getTaskStatus(taskId);
+  throw new Error(
+    [
+      `Timed out waiting for initial prompt delivery to ${taskId}`,
+      `Last status: ${JSON.stringify(status)}`,
+      'Last output:',
+      coordinator.getTaskOutput(taskId)?.slice(-4096) ?? '',
+    ].join('\n'),
+  );
+}
+
+async function acceptStartupTrustDialogIfPresent(
+  coordinator: Coordinator,
+  taskId: string,
+  agentId: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const output = coordinator.getTaskOutput(taskId) ?? '';
+    if (
+      /\bDo\s*you\s*trust\b|\bPress\s*enter\s*to\s*continue\b|\btrust\s*this\s*folder\b/i.test(
+        output,
+      )
+    ) {
+      writeToAgent(agentId, '\r');
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }
 
 describeRealAgents('Coordinator real agent startup smoke', () => {
   it.each(realAgentProfiles())(
     'delivers an initial prompt to installed $name',
     async ({ name, command, args }) => {
-      const repo = createRepo();
+      const repo = RUN_REAL_AGENT_HOST_HOME ? projectRoot : createRepo();
       const coordinator = new Coordinator();
       const rendererEvents: RendererEvent[] = [];
       let taskId: string | undefined;
       const token = `PARALLEL_CODE_REAL_AGENT_SMOKE_${name.toUpperCase()}`;
 
-      // Isolate spawned CLIs from host dotfiles/credentials.
-      const tempHome = mkdtempSync(join(tmpdir(), 'parallel-code-test-home-'));
+      // Isolate spawned CLIs from host dotfiles/credentials unless explicitly testing
+      // authenticated local agent profiles.
+      const tempHome = RUN_REAL_AGENT_HOST_HOME
+        ? undefined
+        : mkdtempSync(join(tmpdir(), 'parallel-code-test-home-'));
       const origHome = process.env.HOME;
-      process.env.HOME = tempHome;
+      if (tempHome) {
+        process.env.HOME = tempHome;
+      }
 
       try {
         coordinator.setWindow(createMockWindow(rendererEvents));
@@ -155,6 +193,7 @@ describeRealAgents('Coordinator real agent startup smoke', () => {
         });
         taskId = task.id;
 
+        await acceptStartupTrustDialogIfPresent(coordinator, task.id, task.agentId);
         await waitForInitialPromptDelivery(rendererEvents, task.id, coordinator);
 
         const status = execFileSync('git', ['status', '--short'], {
@@ -176,10 +215,12 @@ describeRealAgents('Coordinator real agent startup smoke', () => {
         if (taskId) {
           await coordinator.closeTask(taskId).catch(() => undefined);
         }
-        if (existsSync(repo)) {
+        if (!RUN_REAL_AGENT_HOST_HOME && existsSync(repo)) {
           rmSync(repo, { recursive: true, force: true });
         }
-        rmSync(tempHome, { recursive: true, force: true });
+        if (tempHome) {
+          rmSync(tempHome, { recursive: true, force: true });
+        }
       }
     },
     120_000,

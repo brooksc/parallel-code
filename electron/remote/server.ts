@@ -437,8 +437,8 @@ export function startRemoteServer(opts: {
               // eslint-disable-next-line no-control-regex
               body.name = (body.name as string).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
               if (!body.name) return jsonReply(400, { error: 'name must be a non-empty string' });
-              const prompt = validateRestPrompt(body.prompt, false);
-              if (prompt && typeof prompt !== 'string') return jsonReply(400, prompt);
+              const prompt = validateRestPrompt(body.prompt, true);
+              if (typeof prompt !== 'string') return jsonReply(400, prompt);
               if (body.projectId !== undefined && typeof body.projectId !== 'string')
                 return jsonReply(400, { error: 'projectId must be a string' });
               if (body.gitIsolation !== undefined)
@@ -467,7 +467,10 @@ export function startRemoteServer(opts: {
                 });
               }
               const coordinatorTaskId = callerCoordinatorId ?? REST_COORDINATOR_SENTINEL;
-              mcpLog('info', `create_task name=${body.name} baseBranch=${baseBranch ?? 'default'}`);
+              mcpLog(
+                'info',
+                `create_task name=${body.name} baseBranch=${baseBranch ?? 'default'} promptBytes=${Buffer.byteLength(prompt, 'utf8')}`,
+              );
               const result = await orch.createTask({
                 name: body.name as string,
                 prompt,

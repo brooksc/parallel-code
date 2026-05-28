@@ -69,7 +69,7 @@ export const COORDINATOR_TOOLS: ToolDef[] = [
             'Git branch to base the worktree on. Defaults to the coordinator task branch. Only set this when deliberately overriding that default.',
         },
       },
-      required: ['name'],
+      required: ['name', 'prompt'],
     },
   },
   {

@@ -294,6 +294,11 @@ describe('MCP_TaskCreated IPC handler', () => {
     expect(mockTasks['sub-task-1'].mcpLaunchArgs).toEqual(baseEvent.mcpLaunchArgs);
   });
 
+  it('stores the backend-owned initial prompt for display and restart hydration', () => {
+    taskCreatedHandler({ ...baseEvent, prompt: 'do the work' });
+    expect(mockTasks['sub-task-1'].initialPrompt).toBe('do the work');
+  });
+
   it('regression: sub-tasks must not be created without controlledBy defined', () => {
     taskCreatedHandler(baseEvent);
     expect(mockTasks['sub-task-1'].controlledBy).toBeDefined();
@@ -327,6 +332,18 @@ describe('task automation activity lease', () => {
 
     vi.advanceTimersByTime(1);
     expect(mockTasks['sub-task-1'].controlledBy).toBe('coordinator');
+  });
+
+  it('does not optimistically switch to human while a coordinated initial prompt is pending', () => {
+    mockTasks['sub-task-1'].initialPrompt = 'do the work';
+
+    markTaskUserActivity('sub-task-1');
+
+    expect(mockTasks['sub-task-1'].controlledBy).toBe('coordinator');
+    expect(mockInvoke).not.toHaveBeenCalledWith(IPC.MCP_ControlChanged, {
+      taskId: 'sub-task-1',
+      controlledBy: 'human',
+    });
   });
 
   it('extends the activity hold when more user activity arrives', () => {

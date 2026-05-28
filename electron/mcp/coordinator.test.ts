@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'os';
 import { join, dirname } from 'path';
 import { getChangedFiles, getAllFileDiffs, getDiffBaseSha, mergeTask } from '../ipc/git.js';
+import {
+  NOT_READY_AGENT_FRAME_FIXTURES,
+  READY_AGENT_FRAME_FIXTURES,
+} from './agent-frame-fixtures.js';
+import { handleMCPToolCall } from './server.js';
+import type { MCPClient } from './client.js';
 
 // --- fs / child_process mocks (must come before dynamic import) ---
 const mockExecFile = vi.fn(
@@ -52,6 +58,7 @@ vi.mock('fs/promises', () => ({
 
 // --- other mocks ---
 const mockNotifyRenderer = vi.fn();
+const mockLogInfo = vi.fn();
 const mockOnPtyEvent = vi.fn();
 const mockSpawnAgent = vi.fn();
 const mockWriteToAgent = vi.fn();
@@ -72,8 +79,63 @@ vi.mock('./atomic.js', () => ({
 }));
 
 vi.mock('./prompt-detect.js', () => ({
-  stripAnsi: (s: string) => s,
-  chunkContainsAgentPrompt: (s: string) => s.slice(-300).includes('❯'),
+  stripAnsi: (s: string) =>
+    s.replace(
+      // eslint-disable-next-line no-control-regex
+      /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g,
+      '',
+    ),
+  AGENT_READY_TAIL_CHARS: 1000,
+  getAgentPromptReadiness: (s: string) => {
+    const tail = s.slice(-1000);
+    if (
+      /\bDo\s+you\s+trust\b|\bPress\s+enter\s+to\s+continue\b|\bBooting\s+MCP\s+server\b|\bStarting\s+MCP\s+servers?\b/i.test(
+        tail,
+      )
+    ) {
+      return { ready: false, reason: 'startup_or_dialog', tail };
+    }
+    if (
+      /\bq*Working\s*\(|\bbackground\s+terminal\s+running\b|\besc\s+to\s+interrupt\b|\/stop\s+to\s+close\b/i.test(
+        tail,
+      )
+    ) {
+      return { ready: false, reason: 'busy', tail };
+    }
+    const ready = tail
+      .slice(-1000)
+      .split(/\r\n?|\n/)
+      .some((line) =>
+        /(?:^|\s)[❯›]\s*$|^\s*--\s*INSERT\s*--\s*$|^\s*>\s*(?:Type your message|$)/i.test(
+          line.trim(),
+        ),
+      );
+    return { ready, reason: ready ? 'ready' : 'no_prompt', tail };
+  },
+  chunkContainsAgentPrompt: (s: string) => {
+    const tail = s.slice(-1000);
+    if (
+      /\bDo\s+you\s+trust\b|\bPress\s+enter\s+to\s+continue\b|\bBooting\s+MCP\s+server\b|\bStarting\s+MCP\s+servers?\b/i.test(
+        tail,
+      )
+    ) {
+      return false;
+    }
+    if (
+      /\bq*Working\s*\(|\bbackground\s+terminal\s+running\b|\besc\s+to\s+interrupt\b|\/stop\s+to\s+close\b/i.test(
+        tail,
+      )
+    ) {
+      return false;
+    }
+    return tail
+      .split(/\r\n?|\n/)
+      .some((line) =>
+        /(?:^|\s)[❯›]\s*$|^\s*--\s*INSERT\s*--\s*$|^\s*>\s*(?:Type your message|$)/i.test(
+          line.trim(),
+        ),
+      );
+  },
 }));
 
 vi.mock('../ipc/pty.js', () => ({
@@ -112,6 +174,11 @@ vi.mock('../ipc/channels.js', () => ({
   },
 }));
 
+vi.mock('../log.js', () => ({
+  info: mockLogInfo,
+  warn: vi.fn(),
+}));
+
 // Import after mocks
 const { Coordinator } = await import('./coordinator.js');
 const { removePreambleBlock } = await import('./preamble.js');
@@ -121,6 +188,12 @@ function getExitHandler(): (agentId: string, data: unknown) => void {
   const call = mockOnPtyEvent.mock.calls.find((c) => c[0] === 'exit');
   if (!call) throw new Error('exit handler not registered');
   return call[1] as (agentId: string, data: unknown) => void;
+}
+
+function getSpawnHandler(): (agentId: string) => void {
+  const call = mockOnPtyEvent.mock.calls.find((c) => c[0] === 'spawn');
+  if (!call) throw new Error('spawn handler not registered');
+  return call[1] as (agentId: string) => void;
 }
 
 function getOutputCb(): (encoded: string) => void {
@@ -137,6 +210,10 @@ function getAgentId(): string {
 
 function encode(s: string): string {
   return Buffer.from(s).toString('base64');
+}
+
+function encodeBytes(bytes: Buffer): string {
+  return bytes.toString('base64');
 }
 
 function emitWorkThenIdle(outputCb: (encoded: string) => void): void {
@@ -187,6 +264,169 @@ describe('Coordinator registerCoordinator — idempotency', () => {
     expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_created', expect.anything());
   });
 
+  it('delivers prompts created through the MCP create_task handler', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      const client = {
+        createTask: (opts: Parameters<MCPClient['createTask']>[0]) =>
+          coordinator.createTask({
+            ...opts,
+            coordinatorTaskId: opts.coordinatorTaskId ?? 'coord-1',
+          }),
+      } as unknown as MCPClient;
+
+      const result = await handleMCPToolCall(
+        { client, taskId: '', coordinatorId: 'coord-1' },
+        'create_task',
+        { name: 'child', prompt: 'do one' },
+      );
+
+      expect(result).not.toHaveProperty('isError');
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      const agentId = mockSubscribeToAgent.mock.calls[0]?.[0] as string;
+      output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(agentId, expect.stringContaining('do one'));
+      expect(mockWriteToAgent).toHaveBeenCalledWith(agentId, '\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('queues MCP send_prompt behind an undelivered initial prompt and flushes in order', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      const task = await coordinator.createTask({
+        name: 'child',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const client = {
+        sendPrompt: (taskId: string, prompt: string) => coordinator.sendPrompt(taskId, prompt),
+      } as unknown as MCPClient;
+
+      const result = await handleMCPToolCall(
+        { client, taskId: '', coordinatorId: 'coord-1' },
+        'send_prompt',
+        { taskId: task.id, prompt: 'follow one' },
+      );
+
+      expect(result).toMatchObject({
+        content: [
+          {
+            text: expect.stringContaining('Prompt queued'),
+          },
+        ],
+      });
+      expect(coordinator.getTaskStatus(task.id)?.pendingPrompts).toEqual(['follow one']);
+
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+      output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(100);
+
+      const textWrites = mockWriteToAgent.mock.calls
+        .filter(([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I')
+        .map(([, text]) => text);
+      expect(textWrites[0]).toEqual(expect.stringContaining('do one'));
+      expect(textWrites[1]).toBe('follow one');
+      expect(coordinator.getTaskStatus(task.id)?.pendingPromptCount).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries initial prompt delivery when the body write fails', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      const task = await coordinator.createTask({
+        name: 'child',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      let failedBodyOnce = false;
+      mockWriteToAgent.mockImplementation((agentId: string, data: string) => {
+        if (data.includes('do one') && !failedBodyOnce) {
+          failedBodyOnce = true;
+          throw new Error('pty body failed');
+        }
+        return { id: agentId, data };
+      });
+
+      output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const bodyWrites = mockWriteToAgent.mock.calls.filter(
+        ([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I',
+      );
+      const enterWrites = mockWriteToAgent.mock.calls.filter(
+        ([agentId, text]) => agentId === task.agentId && text === '\r',
+      );
+      expect(bodyWrites).toHaveLength(2);
+      expect(bodyWrites[1]?.[1]).toEqual(expect.stringContaining('do one'));
+      expect(enterWrites).toHaveLength(1);
+    } finally {
+      mockWriteToAgent.mockReset();
+      mockWriteToAgent.mockImplementation((agentId: string, data: string) => ({
+        id: agentId,
+        data,
+      }));
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry the initial prompt body when only the Enter write fails', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      const task = await coordinator.createTask({
+        name: 'child',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      mockWriteToAgent.mockImplementation((agentId: string, data: string) => {
+        if (data === '\r') throw new Error('pty enter failed');
+        return { id: agentId, data };
+      });
+
+      output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+      output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const bodyWrites = mockWriteToAgent.mock.calls.filter(
+        ([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I',
+      );
+      const enterWrites = mockWriteToAgent.mock.calls.filter(
+        ([agentId, text]) => agentId === task.agentId && text === '\r',
+      );
+      expect(bodyWrites).toHaveLength(1);
+      expect(bodyWrites[0]?.[1]).toEqual(expect.stringContaining('do one'));
+      expect(enterWrites).toHaveLength(1);
+    } finally {
+      mockWriteToAgent.mockReset();
+      mockWriteToAgent.mockImplementation((agentId: string, data: string) => ({
+        id: agentId,
+        data,
+      }));
+      vi.useRealTimers();
+    }
+  });
+
   it('delivers coordinated initial prompts from the backend for background sub-tasks', async () => {
     vi.useFakeTimers();
     try {
@@ -231,7 +471,7 @@ describe('Coordinator registerCoordinator — idempotency', () => {
       outputTwo(encode('ready ❯ '));
       outputThree(encode('ready ❯ '));
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
 
       expect(mockWriteToAgent).toHaveBeenCalledWith(
         taskOne.agentId,
@@ -252,15 +492,506 @@ describe('Coordinator registerCoordinator — idempotency', () => {
       const createdEvents = mockNotifyRenderer.mock.calls.filter(
         ([channel]) => channel === 'mcp_task_created',
       );
-      expect(createdEvents[0]?.[1]).not.toHaveProperty('prompt');
-      expect(createdEvents[1]?.[1]).not.toHaveProperty('prompt');
-      expect(createdEvents[2]?.[1]).not.toHaveProperty('prompt');
+      expect(createdEvents[0]?.[1]).toHaveProperty('prompt', expect.stringContaining('do one'));
+      expect(createdEvents[1]?.[1]).toHaveProperty('prompt', expect.stringContaining('do two'));
+      expect(createdEvents[2]?.[1]).toHaveProperty('prompt', expect.stringContaining('do three'));
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('holds initial prompt delivery while control is human, delivers after control returns to coordinator', async () => {
+  it('delivers coordinated initial prompts when Claude renders the prompt above a long footer', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      const footer = `\n\n${'opus · /Users/brooksc/code/project/.worktrees/task/'.repeat(8)}`;
+
+      output(encode(`❯${footer}`));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('delivers coordinated initial prompts when Codex renders the prompt above a long footer', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      const footer = `\n\n${'gpt-5.5 default · /Users/brooksc/code/project/.worktrees/task/'.repeat(8)}`;
+
+      output(encode(`›${footer}`));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('detects an initial prompt-ready agent from scrollback after renderer reattach', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+
+      mockGetAgentScrollback.mockReturnValue(encode('ready ❯ '));
+      getSpawnHandler()(task.agentId);
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+    } finally {
+      mockGetAgentScrollback.mockReturnValue(null);
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(READY_AGENT_FRAME_FIXTURES)(
+    'detects recorded ready frame from scrollback after renderer reattach: $name',
+    async ({ frame }) => {
+      vi.useFakeTimers();
+      try {
+        coordinator.registerCoordinator('coord-1', 'proj-1');
+
+        const task = await coordinator.createTask({
+          name: 'one',
+          prompt: 'do one',
+          coordinatorTaskId: 'coord-1',
+        });
+
+        mockGetAgentScrollback.mockReturnValue(encode(frame));
+        getSpawnHandler()(task.agentId);
+        await vi.advanceTimersByTimeAsync(1_500);
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(mockWriteToAgent).toHaveBeenCalledWith(
+          task.agentId,
+          expect.stringContaining('do one'),
+        );
+        expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+      } finally {
+        mockGetAgentScrollback.mockReturnValue(null);
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('delivers initial prompt only once when ready output and reattach scrollback race', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+
+      output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      mockGetAgentScrollback.mockReturnValue(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      getSpawnHandler()(task.agentId);
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const textWrites = mockWriteToAgent.mock.calls
+        .filter(([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I')
+        .map(([, text]) => text);
+      const enterWrites = mockWriteToAgent.mock.calls.filter(
+        ([agentId, text]) => agentId === task.agentId && text === '\r',
+      );
+      expect(textWrites).toHaveLength(1);
+      expect(textWrites[0]).toEqual(expect.stringContaining('do one'));
+      expect(enterWrites).toHaveLength(1);
+    } finally {
+      mockGetAgentScrollback.mockReturnValue(null);
+      vi.useRealTimers();
+    }
+  });
+
+  it('delivers coordinated initial prompts when Claude renders empty insert mode', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+
+      output(
+        encode(
+          ['│ >', '-- INSERT --', 'opus · /repo/.worktrees/task/example · ctx:0/200k'].join('\n'),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('delivers coordinated initial prompts when Claude redraws ready state with carriage returns', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+
+      output(
+        encode(
+          [
+            'Claude Code v2.1.153',
+            '────────────────────────────────',
+            '❯ ',
+            '────────────────────────────────',
+            '--INSERT--',
+            'Sonnet 4 | ~/repo/.worktrees/task/example',
+          ].join('\r'),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(READY_AGENT_FRAME_FIXTURES)(
+    'delivers coordinated initial prompts for recorded ready frame: $name',
+    async ({ frame }) => {
+      vi.useFakeTimers();
+      try {
+        coordinator.registerCoordinator('coord-1', 'proj-1');
+
+        const task = await coordinator.createTask({
+          name: 'one',
+          prompt: 'do one',
+          coordinatorTaskId: 'coord-1',
+        });
+        const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+
+        output(encode(frame));
+        await vi.advanceTimersByTimeAsync(1_500);
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(mockWriteToAgent).toHaveBeenCalledWith(
+          task.agentId,
+          expect.stringContaining('do one'),
+        );
+        expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(NOT_READY_AGENT_FRAME_FIXTURES)(
+    'does not deliver and logs classifier reason for recorded not-ready frame: $name',
+    async ({ frame, reason }) => {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+
+      output(encode(frame));
+      await (
+        coordinator as unknown as {
+          tryDeliverInitialPrompt(taskId: string): Promise<void>;
+        }
+      ).tryDeliverInitialPrompt(task.id);
+
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockLogInfo).toHaveBeenCalledWith(
+        'coordinator.initial_prompt',
+        'waiting_for_prompt',
+        expect.objectContaining({
+          taskId: task.id,
+          agentId: task.agentId,
+          reason,
+          pendingPromptCount: 0,
+          tailSample: expect.any(String),
+        }),
+      );
+    },
+  );
+
+  it('keeps retrying initial prompt readiness after a not-ready frame goes quiet', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      output(encode('Starting MCP servers (0/2): codex_apps, parallel-code\n›'));
+
+      await vi.advanceTimersByTimeAsync(1_500);
+
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(
+        (
+          coordinator as unknown as {
+            initialPromptTimers: Map<string, unknown>;
+          }
+        ).initialPromptTimers.has(task.id),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['Claude', '❯'],
+    ['Codex', '›'],
+  ])('delivers when the %s ready prompt glyph is split across PTY chunks', async (_name, glyph) => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      const bytes = Buffer.from(`${glyph}\n\nmodel · /repo/.worktrees/task`);
+
+      output(encodeBytes(bytes.subarray(0, 1)));
+      output(encodeBytes(bytes.subarray(1)));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['Claude ANSI prompt', '\x1b[?25l\x1b[32m❯\x1b[0m\x1b[?25h\nopus · /repo/.worktrees/task'],
+    ['Codex ANSI prompt', '\x1b[2K\r\x1b[36m›\x1b[0m\n\ngpt-5.5 default · /repo/.worktrees/task'],
+  ])('delivers when %s is wrapped in terminal control sequences', async (_name, rawFrame) => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      const bytes = Buffer.from(rawFrame);
+
+      output(encodeBytes(bytes.subarray(0, 4)));
+      output(encodeBytes(bytes.subarray(4)));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs timer-driven waiting diagnostics for a recorded not-ready frame', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+
+      output(encode(NOT_READY_AGENT_FRAME_FIXTURES[0].frame));
+      await coordinator.sendPrompt(task.id, 'follow one');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(mockLogInfo).toHaveBeenCalledWith(
+        'coordinator.initial_prompt',
+        'waiting_for_prompt',
+        expect.objectContaining({
+          taskId: task.id,
+          agentId: task.agentId,
+          reason: NOT_READY_AGENT_FRAME_FIXTURES[0].reason,
+          pendingPromptCount: 1,
+          tailSample: expect.any(String),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(NOT_READY_AGENT_FRAME_FIXTURES)(
+    'preserves initial prompt through recorded not-ready frame then delivers on ready frame: $name',
+    async ({ frame }) => {
+      vi.useFakeTimers();
+      try {
+        coordinator.registerCoordinator('coord-1', 'proj-1');
+
+        const task = await coordinator.createTask({
+          name: 'one',
+          prompt: 'do one',
+          coordinatorTaskId: 'coord-1',
+        });
+        const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+
+        output(encode(frame));
+        await (
+          coordinator as unknown as {
+            tryDeliverInitialPrompt(taskId: string): Promise<void>;
+          }
+        ).tryDeliverInitialPrompt(task.id);
+        expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+          task.agentId,
+          expect.stringContaining('do one'),
+        );
+
+        output(encode('claude redraw '.repeat(120)));
+        output(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+        await vi.advanceTimersByTimeAsync(1_500);
+        await vi.advanceTimersByTimeAsync(500);
+
+        const textWrites = mockWriteToAgent.mock.calls
+          .filter(
+            ([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I',
+          )
+          .map(([, text]) => text);
+        expect(textWrites).toHaveLength(1);
+        expect(textWrites[0]).toEqual(expect.stringContaining('do one'));
+        expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('preserves initial and queued follow-up prompts through not-ready output before flushing in order', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      await coordinator.sendPrompt(task.id, 'follow one');
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+
+      output(encode(NOT_READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do one'),
+      );
+      expect(coordinator.getTaskStatus(task.id)?.pendingPrompts).toEqual(['follow one']);
+
+      output(encode('claude redraw '.repeat(120)));
+      output(encode(READY_AGENT_FRAME_FIXTURES[1].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+      output(encode(READY_AGENT_FRAME_FIXTURES[1].frame));
+      await vi.advanceTimersByTimeAsync(100);
+
+      const textWrites = mockWriteToAgent.mock.calls
+        .filter(([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I')
+        .map(([, text]) => text);
+      expect(textWrites[0]).toEqual(expect.stringContaining('do one'));
+      expect(textWrites[1]).toBe('follow one');
+      expect(coordinator.getTaskStatus(task.id)?.pendingPrompt).toBeUndefined();
+      expect(coordinator.getTaskStatus(task.id)?.pendingPromptCount).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores human-control holds before the initial prompt is delivered', async () => {
     vi.useFakeTimers();
     try {
       coordinator.registerCoordinator('coord-1', 'proj-1');
@@ -275,18 +1006,7 @@ describe('Coordinator registerCoordinator — idempotency', () => {
       coordinator.setTaskControl(task.id, 'human');
       output(encode('ready ❯ '));
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
-
-      // Still blocked — human control held
-      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
-        task.agentId,
-        expect.stringContaining('do one'),
-      );
-
-      // Control returns to coordinator; next reschedule cycle delivers
-      coordinator.setTaskControl(task.id, 'coordinator');
-      await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
 
       expect(mockWriteToAgent).toHaveBeenCalledWith(
         task.agentId,
@@ -313,7 +1033,7 @@ describe('Coordinator registerCoordinator — idempotency', () => {
       output(encode('ready ❯ '));
       output(encode('claude redraw '.repeat(500)));
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
 
       expect(mockWriteToAgent).toHaveBeenCalledWith(
         task.agentId,
@@ -339,7 +1059,7 @@ describe('Coordinator registerCoordinator — idempotency', () => {
 
       output(encode('ready ❯ '));
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
       expect(mockWriteToAgent).toHaveBeenCalledWith(
         task.agentId,
         expect.stringContaining('do one'),
@@ -385,13 +1105,13 @@ describe('Coordinator registerCoordinator — idempotency', () => {
       coordinator.setTaskControl(task.id, 'coordinator');
       output(encode('ready ❯ '));
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
       output(encode('still ready ❯ '));
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
 
       const textWrites = mockWriteToAgent.mock.calls.filter(
-        ([agentId, text]) => agentId === task.agentId && text !== '\r',
+        ([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I',
       );
       expect(textWrites).toHaveLength(1);
       expect(textWrites[0]?.[1]).toEqual(expect.stringContaining('do one'));
@@ -416,18 +1136,54 @@ describe('Coordinator registerCoordinator — idempotency', () => {
 
       output(encode('ready ❯ '));
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
       output(encode('done one ❯ '));
       await vi.advanceTimersByTimeAsync(100);
       output(encode('done follow one ❯ '));
       await vi.advanceTimersByTimeAsync(100);
 
       const textWrites = mockWriteToAgent.mock.calls
-        .filter(([agentId, text]) => agentId === task.agentId && text !== '\r')
+        .filter(([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I')
         .map(([, text]) => text);
       expect(textWrites[0]).toEqual(expect.stringContaining('do one'));
       expect(textWrites[1]).toBe('follow one');
       expect(textWrites[2]).toBe('follow two');
+      expect(coordinator.getTaskStatus(task.id)?.pendingPrompt).toBeUndefined();
+      expect(coordinator.getTaskStatus(task.id)?.pendingPromptCount).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('flushes queued follow-up prompts after Claude empty insert mode becomes ready', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+
+      const task = await coordinator.createTask({
+        name: 'one',
+        prompt: 'do one',
+        coordinatorTaskId: 'coord-1',
+      });
+      await coordinator.sendPrompt(task.id, 'follow one');
+      const output = mockSubscribeToAgent.mock.calls[0]?.[1] as (encoded: string) => void;
+      const claudeReady = [
+        '│ >',
+        '-- INSERT --',
+        'opus · /repo/.worktrees/task/example · ctx:0/200k',
+      ].join('\n');
+
+      output(encode(claudeReady));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+      output(encode(claudeReady));
+      await vi.advanceTimersByTimeAsync(100);
+
+      const textWrites = mockWriteToAgent.mock.calls
+        .filter(([agentId, text]) => agentId === task.agentId && text !== '\r' && text !== '\x1b[I')
+        .map(([, text]) => text);
+      expect(textWrites[0]).toEqual(expect.stringContaining('do one'));
+      expect(textWrites[1]).toBe('follow one');
       expect(coordinator.getTaskStatus(task.id)?.pendingPrompt).toBeUndefined();
       expect(coordinator.getTaskStatus(task.id)?.pendingPromptCount).toBeUndefined();
     } finally {
@@ -567,7 +1323,7 @@ describe('Coordinator coordinator notifications', () => {
 
       outputCb(encode('ready ❯ '));
       await vi.advanceTimersByTimeAsync(1_500);
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
       expect(mockWriteToAgent).toHaveBeenCalledWith(
         task.agentId,
         expect.stringContaining('do work'),
@@ -595,11 +1351,53 @@ describe('Coordinator coordinator notifications', () => {
     }
   });
 
+  it('waitForIdle ignores the stale prompt echo and resolves on a quick completed idle', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      const task = await coordinator.createTask({
+        name: 'test',
+        prompt: 'do work',
+        coordinatorTaskId: 'coord-1',
+      });
+      const outputCb = getOutputCb();
+
+      outputCb(encode('ready ❯ '));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do work'),
+      );
+
+      let resolved = false;
+      const waitPromise = coordinator.waitForIdle(task.id, 10_000).then((result) => {
+        resolved = true;
+        return result;
+      });
+
+      outputCb(encode('❯ '));
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(400);
+      outputCb(encode('Done ❯ '));
+
+      await expect(waitPromise).resolves.toEqual({ reason: 'idle' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not enqueue duplicate notification for repeated idles', async () => {
     vi.useFakeTimers();
     try {
       coordinator.registerCoordinator('coord-1', 'proj-1');
-      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      await coordinator.createTask({
+        name: 'test',
+        prompt: 'do',
+        coordinatorTaskId: 'coord-1',
+      });
       coordinator.markPromptDelivered('task-1');
       const outputCb = getOutputCb();
       await vi.advanceTimersByTimeAsync(2_100);
@@ -1455,6 +2253,7 @@ describe('Coordinator waitForIdle', () => {
 
   it('does not stage a manual-control notification when control returns to coordinator', async () => {
     await coordinator.createTask({ name: 'my-task', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-1');
     const waitPromise = coordinator.waitForIdle('task-1');
 
     coordinator.setTaskControl('task-1', 'human');
@@ -1691,6 +2490,187 @@ describe('Coordinator sendPrompt', () => {
     );
   });
 
+  it('enforces the prompt size limit before queueing behind an undelivered initial prompt', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    await expect(coordinator.sendPrompt('task-1', '😀'.repeat(20_000))).rejects.toThrow(
+      'byte limit',
+    );
+    expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toBeUndefined();
+  });
+
+  it('queues an in-limit Unicode prompt exactly behind an undelivered initial prompt', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const prompt = `continue with ${'火'.repeat(100)} 😀`;
+    await expect(coordinator.sendPrompt('task-1', prompt)).resolves.toEqual({ queued: true });
+
+    expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toEqual([prompt]);
+    expect(mockWriteToAgent).not.toHaveBeenCalledWith(expect.any(String), prompt);
+  });
+
+  it('returns a defensive copy of pending prompts in task status', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    await coordinator.sendPrompt('task-1', 'queued-one');
+    const statusPrompts = coordinator.getTaskStatus('task-1')?.pendingPrompts;
+    statusPrompts?.push('mutated-outside');
+
+    expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toEqual(['queued-one']);
+  });
+
+  it('reports the first pending prompt and queue count consistently', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    await coordinator.sendPrompt('task-1', 'queued-one');
+    await coordinator.sendPrompt('task-1', 'queued-two');
+
+    expect(coordinator.getTaskStatus('task-1')).toMatchObject({
+      pendingPrompt: 'queued-one',
+      pendingPrompts: ['queued-one', 'queued-two'],
+      pendingPromptCount: 2,
+    });
+  });
+
+  it('markPromptDelivered clears prompt delivery timers and write locks', async () => {
+    vi.useFakeTimers();
+    try {
+      const task = await coordinator.createTask({
+        name: 'test',
+        prompt: 'do',
+        coordinatorTaskId: 'coord-1',
+      });
+      const outputCb = getOutputCb();
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+
+      const c = coordinator as unknown as {
+        initialPromptReadyTasks: Set<string>;
+        initialPromptTimers: Map<string, unknown>;
+        promptReadySeenAt: Map<string, unknown>;
+        writingPromptTaskIds: Set<string>;
+      };
+      c.promptReadySeenAt.set(task.id, 123);
+      c.writingPromptTaskIds.add(task.id);
+
+      coordinator.markPromptDelivered(task.id);
+
+      expect(c.initialPromptReadyTasks.has(task.id)).toBe(false);
+      expect(c.initialPromptTimers.has(task.id)).toBe(false);
+      expect(c.promptReadySeenAt.has(task.id)).toBe(false);
+      expect(c.writingPromptTaskIds.has(task.id)).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        task.agentId,
+        expect.stringContaining('do'),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects the 33rd prompt queued behind an undelivered initial prompt without mutating the queue', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    const prompts = Array.from({ length: 32 }, (_, i) => `queued-${i}`);
+    for (const prompt of prompts) {
+      await expect(coordinator.sendPrompt('task-1', prompt)).resolves.toEqual({ queued: true });
+    }
+
+    await expect(coordinator.sendPrompt('task-1', 'queued-overflow')).rejects.toThrow(
+      'Prompt queue full (32 pending)',
+    );
+    expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toEqual(prompts);
+    expect(coordinator.getTaskStatus('task-1')?.pendingPromptCount).toBe(32);
+  });
+
+  it('rejects the 33rd prompt queued behind human control without mutating the queue', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-1');
+    coordinator.setTaskControl('task-1', 'human');
+
+    const prompts = Array.from({ length: 32 }, (_, i) => `queued-${i}`);
+    for (const prompt of prompts) {
+      await expect(coordinator.sendPrompt('task-1', prompt)).resolves.toEqual({ queued: true });
+    }
+
+    await expect(coordinator.sendPrompt('task-1', 'queued-overflow')).rejects.toThrow(
+      'Prompt queue full (32 pending)',
+    );
+    expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toEqual(prompts);
+    expect(coordinator.getTaskStatus('task-1')?.pendingPromptCount).toBe(32);
+  });
+
+  it('writes an in-limit Unicode prompt exactly once', async () => {
+    vi.useFakeTimers();
+    try {
+      const task = await coordinator.createTask({
+        name: 'test',
+        prompt: 'do',
+        coordinatorTaskId: 'coord-1',
+      });
+      coordinator.markPromptDelivered('task-1');
+
+      const prompt = `Summarize these notes exactly: ${'火'.repeat(100)} 😀`;
+      const sendPromise = coordinator.sendPrompt('task-1', prompt);
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(sendPromise).resolves.toEqual({ queued: false });
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, prompt);
+      expect(mockWriteToAgent).toHaveBeenCalledWith(task.agentId, '\r');
+      const exactPromptWrites = mockWriteToAgent.mock.calls.filter(([, text]) => text === prompt);
+      expect(exactPromptWrites).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sets automationWriteInFlight only while an immediate prompt write is active', async () => {
+    vi.useFakeTimers();
+    try {
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      coordinator.markPromptDelivered('task-1');
+      mockNotifyRenderer.mockClear();
+
+      const sendPromise = coordinator.sendPrompt('task-1', 'new work');
+
+      expect(coordinator.isAutomationWriteInFlight('task-1')).toBe(true);
+      expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_state_sync', {
+        taskId: 'task-1',
+        automationWriteInFlight: true,
+      });
+
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(sendPromise).resolves.toEqual({ queued: false });
+
+      expect(coordinator.isAutomationWriteInFlight('task-1')).toBe(false);
+      expect(mockNotifyRenderer).toHaveBeenCalledWith('mcp_task_state_sync', {
+        taskId: 'task-1',
+        automationWriteInFlight: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears automationWriteInFlight when an immediate prompt body write fails', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+    coordinator.markPromptDelivered('task-1');
+    mockWriteToAgent.mockImplementationOnce((agentId: string, data: string) => ({
+      id: agentId,
+      data,
+    }));
+    mockWriteToAgent.mockImplementationOnce(() => {
+      throw new Error('pty body failed');
+    });
+
+    await expect(coordinator.sendPrompt('task-1', 'new work')).rejects.toThrow(
+      'Prompt body write failed',
+    );
+
+    expect(coordinator.isAutomationWriteInFlight('task-1')).toBe(false);
+    expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toBeUndefined();
+  });
+
   it('second concurrent sendPrompt is queued while the first write lock is held', async () => {
     vi.useFakeTimers();
     try {
@@ -1717,6 +2697,47 @@ describe('Coordinator sendPrompt', () => {
     }
   });
 
+  it('flushes queued prompts in FIFO order as the agent becomes ready between writes', async () => {
+    vi.useFakeTimers();
+    try {
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      coordinator.markPromptDelivered('task-1');
+      const outputCb = getOutputCb();
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      coordinator.setTaskControl('task-1', 'human');
+
+      const prompts = ['first', 'second', 'third', 'fourth'];
+      for (const prompt of prompts) {
+        await expect(coordinator.sendPrompt('task-1', prompt)).resolves.toEqual({ queued: true });
+      }
+
+      coordinator.setTaskControl('task-1', 'coordinator');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toEqual([
+        'second',
+        'third',
+        'fourth',
+      ]);
+
+      for (let i = 0; i < 3; i += 1) {
+        outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+        await vi.advanceTimersByTimeAsync(100);
+      }
+
+      const textCalls = mockWriteToAgent.mock.calls
+        .map((c) => c[1] as string)
+        .filter((text) => prompts.includes(text));
+      expect(textCalls).toEqual(prompts);
+      expect(coordinator.getTaskStatus('task-1')).toMatchObject({
+        pendingPrompt: undefined,
+        pendingPrompts: undefined,
+        pendingPromptCount: undefined,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not retry a queued prompt body when only the Enter write fails', async () => {
     vi.useFakeTimers();
     try {
@@ -1736,6 +2757,47 @@ describe('Coordinator sendPrompt', () => {
 
       const bodyWrites = mockWriteToAgent.mock.calls.filter(([, data]) => data === 'queued');
       expect(bodyWrites).toHaveLength(1);
+      expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toBeUndefined();
+    } finally {
+      mockWriteToAgent.mockReset();
+      mockWriteToAgent.mockImplementation((agentId: string, data: string) => ({
+        id: agentId,
+        data,
+      }));
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a queued prompt and retries when the body write fails', async () => {
+    vi.useFakeTimers();
+    try {
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      coordinator.markPromptDelivered('task-1');
+      const outputCb = getOutputCb();
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      coordinator.setTaskControl('task-1', 'human');
+      await coordinator.sendPrompt('task-1', 'queued');
+
+      let failedBodyOnce = false;
+      mockWriteToAgent.mockClear();
+      mockWriteToAgent.mockImplementation((agentId: string, data: string) => {
+        if (data === 'queued' && !failedBodyOnce) {
+          failedBodyOnce = true;
+          throw new Error('pty body failed');
+        }
+        return { id: agentId, data };
+      });
+
+      coordinator.setTaskControl('task-1', 'coordinator');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toEqual(['queued']);
+
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(200);
+
+      const bodyWrites = mockWriteToAgent.mock.calls.filter(([, data]) => data === 'queued');
+      expect(bodyWrites).toHaveLength(2);
+      expect(mockWriteToAgent).toHaveBeenCalledWith(expect.any(String), '\r');
       expect(coordinator.getTaskStatus('task-1')?.pendingPrompts).toBeUndefined();
     } finally {
       mockWriteToAgent.mockReset();
@@ -1885,6 +2947,98 @@ describe('Coordinator deregisterCoordinator', () => {
     expect(c.subscribers.has(agentId)).toBe(false);
     expect(c.tailBuffers.has(agentId)).toBe(false);
     expect(c.decoders.has(agentId)).toBe(false);
+  });
+
+  it('deregister clears scheduled initial prompt delivery timers for child tasks', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      const outputCb = getOutputCb();
+
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      const c = coordinator as unknown as {
+        initialPromptTimers: Map<string, unknown>;
+      };
+      expect(c.initialPromptTimers.has('task-1')).toBe(true);
+
+      coordinator.deregisterCoordinator('coord-1');
+
+      expect(c.initialPromptTimers.has('task-1')).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining('do'),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('deregister clears scheduled queued prompt flush timers for child tasks', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      const task = await coordinator.createTask({
+        name: 'test',
+        prompt: 'do',
+        coordinatorTaskId: 'coord-1',
+      });
+      coordinator.markPromptDelivered(task.id);
+      task.pendingPrompts = ['queued'];
+      const outputCb = getOutputCb();
+
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      const c = coordinator as unknown as {
+        queuedPromptFlushTimers: Map<string, unknown>;
+      };
+      expect(c.queuedPromptFlushTimers.has(task.id)).toBe(true);
+
+      coordinator.deregisterCoordinator('coord-1');
+
+      expect(c.queuedPromptFlushTimers.has(task.id)).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(task.agentId, 'queued');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('deregister clears all prompt delivery bookkeeping for child tasks', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.registerCoordinator('coord-1', 'proj-1');
+      const task = await coordinator.createTask({
+        name: 'test',
+        prompt: 'do',
+        coordinatorTaskId: 'coord-1',
+      });
+      const outputCb = getOutputCb();
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+
+      const c = coordinator as unknown as {
+        initialPromptReadyTasks: Set<string>;
+        initialPromptTimers: Map<string, unknown>;
+        promptReadySeenAt: Map<string, unknown>;
+        writingPromptTaskIds: Set<string>;
+      };
+      c.promptReadySeenAt.set(task.id, 123);
+      c.writingPromptTaskIds.add(task.id);
+
+      expect(c.initialPromptReadyTasks.has(task.id)).toBe(true);
+      expect(c.initialPromptTimers.has(task.id)).toBe(true);
+      expect(c.promptReadySeenAt.has(task.id)).toBe(true);
+      expect(c.writingPromptTaskIds.has(task.id)).toBe(true);
+
+      coordinator.deregisterCoordinator('coord-1');
+
+      expect(c.initialPromptReadyTasks.has(task.id)).toBe(false);
+      expect(c.initialPromptTimers.has(task.id)).toBe(false);
+      expect(c.promptReadySeenAt.has(task.id)).toBe(false);
+      expect(c.writingPromptTaskIds.has(task.id)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -2044,6 +3198,17 @@ describe('Coordinator MCP_TaskCreated spawn settings', () => {
       '--config',
       expect.stringContaining('mcp_servers.parallel-code'),
     ]);
+  });
+
+  it('includes backend-owned initial prompt in MCP_TaskCreated payload for renderer display and restart hydration', async () => {
+    await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+
+    expect(mockNotifyRenderer).toHaveBeenCalledWith(
+      'mcp_task_created',
+      expect.objectContaining({
+        prompt: expect.stringContaining('do'),
+      }),
+    );
   });
 
   it('includes skipPermissions true in MCP_TaskCreated payload when coordinator has propagateSkipPermissions', async () => {
@@ -2443,6 +3608,100 @@ describe('Coordinator hydrateTask — restart hydration', () => {
     expect(task?.assignedPromptDelivered).toBe(false);
   });
 
+  it('hydrateTask delivers a restored initial prompt after the agent respawns ready', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.hydrateTask({
+        id: 'hydrated-1',
+        name: 'hydrated-task',
+        projectId: 'proj-1',
+        projectRoot: '/tmp/project',
+        branchName: 'task/hydrated',
+        worktreePath: '/tmp/hydrated',
+        agentId: 'agent-hydrated',
+        coordinatorTaskId: 'coord-1',
+        initialPrompt: 'do the restored work',
+      });
+
+      getSpawnHandler()('agent-hydrated');
+      const cb = mockSubscribeToAgent.mock.calls.find(
+        (call) => call[0] === 'agent-hydrated',
+      )?.[1] as ((encoded: string) => void) | undefined;
+      expect(cb).toBeDefined();
+      cb?.(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        'agent-hydrated',
+        expect.stringContaining('do the restored work'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith('agent-hydrated', '\r');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hydrateTask preserves restored initial and queued prompts and flushes them in order', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.hydrateTask({
+        id: 'hydrated-1',
+        name: 'hydrated-task',
+        projectId: 'proj-1',
+        projectRoot: '/tmp/project',
+        branchName: 'task/hydrated',
+        worktreePath: '/tmp/hydrated',
+        agentId: 'agent-hydrated',
+        coordinatorTaskId: 'coord-1',
+        initialPrompt: 'do the restored work',
+        pendingPrompts: ['follow restored'],
+      });
+
+      getSpawnHandler()('agent-hydrated');
+      const cb = mockSubscribeToAgent.mock.calls.find(
+        (call) => call[0] === 'agent-hydrated',
+      )?.[1] as ((encoded: string) => void) | undefined;
+      expect(cb).toBeDefined();
+      cb?.(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+      cb?.(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(100);
+
+      const textWrites = mockWriteToAgent.mock.calls
+        .filter(
+          ([agentId, text]) => agentId === 'agent-hydrated' && text !== '\r' && text !== '\x1b[I',
+        )
+        .map(([, text]) => text);
+      expect(textWrites[0]).toEqual(expect.stringContaining('do the restored work'));
+      expect(textWrites[1]).toBe('follow restored');
+      expect(coordinator.getTaskStatus('hydrated-1')?.pendingPromptCount).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hydrateTask takes a defensive copy of restored queued prompts', () => {
+    const pendingPrompts = ['follow restored'];
+
+    coordinator.hydrateTask({
+      id: 'hydrated-1',
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId: 'agent-hydrated',
+      coordinatorTaskId: 'coord-1',
+      initialPrompt: 'do the restored work',
+      pendingPrompts,
+    });
+    pendingPrompts.push('mutated-after-hydrate');
+
+    expect(coordinator.getTaskStatus('hydrated-1')?.pendingPrompts).toEqual(['follow restored']);
+  });
+
   it('hydrateTask + waitForIdle resolves immediately for exited status', async () => {
     coordinator.hydrateTask({
       id: 'hydrated-1',
@@ -2512,6 +3771,59 @@ describe('Coordinator hydrateTask — restart hydration', () => {
 
     await expect(coordinator.sendPrompt('hydrated-1', 'hello')).resolves.toEqual({ queued: true });
     expect(coordinator.getTaskStatus('hydrated-1')?.pendingPrompt).toBe('hello');
+  });
+
+  it('hydrateTask ignores human control until a restored initial prompt is delivered', async () => {
+    coordinator.hydrateTask({
+      id: 'hydrated-1',
+      name: 'hydrated-task',
+      projectId: 'proj-1',
+      projectRoot: '/tmp/project',
+      branchName: 'task/hydrated',
+      worktreePath: '/tmp/hydrated',
+      agentId: 'agent-hydrated',
+      coordinatorTaskId: 'coord-1',
+      controlledBy: 'human',
+      initialPrompt: 'do restored work',
+    });
+
+    await expect(coordinator.sendPrompt('hydrated-1', 'hello')).resolves.toEqual({ queued: true });
+    expect(coordinator.getTaskStatus('hydrated-1')?.pendingPrompts).toEqual(['hello']);
+  });
+
+  it('hydrateTask delivers restored initial prompt despite persisted human control', async () => {
+    vi.useFakeTimers();
+    try {
+      coordinator.hydrateTask({
+        id: 'hydrated-1',
+        name: 'hydrated-task',
+        projectId: 'proj-1',
+        projectRoot: '/tmp/project',
+        branchName: 'task/hydrated',
+        worktreePath: '/tmp/hydrated',
+        agentId: 'agent-hydrated',
+        coordinatorTaskId: 'coord-1',
+        controlledBy: 'human',
+        initialPrompt: 'do restored work',
+      });
+
+      getSpawnHandler()('agent-hydrated');
+      const cb = mockSubscribeToAgent.mock.calls.find(
+        (call) => call[0] === 'agent-hydrated',
+      )?.[1] as ((encoded: string) => void) | undefined;
+      expect(cb).toBeDefined();
+      cb?.(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockWriteToAgent).toHaveBeenCalledWith(
+        'agent-hydrated',
+        expect.stringContaining('do restored work'),
+      );
+      expect(mockWriteToAgent).toHaveBeenCalledWith('agent-hydrated', '\r');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('hydrateTask uses the shared output callback to flush queued prompts after restart', async () => {
@@ -2803,6 +4115,67 @@ describe('Coordinator cleanupTask — failure resilience', () => {
     expect(coordinator.getTask('task-1')).toBeDefined();
   });
 
+  it('deleteTask failure clears scheduled initial prompt delivery timers', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deleteTask: mockDeleteTask } =
+        await vi.importMock<typeof import('../ipc/tasks.js')>('../ipc/tasks.js');
+      vi.mocked(mockDeleteTask).mockRejectedValueOnce(new Error('delete failed'));
+
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      const outputCb = getOutputCb();
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      const c = coordinator as unknown as {
+        initialPromptTimers: Map<string, unknown>;
+      };
+      expect(c.initialPromptTimers.has('task-1')).toBe(true);
+
+      await coordinator.closeTask('task-1');
+
+      expect(c.initialPromptTimers.has('task-1')).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining('do'),
+      );
+      expect(coordinator.getTask('task-1')).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('deleteTask failure clears scheduled queued prompt flush timers', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deleteTask: mockDeleteTask } =
+        await vi.importMock<typeof import('../ipc/tasks.js')>('../ipc/tasks.js');
+      vi.mocked(mockDeleteTask).mockRejectedValueOnce(new Error('delete failed'));
+
+      const task = await coordinator.createTask({
+        name: 'test',
+        prompt: 'do',
+        coordinatorTaskId: 'coord-1',
+      });
+      coordinator.markPromptDelivered(task.id);
+      task.pendingPrompts = ['queued'];
+      const outputCb = getOutputCb();
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      const c = coordinator as unknown as {
+        queuedPromptFlushTimers: Map<string, unknown>;
+      };
+      expect(c.queuedPromptFlushTimers.has(task.id)).toBe(true);
+
+      await coordinator.closeTask(task.id);
+
+      expect(c.queuedPromptFlushTimers.has(task.id)).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(task.agentId, 'queued');
+      expect(coordinator.getTask(task.id)).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('MCP config file deletion failure is swallowed and task is removed', async () => {
     coordinator.setMCPServerInfo(
       'coord-1',
@@ -2830,6 +4203,112 @@ describe('Coordinator cleanupTask — failure resilience', () => {
     await coordinator.closeTask('task-1');
 
     expect(vi.mocked(unsubscribeFromAgent)).toHaveBeenCalled();
+  });
+
+  it('closeTask clears scheduled initial prompt delivery timers', async () => {
+    vi.useFakeTimers();
+    try {
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      const outputCb = getOutputCb();
+
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      const c = coordinator as unknown as {
+        initialPromptTimers: Map<string, unknown>;
+      };
+      expect(c.initialPromptTimers.has('task-1')).toBe(true);
+
+      await coordinator.closeTask('task-1');
+
+      expect(c.initialPromptTimers.has('task-1')).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining('do'),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closeTask clears scheduled queued prompt flush timers', async () => {
+    vi.useFakeTimers();
+    try {
+      const task = await coordinator.createTask({
+        name: 'test',
+        prompt: 'do',
+        coordinatorTaskId: 'coord-1',
+      });
+      coordinator.markPromptDelivered(task.id);
+      task.pendingPrompts = ['queued'];
+      const outputCb = getOutputCb();
+
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      const c = coordinator as unknown as {
+        queuedPromptFlushTimers: Map<string, unknown>;
+      };
+      expect(c.queuedPromptFlushTimers.has(task.id)).toBe(true);
+
+      await coordinator.closeTask(task.id);
+
+      expect(c.queuedPromptFlushTimers.has(task.id)).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(task.agentId, 'queued');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('removeCoordinatedTask clears scheduled initial prompt delivery timers', async () => {
+    vi.useFakeTimers();
+    try {
+      await coordinator.createTask({ name: 'test', prompt: 'do', coordinatorTaskId: 'coord-1' });
+      const outputCb = getOutputCb();
+
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      const c = coordinator as unknown as {
+        initialPromptTimers: Map<string, unknown>;
+      };
+      expect(c.initialPromptTimers.has('task-1')).toBe(true);
+
+      coordinator.removeCoordinatedTask('task-1');
+
+      expect(c.initialPromptTimers.has('task-1')).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining('do'),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('removeCoordinatedTask clears scheduled queued prompt flush timers', async () => {
+    vi.useFakeTimers();
+    try {
+      const task = await coordinator.createTask({
+        name: 'test',
+        prompt: 'do',
+        coordinatorTaskId: 'coord-1',
+      });
+      coordinator.markPromptDelivered(task.id);
+      task.pendingPrompts = ['queued'];
+      const outputCb = getOutputCb();
+
+      outputCb(encode(READY_AGENT_FRAME_FIXTURES[0].frame));
+      const c = coordinator as unknown as {
+        queuedPromptFlushTimers: Map<string, unknown>;
+      };
+      expect(c.queuedPromptFlushTimers.has(task.id)).toBe(true);
+
+      coordinator.removeCoordinatedTask(task.id);
+
+      expect(c.queuedPromptFlushTimers.has(task.id)).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(mockWriteToAgent).not.toHaveBeenCalledWith(task.agentId, 'queued');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

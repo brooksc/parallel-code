@@ -58,7 +58,12 @@ const mockCreateBackendTask = vi.fn().mockResolvedValue({
 
 vi.mock('./prompt-detect.js', () => ({
   stripAnsi: (s: string) => s,
-  chunkContainsAgentPrompt: (s: string) => s.slice(-300).includes('❯'),
+  AGENT_READY_TAIL_CHARS: 1000,
+  chunkContainsAgentPrompt: (s: string) =>
+    s
+      .slice(-1000)
+      .split(/\r?\n/)
+      .some((line) => /(?:^|\s)❯\s*$/.test(line.trim())),
 }));
 
 vi.mock('../ipc/pty.js', () => ({
@@ -220,7 +225,7 @@ describe('Coordinator — end-to-end tool sequence smoke', () => {
 
       // sendPrompt sets status to running
       const sendPromise = coordinator.sendPrompt('task-1', 'next step');
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(500);
       await sendPromise;
       expect(coordinator.getTask('task-1')?.status).toBe('running');
 
