@@ -7,7 +7,7 @@ const codexAgent = {
   name: 'Codex',
   description: 'Codex agent',
   command: 'codex',
-  args: ['resume', '--last'],
+  args: [],
   resume_args: ['resume', '--last'],
   skip_permissions_args: ['--dangerously-bypass-approvals-and-sandbox'],
 };
@@ -23,7 +23,7 @@ const claudeAgent = {
 };
 
 describe('buildTaskAgentArgs', () => {
-  it('uses explicit MCP launch args when provided', () => {
+  it('uses explicit MCP launch args when provided (new task)', () => {
     expect(
       buildTaskAgentArgs(
         codexAgent,
@@ -35,6 +35,24 @@ describe('buildTaskAgentArgs', () => {
         false,
       ),
     ).toEqual([
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--config',
+      'mcp_servers.parallel-code={ command = "node" }',
+    ]);
+  });
+
+  it('uses explicit MCP launch args when provided (resumed task)', () => {
+    expect(
+      buildTaskAgentArgs(
+        codexAgent,
+        {
+          skipPermissions: true,
+          mcpConfigPath: '/tmp/mcp.json',
+          mcpLaunchArgs: ['--config', 'mcp_servers.parallel-code={ command = "node" }'],
+        },
+        true,
+      ),
+    ).toEqual([
       'resume',
       '--last',
       '--dangerously-bypass-approvals-and-sandbox',
@@ -43,7 +61,7 @@ describe('buildTaskAgentArgs', () => {
     ]);
   });
 
-  it('does not fall back to --mcp-config for Codex', () => {
+  it('does not fall back to --mcp-config for Codex (new task, no args)', () => {
     expect(
       buildTaskAgentArgs(
         codexAgent,
@@ -52,6 +70,19 @@ describe('buildTaskAgentArgs', () => {
           mcpConfigPath: '/tmp/mcp.json',
         },
         false,
+      ),
+    ).toEqual([]);
+  });
+
+  it('uses resume_args for Codex when resuming', () => {
+    expect(
+      buildTaskAgentArgs(
+        codexAgent,
+        {
+          skipPermissions: false,
+          mcpConfigPath: '/tmp/mcp.json',
+        },
+        true,
       ),
     ).toEqual(['resume', '--last']);
   });
