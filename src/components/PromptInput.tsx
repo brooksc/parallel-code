@@ -41,6 +41,7 @@ import {
   shouldAbortInitialPromptAfterTimeout,
 } from './prompt-autosend-readiness';
 import { hasUserPromptDraftText } from './prompt-draft';
+import { pollUntilPromptAppearsInOutput } from './prompt-verify';
 import type { StagedNotification } from '../store/types';
 import { debug, warn as logWarn } from '../lib/log';
 import { theme } from '../lib/theme';
@@ -91,6 +92,10 @@ const AUTOSEND_MAX_WAIT_MS = 45_000;
 // After sending, how long to poll terminal output to confirm the prompt appeared.
 const PROMPT_VERIFY_TIMEOUT_MS = 5_000;
 const PROMPT_VERIFY_POLL_MS = 250;
+// How many times to restart the auto-send loop when the prompt echo is not
+// confirmed.  Each retry re-runs the full stability-check cycle, so 2 retries
+// means 3 total attempts.
+const AUTO_SEND_MAX_RETRIES = 2;
 const PROMPT_MARKER_SCAN_CHARS = 500;
 // 5s covers the typical round-trip from send → pty echo; 40 chars is enough to
 // uniquely identify the prompt without risking a false match on short snippets.
@@ -105,6 +110,9 @@ export function PromptInput(props: PromptInputProps) {
   const [text, setText] = createSignal('');
   const [sending, setSending] = createSignal(false);
   const [autoSentInitialPrompt, setAutoSentInitialPrompt] = createSignal<string | null>(null);
+  // Incremented when promptAppearedInOutput fails so the auto-send createEffect
+  // restarts a fresh attempt rather than treating the prompt as delivered.
+  const [autoSendRetry, setAutoSendRetry] = createSignal(0);
   let cleanupAutoSend: (() => void) | undefined;
 
   // Debug: log whenever controlledBy changes (verbose-gated; forwards to /tmp/out via main process)
@@ -144,6 +152,7 @@ export function PromptInput(props: PromptInputProps) {
   });
 
   createEffect(() => {
+    autoSendRetry(); // track — incremented on failed echo-verification to restart this effect
     cleanupAutoSend?.();
     cleanupAutoSend = undefined;
 
@@ -692,28 +701,6 @@ export function PromptInput(props: PromptInputProps) {
     sendAbortController?.abort();
   });
 
-  async function promptAppearedInOutput(
-    agentId: string,
-    prompt: string,
-    preSendTail: string,
-    signal: AbortSignal,
-  ): Promise<boolean> {
-    const snippet = stripAnsi(prompt).slice(0, 40);
-    if (!snippet) return true;
-    // If the snippet was already visible before send, skip verification
-    // to avoid false positives.
-    if (stripAnsi(preSendTail).includes(snippet)) return true;
-
-    const deadline = Date.now() + PROMPT_VERIFY_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (signal.aborted) return false;
-      const tail = stripAnsi(getAgentOutputTail(agentId));
-      if (tail.includes(snippet)) return true;
-      await new Promise((r) => setTimeout(r, PROMPT_VERIFY_POLL_MS));
-    }
-    return false;
-  }
-
   let sendAbortController: AbortController | undefined;
 
   async function handleSend(mode: 'manual' | 'auto' = 'manual') {
@@ -773,8 +760,27 @@ export function PromptInput(props: PromptInputProps) {
       await sendPrompt(props.taskId, props.agentId, val);
 
       if (mode === 'auto') {
-        // Wait for the prompt to appear in output before clearing the text field.
-        await promptAppearedInOutput(props.agentId, val, preSendTail, signal);
+        // Wait for the prompt to appear in output before marking it delivered.
+        const appeared = await pollUntilPromptAppearsInOutput(
+          props.agentId,
+          val,
+          preSendTail,
+          signal,
+          getAgentOutputTail,
+          PROMPT_VERIFY_TIMEOUT_MS,
+          PROMPT_VERIFY_POLL_MS,
+        );
+        if (!appeared) {
+          // Prompt was sent but the echo was never confirmed — Codex likely
+          // received it during a mid-startup-redraw and discarded it.  Restart
+          // the auto-send cycle (up to AUTO_SEND_MAX_RETRIES times) so the
+          // prompt is re-sent once Codex is truly ready.  Do NOT mark it as
+          // delivered so the createEffect can restart.
+          if (untrack(autoSendRetry) < AUTO_SEND_MAX_RETRIES) {
+            setAutoSendRetry((n) => n + 1);
+          }
+          return;
+        }
       }
 
       if (signal.aborted) return;
