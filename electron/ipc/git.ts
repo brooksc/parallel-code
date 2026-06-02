@@ -165,6 +165,13 @@ const SANDBOX_EXCLUDE_PATTERNS = [
 const SANDBOX_EXCLUDE_HEADER = '# parallel-code: sandbox bind-mount artifacts';
 const seededSandboxExcludes = new Set<string>();
 
+/**
+ * Header written once per repo when symlink excludes are first added. Each
+ * symlinked name is appended individually on subsequent calls so new names
+ * added in later worktrees are also covered.
+ */
+const SYMLINK_EXCLUDE_HEADER = '# parallel-code: worktree symlinks';
+
 // --- Internal helpers ---
 
 async function detectMainBranch(repoRoot: string): Promise<string> {
@@ -749,6 +756,7 @@ export async function createWorktree(
   // Symlink selected directories. `.claude` is handled separately below — it
   // can't be a symlink because Claude Code's bwrap sandbox binds specific
   // entries inside it, and bwrap refuses to bind-mount at symlink paths.
+  const createdSymlinks: string[] = [];
   for (const name of symlinkDirs) {
     if (name === '.claude') continue;
     // Reject names that could escape the worktree directory
@@ -759,6 +767,7 @@ export async function createWorktree(
       if (!fs.existsSync(source)) continue;
       if (fs.existsSync(target)) continue;
       fs.symlinkSync(source, target);
+      createdSymlinks.push(name);
     } catch (err) {
       console.warn(`Failed to symlink directory '${name}' into worktree:`, err);
     }
@@ -766,6 +775,7 @@ export async function createWorktree(
 
   ensureClaudeSandboxFiles(worktreePath, repoRoot);
   ensureSandboxExcludes(worktreePath);
+  ensureSymlinkExcludes(worktreePath, createdSymlinks);
 
   return { path: worktreePath, branch: branchName };
 }
@@ -898,6 +908,61 @@ export function ensureSandboxExcludes(worktreePath: string): void {
   try {
     fs.appendFileSync(excludePath, block);
     seededSandboxExcludes.add(commonDir);
+  } catch (err) {
+    console.warn(`Failed to append to ${excludePath}:`, err);
+  }
+}
+
+/**
+ * Add root-anchored exclude entries for symlinked directory names to
+ * `.git/info/exclude`. This ensures the symlink is invisible to git even when
+ * the project's `.gitignore` uses a trailing-slash form (e.g. `node_modules/`)
+ * which only matches real directories, not symlinks. Entries are added
+ * incrementally — new names from later worktrees are appended without
+ * duplicating already-present entries.
+ */
+export function ensureSymlinkExcludes(worktreePath: string, symlinkNames: string[]): void {
+  if (symlinkNames.length === 0) return;
+
+  let commonDir: string;
+  try {
+    const out = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd: worktreePath,
+      encoding: 'utf8',
+      timeout: 3000,
+    }).trim();
+    commonDir = path.isAbsolute(out) ? out : path.join(worktreePath, out);
+  } catch {
+    return;
+  }
+
+  const excludePath = path.join(commonDir, 'info', 'exclude');
+  let existing = '';
+  try {
+    existing = fs.readFileSync(excludePath, 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      console.warn(`Failed to read ${excludePath}:`, err);
+      return;
+    }
+  }
+
+  // Root-anchored, no trailing slash — matches the symlink file itself, not
+  // just directories, so `node_modules/` gitignore entries can't sneak through.
+  const toAdd = symlinkNames
+    .map((name) => `/${name}`)
+    .filter((pattern) => !existing.includes(pattern));
+
+  if (toAdd.length === 0) return;
+
+  const needsHeader = !existing.includes(SYMLINK_EXCLUDE_HEADER);
+  const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+  const header = needsHeader ? SYMLINK_EXCLUDE_HEADER + '\n' : '';
+  const block = prefix + header + toAdd.join('\n') + '\n';
+
+  try {
+    fs.appendFileSync(excludePath, block);
   } catch (err) {
     console.warn(`Failed to append to ${excludePath}:`, err);
   }
