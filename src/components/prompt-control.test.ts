@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  resolveAutoSendVerifyOutcome,
   shouldAckInitialPromptDelivery,
   shouldHandoffCoordinatorQuestion,
   shouldRendererAutoSendInitialPrompt,
@@ -132,5 +133,34 @@ describe('shouldRendererAutoSendInitialPrompt', () => {
         initialPrompt: '   ',
       }),
     ).toBe(false);
+  });
+});
+
+describe('resolveAutoSendVerifyOutcome', () => {
+  const base = { appeared: false, aborted: false, retryCount: 0, maxRetries: 2 };
+
+  it('delivers when the echo appeared', () => {
+    expect(resolveAutoSendVerifyOutcome({ ...base, appeared: true })).toBe('deliver');
+  });
+
+  it('retries when the echo is missing and retries remain', () => {
+    expect(resolveAutoSendVerifyOutcome({ ...base, retryCount: 0 })).toBe('retry');
+    expect(resolveAutoSendVerifyOutcome({ ...base, retryCount: 1 })).toBe('retry');
+  });
+
+  it('gives up when the echo is missing and retries are exhausted', () => {
+    expect(resolveAutoSendVerifyOutcome({ ...base, retryCount: 2 })).toBe('giveup');
+    expect(resolveAutoSendVerifyOutcome({ ...base, retryCount: 3 })).toBe('giveup');
+  });
+
+  it('reports aborted regardless of retry budget', () => {
+    expect(resolveAutoSendVerifyOutcome({ ...base, aborted: true, retryCount: 0 })).toBe('aborted');
+    expect(resolveAutoSendVerifyOutcome({ ...base, aborted: true, retryCount: 5 })).toBe('aborted');
+  });
+
+  it('lets abort win over a late echo so a superseded send is not delivered', () => {
+    expect(resolveAutoSendVerifyOutcome({ ...base, appeared: true, aborted: true })).toBe(
+      'aborted',
+    );
   });
 });

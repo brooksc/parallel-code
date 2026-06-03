@@ -1,9 +1,11 @@
-import { createSignal, createEffect, on, Show, onMount, onCleanup, untrack } from 'solid-js';
+import { createSignal, createEffect, on, Show, onMount, onCleanup, untrack, batch } from 'solid-js';
 import { fireAndForget, invoke } from '../lib/ipc';
 import { IPC } from '../../electron/ipc/channels';
 import {
   store,
   sendPrompt,
+  setInitialPrompt,
+  clearInitialPrompt,
   registerFocusFn,
   unregisterFocusFn,
   registerAction,
@@ -32,6 +34,7 @@ import { clearStagedNotification, setTaskTerminalInputPendingFromQuestion } from
 import { isLandedTaskState } from '../store/landing';
 import { processAutoFireTick } from './autofire-tick';
 import {
+  resolveAutoSendVerifyOutcome,
   shouldAckInitialPromptDelivery,
   shouldHandoffCoordinatorQuestion,
   shouldRendererAutoSendInitialPrompt,
@@ -770,14 +773,30 @@ export function PromptInput(props: PromptInputProps) {
           PROMPT_VERIFY_TIMEOUT_MS,
           PROMPT_VERIFY_POLL_MS,
         );
-        if (!appeared) {
-          // Prompt was sent but the echo was never confirmed — Codex likely
-          // received it during a mid-startup-redraw and discarded it.  Restart
-          // the auto-send cycle (up to AUTO_SEND_MAX_RETRIES times) so the
-          // prompt is re-sent once Codex is truly ready.  Do NOT mark it as
-          // delivered so the createEffect can restart.
-          if (untrack(autoSendRetry) < AUTO_SEND_MAX_RETRIES) {
-            setAutoSendRetry((n) => n + 1);
+        const outcome = resolveAutoSendVerifyOutcome({
+          appeared,
+          aborted: signal.aborted,
+          retryCount: untrack(autoSendRetry),
+          maxRetries: AUTO_SEND_MAX_RETRIES,
+        });
+        if (outcome !== 'deliver') {
+          // The echo was never confirmed — Codex likely received the prompt
+          // during a mid-startup redraw and discarded it.  `sendPrompt` already
+          // cleared the queued `initialPrompt`, so on a retry we restore it and
+          // bump the retry counter in one batch: restoring re-arms this
+          // createEffect (which keys off props.initialPrompt) and restores the
+          // "Waiting to send prompt…" status; batching the two tracked writes
+          // re-runs the effect exactly once.  On giveup we clear it for good so
+          // a stray effect re-run can't fire again.  Either way the text stays
+          // in the field so the user can send manually.  An aborted send was
+          // superseded — leave all state untouched.
+          if (outcome === 'retry') {
+            batch(() => {
+              if (initialPromptSnapshot) setInitialPrompt(props.taskId, initialPromptSnapshot);
+              setAutoSendRetry((n) => n + 1);
+            });
+          } else if (outcome === 'giveup') {
+            clearInitialPrompt(props.taskId);
           }
           return;
         }

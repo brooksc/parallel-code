@@ -34,3 +34,27 @@ export function shouldRendererAutoSendInitialPrompt(params: {
   const initialPrompt = params.initialPrompt?.trim();
   return Boolean(initialPrompt && !params.coordinatedBy);
 }
+
+export type AutoSendVerifyOutcome = 'deliver' | 'retry' | 'giveup' | 'aborted';
+
+/**
+ * Decides what to do after an auto-sent prompt's echo-verification finishes.
+ *
+ * - `aborted`: the send was superseded (signal aborted) — leave state untouched.
+ * - `deliver`: the echo appeared — proceed with delivery (clear field, ack).
+ * - `retry`:   the echo never appeared but retries remain — re-send.
+ * - `giveup`:  the echo never appeared and retries are exhausted — stop.
+ *
+ * `aborted` takes precedence over `appeared`: a superseded send must not be
+ * treated as delivered (or retried) even if the snippet happened to show up.
+ */
+export function resolveAutoSendVerifyOutcome(params: {
+  appeared: boolean;
+  aborted: boolean;
+  retryCount: number;
+  maxRetries: number;
+}): AutoSendVerifyOutcome {
+  if (params.aborted) return 'aborted';
+  if (params.appeared) return 'deliver';
+  return params.retryCount < params.maxRetries ? 'retry' : 'giveup';
+}

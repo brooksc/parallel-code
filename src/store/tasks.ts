@@ -685,6 +685,14 @@ export function clearInitialPrompt(taskId: string): void {
   setStore('tasks', taskId, 'initialPrompt', undefined);
 }
 
+// Re-arm the queued initial prompt after a failed auto-send echo-verification.
+// `sendPrompt` clears `initialPrompt` once it writes the first prompt, so the
+// renderer auto-send loop needs to restore it to retry (and to keep the
+// "Waiting to send prompt…" status accurate while the prompt is undelivered).
+export function setInitialPrompt(taskId: string, text: string): void {
+  setStore('tasks', taskId, 'initialPrompt', text);
+}
+
 export function clearPrefillPrompt(taskId: string): void {
   setStore('tasks', taskId, 'prefillPrompt', undefined);
 }

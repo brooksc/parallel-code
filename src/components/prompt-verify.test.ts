@@ -200,6 +200,23 @@ describe('pollUntilPromptAppearsInOutput', () => {
     expect(getTail).not.toHaveBeenCalled();
   });
 
+  it('returns false when already aborted, even for an empty prompt', async () => {
+    // Abort is checked before the empty/preSendTail success paths, so a
+    // superseded send is never reported as verified.
+    const getTail = vi.fn().mockReturnValue('');
+    const result = await pollUntilPromptAppearsInOutput(
+      'agent-1',
+      '',
+      '',
+      makeSignal(true),
+      getTail,
+      5_000,
+      250,
+    );
+    expect(result).toBe(false);
+    expect(getTail).not.toHaveBeenCalled();
+  });
+
   it('returns false when signal is aborted during polling', async () => {
     vi.useFakeTimers();
     const ctrl = new AbortController();
@@ -243,5 +260,39 @@ describe('pollUntilPromptAppearsInOutput', () => {
     await vi.runAllTimersAsync();
     await promise;
     expect(getTail).toHaveBeenCalledWith('my-specific-agent');
+  });
+
+  // --- Final deadline check ---
+  // deadlineMs of 0 makes the polling loop body never run (Date.now() is never
+  // < deadline), so only the post-loop final check can produce a match.
+
+  it('matches via the final check when the echo lands at the deadline boundary', async () => {
+    const getTail = vi.fn().mockReturnValue('build the feature');
+    const result = await pollUntilPromptAppearsInOutput(
+      'agent-1',
+      'build the feature',
+      '',
+      makeSignal(),
+      getTail,
+      0,
+      250,
+    );
+    expect(result).toBe(true);
+    expect(getTail).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false from the final check when the echo never appears', async () => {
+    const getTail = vi.fn().mockReturnValue('unrelated output');
+    const result = await pollUntilPromptAppearsInOutput(
+      'agent-1',
+      'build the feature',
+      '',
+      makeSignal(),
+      getTail,
+      0,
+      250,
+    );
+    expect(result).toBe(false);
+    expect(getTail).toHaveBeenCalledTimes(1);
   });
 });

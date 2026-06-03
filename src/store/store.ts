@@ -38,6 +38,7 @@ export {
   sendPrompt,
   setLastPrompt,
   clearInitialPrompt,
+  setInitialPrompt,
   clearPrefillPrompt,
   clearTaskLandingReview,
   setPrefillPrompt,
