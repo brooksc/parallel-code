@@ -33,6 +33,9 @@ import {
   setDarkTheme,
   setCoordinatorModeEnabled,
   setCoordinatorNotificationDelayMs,
+  setDefaultStepsEnabled,
+  setDefaultSkipPermissions,
+  setDefaultPropagateSkipPermissions,
   updateStatus,
   checkForUpdates,
 } from '../store/store';
@@ -412,6 +415,93 @@ export function SettingsDialog(props: SettingsDialogProps) {
                 </span>
               </div>
             </label>
+          </div>
+
+          <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+            <div style={{ ...sectionLabelStyle, 'font-weight': '600' }}>New Task Defaults</div>
+            <label
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '10px',
+                cursor: 'pointer',
+                padding: '8px 12px',
+                'border-radius': '8px',
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={store.defaultStepsEnabled}
+                onChange={(e) => setDefaultStepsEnabled(e.currentTarget.checked)}
+                style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+              />
+              <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+                <span style={{ 'font-size': '14px', color: theme.fg }}>Steps tracking</span>
+                <span style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+                  Pre-tick Steps tracking in the New Task dialog
+                </span>
+              </div>
+            </label>
+            <label
+              style={{
+                display: 'flex',
+                'align-items': 'center',
+                gap: '10px',
+                cursor: 'pointer',
+                padding: '8px 12px',
+                'border-radius': '8px',
+                background: theme.bgInput,
+                border: `1px solid ${theme.border}`,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={store.defaultSkipPermissions}
+                onChange={(e) => setDefaultSkipPermissions(e.currentTarget.checked)}
+                style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+              />
+              <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+                <span style={{ 'font-size': '14px', color: theme.fg }}>
+                  Dangerously skip all confirms by default
+                </span>
+                <span style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+                  Pre-tick skip-permissions for every new task. The agent will run without asking
+                  for confirmation. Only honoured when the selected agent supports it.
+                </span>
+              </div>
+            </label>
+            <Show when={store.coordinatorModeEnabled}>
+              <label
+                style={{
+                  display: 'flex',
+                  'align-items': 'center',
+                  gap: '10px',
+                  cursor: 'pointer',
+                  padding: '8px 12px',
+                  'border-radius': '8px',
+                  background: theme.bgInput,
+                  border: `1px solid ${theme.border}`,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={store.defaultPropagateSkipPermissions}
+                  onChange={(e) => setDefaultPropagateSkipPermissions(e.currentTarget.checked)}
+                  style={{ 'accent-color': theme.accent, cursor: 'pointer' }}
+                />
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+                  <span style={{ 'font-size': '14px', color: theme.fg }}>
+                    Propagate skip-permissions to sub-tasks
+                  </span>
+                  <span style={{ 'font-size': '12px', color: theme.fgSubtle }}>
+                    Pre-tick Propagate to sub-tasks when both coordinator mode and skip-permissions
+                    are enabled for a task
+                  </span>
+                </div>
+              </label>
+            </Show>
           </div>
 
           <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>

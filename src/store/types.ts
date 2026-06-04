@@ -248,7 +248,6 @@ export interface PersistedState {
   windowState?: PersistedWindowState;
   autoTrustFolders?: boolean;
   showPlans?: boolean;
-  showSteps?: boolean;
   showSidebarTips?: boolean;
   showSidebarProgress?: boolean;
   projectsCollapsed?: boolean;
@@ -271,6 +270,9 @@ export interface PersistedState {
   coordinatorModeEnabled?: boolean;
   coordinatorNotificationDelayMs?: number;
   coordinatorControlHintDismissed?: boolean;
+  defaultStepsEnabled?: boolean;
+  defaultSkipPermissions?: boolean;
+  defaultPropagateSkipPermissions?: boolean;
 }
 
 export interface MCPStatus {
@@ -342,7 +344,6 @@ export interface AppStore {
   windowState: PersistedWindowState | null;
   autoTrustFolders: boolean;
   showPlans: boolean;
-  showSteps: boolean;
   showSidebarTips: boolean;
   showSidebarProgress: boolean;
   projectsCollapsed: boolean;
@@ -376,5 +377,8 @@ export interface AppStore {
   coordinatorModeEnabled: boolean;
   coordinatorNotificationDelayMs: number;
   coordinatorControlHintDismissed: boolean;
+  defaultStepsEnabled: boolean;
+  defaultSkipPermissions: boolean;
+  defaultPropagateSkipPermissions: boolean;
   mcpStatus: MCPStatus;
 }

@@ -68,6 +68,8 @@ mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
 
 vi.mock('../lib/ipc', () => ({ Channel: vi.fn(), invoke: mockInvoke }));
 
+let mockDefaultStepsEnabled = false;
+
 vi.mock('./core', () => ({
   store: new Proxy({} as Record<string, unknown>, {
     get(_target, prop) {
@@ -77,6 +79,7 @@ vi.mock('./core', () => ({
       if (prop === 'collapsedTaskOrder') return mockCollapsedTaskOrder;
       if (prop === 'availableAgents') return [];
       if (prop === 'projects') return mockProjects;
+      if (prop === 'defaultStepsEnabled') return mockDefaultStepsEnabled;
       return undefined;
     },
   }),
@@ -169,6 +172,7 @@ beforeEach(() => {
   mockTaskOrder = [];
   mockCollapsedTaskOrder = [];
   mockProjects = [];
+  mockDefaultStepsEnabled = false;
   mockInvoke.mockResolvedValue(undefined);
   mockSaveState.mockResolvedValue(undefined);
 });
@@ -765,6 +769,58 @@ describe('createTask coordinator base branch prompt', () => {
       IPC.MCP_CoordinatorRegistered,
       expect.objectContaining({ coordinatorBranch: 'task/coordinator-work' }),
     );
+  });
+});
+
+// ─── createTask stepsEnabled default regression ────────────────────────────────
+
+describe('createTask does not mutate defaultStepsEnabled', () => {
+  const agentDef = {
+    id: 'agent-def',
+    name: 'Claude',
+    command: 'claude',
+    args: [],
+    resume_args: [],
+    skip_permissions_args: [],
+    description: 'Claude',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetStore.mockImplementation((...args: unknown[]) => applySetStore(...args));
+    mockTasks = {};
+    mockAgents = {};
+    mockTaskOrder = [];
+    mockDefaultStepsEnabled = false;
+    vi.mocked(getProjectPath).mockReturnValue('/repo');
+    vi.mocked(getProjectBranchPrefix).mockReturnValue('task');
+    vi.mocked(isProjectMissing).mockReturnValue(false);
+    mockInvoke.mockImplementation((channel: string) => {
+      if (channel === IPC.CreateTask) {
+        return Promise.resolve({
+          id: 'task-1',
+          branch_name: 'task/my-task',
+          worktree_path: '/repo/.worktrees/my-task',
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+  });
+
+  it('does not write back defaultStepsEnabled when stepsEnabled differs from the default', async () => {
+    mockDefaultStepsEnabled = false;
+    await createTask({
+      name: 'My Task',
+      agentDef,
+      projectId: 'proj-1',
+      gitIsolation: 'worktree',
+      baseBranch: 'main',
+      stepsEnabled: true,
+    });
+    const defaultsMutated = mockSetStore.mock.calls.some(
+      (args) => args[0] === 'defaultStepsEnabled',
+    );
+    expect(defaultsMutated).toBe(false);
   });
 });
 

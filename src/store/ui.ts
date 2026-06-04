@@ -200,6 +200,18 @@ export function setCoordinatorModeEnabled(enabled: boolean): void {
   );
 }
 
+export function setDefaultStepsEnabled(enabled: boolean): void {
+  setStore('defaultStepsEnabled', enabled);
+}
+
+export function setDefaultSkipPermissions(enabled: boolean): void {
+  setStore('defaultSkipPermissions', enabled);
+}
+
+export function setDefaultPropagateSkipPermissions(enabled: boolean): void {
+  setStore('defaultPropagateSkipPermissions', enabled);
+}
+
 export function setCoordinatorNotificationDelayMs(ms: number): void {
   const clamped = Math.max(5_000, Math.min(300_000, Math.round(ms)));
   setStore('coordinatorNotificationDelayMs', clamped);

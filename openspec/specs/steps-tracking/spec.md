@@ -17,12 +17,12 @@ default that the new-task dialog uses to pre-fill the checkbox.
 
 - **WHEN** the user opens the new-task dialog
 - **THEN** the "Steps tracking" checkbox is pre-checked if and only if the
-  persisted `showSteps` app-level flag is true
+  persisted `defaultStepsEnabled` app-level flag is true
 
 #### Scenario: Default updates when user toggles the checkbox
 
 - **WHEN** the user creates a task with the checkbox in the opposite state
-- **THEN** the persisted `showSteps` app-level flag is updated to match
+- **THEN** the persisted `defaultStepsEnabled` app-level flag is updated to match
 - **AND** the next new-task dialog uses that value as the default
 
 #### Scenario: `stepsEnabled` is per-task and persisted

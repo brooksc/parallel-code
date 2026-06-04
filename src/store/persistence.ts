@@ -186,7 +186,6 @@ export async function saveState(): Promise<void> {
     windowState: store.windowState ? { ...store.windowState } : undefined,
     autoTrustFolders: store.autoTrustFolders,
     showPlans: store.showPlans,
-    showSteps: store.showSteps,
     showSidebarTips: store.showSidebarTips,
     showSidebarProgress: store.showSidebarProgress,
     projectsCollapsed: store.projectsCollapsed,
@@ -213,6 +212,9 @@ export async function saveState(): Promise<void> {
     darkThemeCustomId: store.darkThemeCustomId ?? undefined,
     coordinatorModeEnabled: store.coordinatorModeEnabled || undefined,
     coordinatorControlHintDismissed: store.coordinatorControlHintDismissed || undefined,
+    defaultStepsEnabled: store.defaultStepsEnabled || undefined,
+    defaultSkipPermissions: store.defaultSkipPermissions || undefined,
+    defaultPropagateSkipPermissions: store.defaultPropagateSkipPermissions || undefined,
   };
 
   for (const taskId of store.taskOrder) {
@@ -377,6 +379,9 @@ interface LegacyPersistedState {
   darkThemeCustomId?: unknown;
   coordinatorModeEnabled?: unknown;
   coordinatorControlHintDismissed?: unknown;
+  defaultStepsEnabled?: unknown;
+  defaultSkipPermissions?: unknown;
+  defaultPropagateSkipPermissions?: unknown;
 }
 
 export async function loadState(): Promise<void> {
@@ -493,7 +498,6 @@ export async function loadState(): Promise<void> {
       s.windowState = parsePersistedWindowState(raw.windowState);
       s.autoTrustFolders = typeof raw.autoTrustFolders === 'boolean' ? raw.autoTrustFolders : false;
       s.showPlans = typeof raw.showPlans === 'boolean' ? raw.showPlans : true;
-      s.showSteps = typeof raw.showSteps === 'boolean' ? raw.showSteps : false;
       s.showSidebarTips = typeof raw.showSidebarTips === 'boolean' ? raw.showSidebarTips : true;
       s.showSidebarProgress =
         typeof raw.showSidebarProgress === 'boolean' ? raw.showSidebarProgress : true;
@@ -568,6 +572,18 @@ export async function loadState(): Promise<void> {
       s.coordinatorModeEnabled = raw.coordinatorModeEnabled === true;
 
       s.coordinatorControlHintDismissed = raw.coordinatorControlHintDismissed === true;
+
+      // Migrate legacy showSteps — only fall back to it when the new field is
+      // absent (not present-but-invalid) so invalid values and explicit false
+      // are never overridden by the legacy field.
+      s.defaultStepsEnabled =
+        typeof raw.defaultStepsEnabled === 'boolean'
+          ? raw.defaultStepsEnabled
+          : 'defaultStepsEnabled' in (raw as object)
+            ? false
+            : raw.showSteps === true;
+      s.defaultSkipPermissions = raw.defaultSkipPermissions === true;
+      s.defaultPropagateSkipPermissions = raw.defaultPropagateSkipPermissions === true;
 
       const rawDockerImage = raw.dockerImage;
       s.dockerImage =

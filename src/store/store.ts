@@ -141,6 +141,9 @@ export {
   setMinimaxApiKey,
   setWindowState,
   setCoordinatorModeEnabled,
+  setDefaultStepsEnabled,
+  setDefaultSkipPermissions,
+  setDefaultPropagateSkipPermissions,
 } from './ui';
 export {
   getTaskDotStatus,

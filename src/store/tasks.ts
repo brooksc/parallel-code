@@ -243,10 +243,8 @@ export async function createTask(opts: CreateTaskOptions): Promise<string> {
     }
   }
 
-  // Per-task steps tracking — explicit opt-in from dialog, or fall back to last-used preference
-  const stepsEnabled = opts.stepsEnabled ?? store.showSteps;
-  // Remember this choice so the dialog defaults to it next time
-  if (stepsEnabled !== store.showSteps) setStore('showSteps', stepsEnabled);
+  // Per-task steps tracking — explicit opt-in from dialog, or fall back to default preference
+  const stepsEnabled = opts.stepsEnabled ?? store.defaultStepsEnabled;
 
   // Inject steps instruction into the first prompt so the agent maintains steps.json.
   // Appended after a separator for recency bias; savedInitialPrompt keeps the original clean text.

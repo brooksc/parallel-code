@@ -6,6 +6,7 @@ import {
   Show,
   onCleanup,
   on,
+  untrack,
 } from 'solid-js';
 import { Dialog } from './Dialog';
 import { errMessage } from '../lib/log';
@@ -75,8 +76,8 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
   const [branchesError, setBranchesError] = createSignal(false);
   // Bumped by the Retry button to re-run the branch-fetch effect.
   const [branchRetryToken, setBranchRetryToken] = createSignal(0);
-  const [stepsEnabled, setStepsEnabled] = createSignal(store.showSteps);
-  const [skipPermissions, setSkipPermissions] = createSignal(false);
+  const [stepsEnabled, setStepsEnabled] = createSignal(store.defaultStepsEnabled);
+  const [skipPermissions, setSkipPermissions] = createSignal(store.defaultSkipPermissions);
   const [dockerMode, setDockerMode] = createSignal(false);
   const [dockerImageReady, setDockerImageReady] = createSignal<boolean | null>(null); // null = unknown
   const [dockerBuilding, setDockerBuilding] = createSignal(false);
@@ -88,7 +89,9 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
     buildContext: string;
   } | null>(null);
   const [coordinatorMode, setCoordinatorMode] = createSignal(false);
-  const [propagateSkipPermissions, setPropagateSkipPermissions] = createSignal(false);
+  const [propagateSkipPermissions, setPropagateSkipPermissions] = createSignal(
+    store.defaultPropagateSkipPermissions,
+  );
   const [maxConcurrentTasks, setMaxConcurrentTasks] = createSignal(
     DEFAULT_COORDINATOR_CONCURRENT_TASKS,
   );
@@ -158,7 +161,27 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
     focusables[nextIdx].focus();
   }
 
-  // Initialize state each time the dialog opens
+  // Initialize state each time the dialog opens.  Wrapped in on() so the
+  // effect only re-fires on the props.open *transition*, not whenever any
+  // store default mutates while the dialog is already open (e.g. the user
+  // toggling Settings, or autosave restoring state).  untrack() ensures the
+  // store reads inside are one-shot samples, not new reactive subscriptions.
+  createEffect(
+    on(
+      () => props.open,
+      (open) => {
+        if (!open) return;
+        untrack(() => {
+          setStepsEnabled(store.defaultStepsEnabled);
+          setSkipPermissions(store.defaultSkipPermissions);
+          setPropagateSkipPermissions(store.defaultPropagateSkipPermissions);
+        });
+      },
+      { defer: true },
+    ),
+  );
+
+  // Initialize remaining state each time the dialog opens
   createEffect(() => {
     if (!props.open) return;
 
@@ -168,8 +191,6 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
     setError('');
     setLoading(false);
     setGitIsolation('worktree');
-    setSkipPermissions(false);
-    setPropagateSkipPermissions(false);
     setDockerMode(false);
     setDockerImageReady(null);
     setDockerBuilding(false);
@@ -629,7 +650,10 @@ export function NewTaskDialog(props: NewTaskDialogProps) {
           ? (projDocker?.imageTag ?? (store.dockerImage || DEFAULT_DOCKER_IMAGE))
           : undefined,
         coordinatorMode: coordinatorMode() || undefined,
-        propagateSkipPermissions: coordinatorMode() ? propagateSkipPermissions() : undefined,
+        propagateSkipPermissions:
+          coordinatorMode() && agentSupportsSkipPermissions() && skipPermissions()
+            ? propagateSkipPermissions()
+            : undefined,
         maxConcurrentTasks: coordinatorMode()
           ? clampCoordinatorConcurrentTasks(maxConcurrentTasks())
           : undefined,

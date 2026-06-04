@@ -5,7 +5,7 @@ import { store, saveState } from './store';
  *  creates a single reactive dependency on the serialized form — the effect
  *  only re-runs when a persisted value actually changes, instead of on every
  *  individual field mutation (cursor moves, panel resizes, etc.). */
-function persistedSnapshot(): string {
+export function persistedSnapshot(): string {
   return JSON.stringify({
     projects: store.projects,
     lastProjectId: store.lastProjectId,
@@ -25,7 +25,9 @@ function persistedSnapshot(): string {
     windowState: store.windowState,
     autoTrustFolders: store.autoTrustFolders,
     showPlans: store.showPlans,
-    showSteps: store.showSteps,
+    defaultStepsEnabled: store.defaultStepsEnabled,
+    defaultSkipPermissions: store.defaultSkipPermissions,
+    defaultPropagateSkipPermissions: store.defaultPropagateSkipPermissions,
     showSidebarTips: store.showSidebarTips,
     showSidebarProgress: store.showSidebarProgress,
     projectsCollapsed: store.projectsCollapsed,

@@ -457,3 +457,229 @@ describe('projects section collapsed persistence', () => {
     expect(saved.projectsCollapsed).toBe(true);
   });
 });
+
+describe('new task defaults persistence', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setStore('defaultStepsEnabled', false);
+    setStore('defaultSkipPermissions', false);
+    setStore('defaultPropagateSkipPermissions', false);
+  });
+
+  // --- defaultStepsEnabled ---
+
+  it('defaults defaultStepsEnabled to false when absent from saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload());
+    await loadState();
+    expect(store.defaultStepsEnabled).toBe(false);
+  });
+
+  it('restores defaultStepsEnabled=true from saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload({ defaultStepsEnabled: true }));
+    await loadState();
+    expect(store.defaultStepsEnabled).toBe(true);
+  });
+
+  it('does not persist defaultStepsEnabled=false', async () => {
+    setStore('defaultStepsEnabled', false);
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await saveState();
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.defaultStepsEnabled).toBeUndefined();
+  });
+
+  it('persists defaultStepsEnabled=true', async () => {
+    setStore('defaultStepsEnabled', true);
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await saveState();
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.defaultStepsEnabled).toBe(true);
+  });
+
+  it.each([
+    ['string', 'yes'],
+    ['number', 1],
+    ['null', null],
+  ])('ignores non-boolean defaultStepsEnabled (%s)', async (_label, value) => {
+    setStore('defaultStepsEnabled', true);
+    mockInvoke.mockResolvedValueOnce(basePayload({ defaultStepsEnabled: value }));
+    await loadState();
+    expect(store.defaultStepsEnabled).toBe(false);
+  });
+
+  it('invalid present defaultStepsEnabled does not fall back to showSteps=true', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+        showSteps: true,
+        defaultStepsEnabled: 'yes',
+      }),
+    );
+    await loadState();
+    expect(store.defaultStepsEnabled).toBe(false);
+  });
+
+  // --- defaultSkipPermissions ---
+
+  it('defaults defaultSkipPermissions to false when absent from saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload());
+    await loadState();
+    expect(store.defaultSkipPermissions).toBe(false);
+  });
+
+  it('restores defaultSkipPermissions=true from saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload({ defaultSkipPermissions: true }));
+    await loadState();
+    expect(store.defaultSkipPermissions).toBe(true);
+  });
+
+  it('does not persist defaultSkipPermissions=false', async () => {
+    setStore('defaultSkipPermissions', false);
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await saveState();
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.defaultSkipPermissions).toBeUndefined();
+  });
+
+  it('persists defaultSkipPermissions=true', async () => {
+    setStore('defaultSkipPermissions', true);
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await saveState();
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.defaultSkipPermissions).toBe(true);
+  });
+
+  it.each([
+    ['string', 'yes'],
+    ['number', 1],
+    ['null', null],
+  ])('ignores non-boolean defaultSkipPermissions (%s)', async (_label, value) => {
+    setStore('defaultSkipPermissions', true);
+    mockInvoke.mockResolvedValueOnce(basePayload({ defaultSkipPermissions: value }));
+    await loadState();
+    expect(store.defaultSkipPermissions).toBe(false);
+  });
+
+  // --- defaultPropagateSkipPermissions ---
+
+  it('defaults defaultPropagateSkipPermissions to false when absent from saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload());
+    await loadState();
+    expect(store.defaultPropagateSkipPermissions).toBe(false);
+  });
+
+  it('restores defaultPropagateSkipPermissions=true from saved state', async () => {
+    mockInvoke.mockResolvedValueOnce(basePayload({ defaultPropagateSkipPermissions: true }));
+    await loadState();
+    expect(store.defaultPropagateSkipPermissions).toBe(true);
+  });
+
+  it('does not persist defaultPropagateSkipPermissions=false', async () => {
+    setStore('defaultPropagateSkipPermissions', false);
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await saveState();
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.defaultPropagateSkipPermissions).toBeUndefined();
+  });
+
+  it('persists defaultPropagateSkipPermissions=true', async () => {
+    setStore('defaultPropagateSkipPermissions', true);
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await saveState();
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.defaultPropagateSkipPermissions).toBe(true);
+  });
+
+  it.each([
+    ['string', 'yes'],
+    ['number', 1],
+    ['null', null],
+  ])('ignores non-boolean defaultPropagateSkipPermissions (%s)', async (_label, value) => {
+    setStore('defaultPropagateSkipPermissions', true);
+    mockInvoke.mockResolvedValueOnce(basePayload({ defaultPropagateSkipPermissions: value }));
+    await loadState();
+    expect(store.defaultPropagateSkipPermissions).toBe(false);
+  });
+});
+
+describe('showSteps → defaultStepsEnabled migration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setStore('defaultStepsEnabled', false);
+  });
+
+  it('migrates legacy showSteps=true to defaultStepsEnabled=true', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+        showSteps: true,
+      }),
+    );
+    await loadState();
+    expect(store.defaultStepsEnabled).toBe(true);
+  });
+
+  it('defaultStepsEnabled wins when both fields are present', async () => {
+    // If a user saves with the new field but an old showSteps is also present
+    // (e.g. partially migrated state), the explicit new field takes precedence.
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+        showSteps: false,
+        defaultStepsEnabled: true,
+      }),
+    );
+    await loadState();
+    expect(store.defaultStepsEnabled).toBe(true);
+  });
+
+  it('explicit defaultStepsEnabled=false is not overridden by showSteps=true', async () => {
+    // This is the direction the old || logic got wrong — an explicit false was
+    // overridden by a legacy true.  The new presence-check logic must respect
+    // the explicit new field even when the legacy field disagrees.
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+        showSteps: true,
+        defaultStepsEnabled: false,
+      }),
+    );
+    await loadState();
+    expect(store.defaultStepsEnabled).toBe(false);
+  });
+
+  it('showSteps=false does not set defaultStepsEnabled=true', async () => {
+    mockInvoke.mockResolvedValueOnce(
+      JSON.stringify({
+        projects: [],
+        taskOrder: [],
+        collapsedTaskOrder: [],
+        tasks: {},
+        showSteps: false,
+      }),
+    );
+    await loadState();
+    expect(store.defaultStepsEnabled).toBe(false);
+  });
+
+  it('showSteps is not saved by saveState', async () => {
+    setStore('defaultStepsEnabled', true);
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await saveState();
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].json);
+    expect(saved.showSteps).toBeUndefined();
+    expect(saved.defaultStepsEnabled).toBe(true);
+  });
+});
